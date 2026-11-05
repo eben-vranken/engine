@@ -62,22 +62,22 @@ A first-person character in a 3D test level, with every movement property tunabl
 - [x] Undo/redo via commands
 - [x] Save/load scenes
 
-## 4. Creating objects ← current
+## 4. Creating objects
 Add, remove and reshape objects from inside the editor. There are two ways to create objects:
 
 - **Models from Blender (or similar):** drag a model file onto the viewport. glTF is the format, preferably the binary `.glb` (one self-contained file; in Blender: File → Export → glTF 2.0, format "glTF Binary"). `.gltf` works too. The file is copied into the game project's `models/` folder and the object is placed where it was dropped.
 - **Primitives made in the editor:** an Add menu creates boxes, planes, wedges, cylinders and spheres. Because these shapes belong to the editor, their type can be changed afterwards in the inspector (box → cylinder and so on).
 
-- [ ] Add menu: create a primitive (box, plane, wedge, cylinder, sphere) in front of the camera, in the zone of the current selection
-- [ ] Change a primitive's shape type in the inspector, keeping sensible sizes
-- [ ] Drag and drop `.glb` / `.gltf` files onto the viewport: copied into `models/`, placed at the drop point on the surface under the cursor
-- [ ] Model textures: base color texture, point-sampled like the rest of the look
-- [ ] Delete and duplicate objects (Delete, Ctrl+D), undoable
-- [ ] Hot reload: re-exporting a model over its file in `models/` updates it in the editor
+- [x] Add menu: create a primitive (box, plane, wedge, cylinder, sphere) in front of the camera, in the zone of the current selection
+- [x] Change a primitive's shape type in the inspector, keeping sensible sizes
+- [x] Drag and drop `.glb` / `.gltf` files onto the viewport: copied into `models/`, placed at the drop point on the surface under the cursor
+- [x] Model textures: base color texture, point-sampled like the rest of the look
+- [x] Delete and duplicate objects (Delete, Ctrl+D), undoable
+- [x] Hot reload: re-exporting a model over its file in `models/` updates it in the editor
 
 **Acceptance:** the user builds a small room from primitives and a model dragged in from Blender, reshapes a primitive, deletes and duplicates objects, undoes all of it, and saves.
 
-## 4.1 Collision toggle
+## 4.1 Collision toggle ← current
 A small step right after milestone 4, for background and walk-through objects.
 
 - [ ] `collision` checkbox on primitives and models in the inspector, on by default, undoable
