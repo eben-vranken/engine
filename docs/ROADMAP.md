@@ -9,21 +9,21 @@ At the end of each milestone, tell the user exactly what to run and what to test
 - [x] BRIEF.md, CLAUDE.md, ROADMAP.md, DECISIONS.md
 - [x] `--game <path>` argument; `sandbox/` as default project; game content lives outside this repo
 
-## 1. Renderer basics ← current
+## 1. Renderer basics
 A window that draws simple 3D shapes the way the engine will look.
 
-- [ ] winit window + wgpu
-- [ ] Render at reduced internal resolution (output ÷ integer render-scale factor, default ~540–720 lines), nearest-neighbor upscale to the window; factor changeable live
-- [ ] Box and other primitive meshes generated in code (enough to build a grey-box level)
-- [ ] Simple lighting so shapes read: one directional light + ambient, basic shading
-- [ ] Point-sampled textures; a grid/checker texture for floors and walls (gives a sense of scale and speed)
-- [ ] Distance fog; tone mapping (AgX or ACES) from the start
-- [ ] Free-fly debug camera
-- [ ] egui overlay in the amber terminal style (BRIEF.md → UI style): FPS, internal and output resolution
+- [x] winit window + wgpu
+- [x] Render at reduced internal resolution (output ÷ integer render-scale factor, default ~540–720 lines), nearest-neighbor upscale to the window; factor changeable live
+- [x] Box and other primitive meshes generated in code (enough to build a grey-box level)
+- [x] Simple lighting so shapes read: one directional light + ambient, basic shading
+- [x] Point-sampled textures; a grid/checker texture for floors and walls (gives a sense of scale and speed)
+- [x] Distance fog; tone mapping (AgX or ACES) from the start
+- [x] Free-fly debug camera
+- [x] egui overlay in the amber terminal style (BRIEF.md → UI style): FPS, internal and output resolution
 
 **Acceptance:** boxes on a grid floor, crisp at any window size, render-scale changes live, 60+ fps.
 
-## 2. First-person controller + test level
+## 2. First-person controller + test level ← current
 A first-person character in a 3D test level, with every movement property tunable live in-game.
 
 - [ ] Physics with `rapier3d`; static colliders for the level geometry
