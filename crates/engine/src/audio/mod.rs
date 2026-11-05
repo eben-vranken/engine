@@ -3,32 +3,44 @@
 //! previews sound too.
 //!
 //! Each frame the main thread simulates every source (distance, air
-//! absorption) and hands the results to the mixer on the audio thread
-//! (`mixer.rs`), which renders them.
+//! absorption, occlusion by the scene's geometry and transmission through
+//! it) and hands the results to the mixer on the audio thread (`mixer.rs`),
+//! which renders them.
 
 mod clip;
+mod geometry;
 mod mixer;
 
+use crate::assets::Assets;
 use crate::camera::Camera;
 use crate::scene::{Component, Scene, SoundSource};
 use audionimbus::{
     AirAbsorptionModel, AudioSettings, BinauralEffect, BinauralEffectSettings, Context,
     CoordinateSystem, DefaultRayTracer, Direct, DirectEffect, DirectEffectSettings,
     DirectSimulationParameters, DirectSimulationSettings, DistanceAttenuationModel, Hrtf,
-    HrtfSettings, SimulationInputs, SimulationParameters, SimulationSettings,
-    SimulationSharedInputs, Simulator, Source, Vector3,
+    HrtfSettings, Occlusion, OcclusionAlgorithm, SimulationInputs, SimulationParameters,
+    SimulationSettings, SimulationSharedInputs, Simulator, Source, Transmission,
+    TransmissionParameters, Vector3,
 };
 use clip::Clip;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use geometry::AcousticGeometry;
 use glam::Vec3;
 use mixer::{Mixer, Voice, VoiceParams};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// Samples per channel processed at a time (21 ms at 48 kHz).
 const FRAME_SIZE: u32 = 1024;
+/// How often edits to static geometry are picked up (rebuilding is cheap,
+/// but not every frame of a drag).
+const GEOMETRY_CHECK: Duration = Duration::from_millis(250);
+/// Sources are spheres this big for occlusion, so sound fades in and out
+/// around edges instead of switching (meters).
+const SOURCE_RADIUS: f32 = 0.4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
@@ -47,6 +59,10 @@ pub struct Audio {
     settings: AudioSettings,
     hrtf: Hrtf,
     simulator: Simulator<DefaultRayTracer, Direct>,
+    geometry: AcousticGeometry,
+    /// Fingerprint the geometry was built from, and when it was last checked.
+    geometry_signature: u64,
+    geometry_checked: Instant,
     /// One simulated source per playing voice, with what it plays.
     sources: Vec<(VoiceKey, Source<Direct>)>,
     params: Arc<Mutex<Vec<VoiceParams>>>,
@@ -86,10 +102,10 @@ impl Audio {
             max_num_occlusion_samples: 16,
         });
         let mut simulator = Simulator::try_new(&context, &simulation).map_err(steam)?;
-        // No geometry yet: occlusion and reflections come next.
-        let acoustic_scene = audionimbus::Scene::try_new(&context).map_err(steam)?;
-        acoustic_scene.commit();
-        simulator.set_scene(&acoustic_scene);
+        // Empty until the first update brings the scene's geometry.
+        let geometry =
+            AcousticGeometry::build(&context, &Scene::default(), &mut Assets::default())?;
+        simulator.set_scene(&geometry.scene);
         simulator.commit();
 
         let params = Arc::new(Mutex::new(Vec::new()));
@@ -121,6 +137,9 @@ impl Audio {
             settings,
             hrtf,
             simulator,
+            geometry,
+            geometry_signature: geometry::signature(&Scene::default()),
+            geometry_checked: Instant::now(),
             sources: Vec::new(),
             params,
             new_voices,
@@ -129,8 +148,11 @@ impl Audio {
         })
     }
 
-    /// Call every frame: follows the scene's sound sources and the listener.
-    pub fn update(&mut self, scene: &Scene, listener: &Camera) {
+    /// Call every frame: follows the scene's geometry, sound sources and
+    /// the listener.
+    pub fn update(&mut self, scene: &Scene, assets: &mut Assets, listener: &Camera) {
+        self.update_geometry(scene, assets);
+
         let wanted: Vec<(VoiceKey, &SoundSource, Vec3)> = scene
             .objects
             .iter()
@@ -177,7 +199,18 @@ impl Audio {
                 parameters: SimulationParameters::new().with_direct(
                     DirectSimulationParameters::new()
                         .with_distance_attenuation(DistanceAttenuationModel::default())
-                        .with_air_absorption(AirAbsorptionModel::default()),
+                        .with_air_absorption(AirAbsorptionModel::default())
+                        .with_occlusion(
+                            Occlusion::new(OcclusionAlgorithm::Volumetric {
+                                radius: SOURCE_RADIUS,
+                                num_occlusion_samples: 16,
+                            })
+                            .with_transmission(
+                                TransmissionParameters {
+                                    num_transmission_rays: 3,
+                                },
+                            ),
+                        ),
                 ),
             };
             if let Err(err) = source.set_inputs(&inputs) {
@@ -204,12 +237,43 @@ impl Audio {
                     if let Some(air) = direct.air_absorption {
                         params.air_absorption = air.0;
                     }
+                    params.occlusion = direct.occlusion.unwrap_or(1.0);
+                    if let Some(
+                        Transmission::FrequencyDependent(t) | Transmission::FrequencyIndependent(t),
+                    ) = direct.transmission
+                    {
+                        params.transmission = t.0;
+                    }
                 }
                 params
             })
             .collect();
         if let Ok(mut shared) = self.params.lock() {
             *shared = params;
+        }
+    }
+
+    /// Rebuilds the acoustic geometry when static objects were edited, and
+    /// moves the moving ones every frame.
+    fn update_geometry(&mut self, scene: &Scene, assets: &mut Assets) {
+        if self.geometry_checked.elapsed() >= GEOMETRY_CHECK {
+            self.geometry_checked = Instant::now();
+            let signature = geometry::signature(scene);
+            if signature != self.geometry_signature {
+                match AcousticGeometry::build(&self.context, scene, assets) {
+                    Ok(geometry) => {
+                        self.geometry = geometry;
+                        self.simulator.set_scene(&self.geometry.scene);
+                        self.simulator.commit();
+                        self.geometry_signature = signature;
+                    }
+                    Err(err) => log::error!("acoustic geometry: {err}"),
+                }
+                return;
+            }
+        }
+        if self.geometry.follow(scene) {
+            self.simulator.commit();
         }
     }
 

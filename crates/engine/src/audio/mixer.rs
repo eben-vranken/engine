@@ -6,7 +6,7 @@
 use super::clip::Clip;
 use audionimbus::{
     AudioBufferMut, AudioBufferRef, BinauralEffect, BinauralEffectParams, DirectEffect,
-    DirectEffectParams, Direction, Equalizer, Hrtf, HrtfInterpolation,
+    DirectEffectParams, Direction, Equalizer, Hrtf, HrtfInterpolation, Transmission,
 };
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -34,6 +34,10 @@ pub struct VoiceParams {
     pub distance_attenuation: f32,
     /// Low, mid and high band gains.
     pub air_absorption: [f32; 3],
+    /// 1 = in plain view, 0 = fully blocked by geometry.
+    pub occlusion: f32,
+    /// How much gets through the blocking surfaces, per band.
+    pub transmission: [f32; 3],
 }
 
 impl Default for VoiceParams {
@@ -44,6 +48,8 @@ impl Default for VoiceParams {
             direction: [0.0, 0.0, -1.0],
             distance_attenuation: 1.0,
             air_absorption: [1.0; 3],
+            occlusion: 1.0,
+            transmission: [1.0; 3],
         }
     }
 }
@@ -123,8 +129,10 @@ impl Mixer {
                 distance_attenuation: Some(params.distance_attenuation),
                 air_absorption: Some(Equalizer(params.air_absorption)),
                 directivity: None,
-                occlusion: None,
-                transmission: None,
+                occlusion: Some(params.occlusion),
+                transmission: Some(Transmission::FrequencyDependent(Equalizer(
+                    params.transmission,
+                ))),
             };
             let binaural = BinauralEffectParams {
                 direction: Direction::new(

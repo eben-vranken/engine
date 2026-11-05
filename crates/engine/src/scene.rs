@@ -93,6 +93,7 @@ pub enum Component {
     Switch(Switch),
     PhysicsBody(PhysicsBody),
     SoundSource(SoundSource),
+    AcousticMaterial(AcousticMaterial),
 }
 
 /// Another object in the scene, by name. The inspector shows a picker.
@@ -230,6 +231,33 @@ impl Default for SoundSource {
             looping: true,
         }
     }
+}
+
+/// How the object's surfaces sound: what they absorb, scatter and let
+/// through. Objects without one sound `Generic`.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct AcousticMaterial {
+    pub preset: AcousticPreset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
+pub enum AcousticPreset {
+    #[default]
+    Generic,
+    Wood,
+    Stone,
+    Marble,
+    Brick,
+    Concrete,
+    Plaster,
+    Carpet,
+    /// Heavy curtains and soft furnishings.
+    Velvet,
+    Glass,
+    Metal,
+    Water,
+    Gravel,
 }
 
 /// What an object looks like and collides as.

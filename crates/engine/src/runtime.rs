@@ -753,7 +753,7 @@ impl Running {
             }
         };
         if let Some(audio) = &mut self.audio {
-            audio.update(&self.scene, &camera);
+            audio.update(&self.scene, &mut self.assets, &camera);
         }
 
         let hud = HudInfo {

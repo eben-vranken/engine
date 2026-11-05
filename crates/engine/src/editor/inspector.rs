@@ -5,7 +5,8 @@
 
 use crate::scene::ObjectRef;
 use crate::ui::theme;
-use bevy_reflect::{PartialReflect, ReflectMut};
+use bevy_reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo};
+use bevy_reflect::{PartialReflect, ReflectMut, TypeInfo};
 use egui::{DragValue, Ui};
 use glam::{Vec2, Vec3};
 
@@ -129,6 +130,15 @@ fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect, names: &[String]
             .inner;
     }
 
+    if let Some(variants) = unit_variants(field) {
+        return ui
+            .horizontal(|ui| {
+                label(ui);
+                variant_picker(ui, name, field, &variants)
+            })
+            .inner;
+    }
+
     // Nested struct or enum: a heading row, its fields indented below.
     ui.horizontal(|ui| {
         label(ui);
@@ -137,6 +147,53 @@ fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect, names: &[String]
         }
     });
     ui.indent(name, |ui| fields(ui, field, names)).inner
+}
+
+/// The variant names of an enum whose variants carry no data (a plain
+/// choice, like a material preset); `None` for anything else.
+fn unit_variants(field: &dyn PartialReflect) -> Option<Vec<&'static str>> {
+    let TypeInfo::Enum(info) = field.get_represented_type_info()? else {
+        return None;
+    };
+    info.iter()
+        .map(|variant| match variant {
+            VariantInfo::Unit(unit) => Some(unit.name()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A dropdown of an enum's variants.
+fn variant_picker(
+    ui: &mut Ui,
+    name: &str,
+    field: &mut dyn PartialReflect,
+    variants: &[&'static str],
+) -> bool {
+    let bevy_reflect::ReflectRef::Enum(current) = field.reflect_ref() else {
+        return false;
+    };
+    let current = current.variant_name().to_owned();
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(("variant", name))
+        .selected_text(label_text(&current))
+        .show_ui(ui, |ui| {
+            for &variant in variants {
+                if ui
+                    .selectable_label(variant == current, label_text(variant))
+                    .clicked()
+                    && variant != current
+                {
+                    picked = Some(variant);
+                }
+            }
+        });
+    let Some(variant) = picked else {
+        return false;
+    };
+    field
+        .try_apply(&DynamicEnum::new(variant, DynamicVariant::Unit))
+        .is_ok()
 }
 
 /// A dropdown of the scene's objects; a name that no longer exists shows
@@ -241,6 +298,26 @@ fn drag_speed(name: &str) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::mesh::Shape;
+    use crate::scene::AcousticPreset;
+
+    #[test]
+    fn plain_enums_become_pickers_and_switch_variants() {
+        let mut preset = AcousticPreset::Wood;
+        let variants = unit_variants(&preset).expect("all variants are plain");
+        assert_eq!(variants.len(), 13);
+        assert!(variants.contains(&"Marble"));
+        preset
+            .try_apply(&DynamicEnum::new("Marble", DynamicVariant::Unit))
+            .unwrap();
+        assert_eq!(preset, AcousticPreset::Marble);
+
+        let shape = Shape::Box { size: Vec3::ONE };
+        assert!(
+            unit_variants(&shape).is_none(),
+            "variants with data aren't a plain choice"
+        );
+    }
 
     #[test]
     fn snaps_to_steps() {
