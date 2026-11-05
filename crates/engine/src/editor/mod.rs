@@ -161,15 +161,10 @@ impl Editor {
             bake: false,
             bake_lighting: false,
         };
-        // Tab: scene panel, Shift+Tab: inspector, H: zone markers (not
-        // while typing in a field).
+        // H: zone markers (not while typing in a field). Tab and Shift+Tab
+        // (the side panels) are handled by the runtime, before egui.
         if !ui.ctx().memory(|m| m.focused().is_some()) {
             ui.input_mut(|i| {
-                if i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab) {
-                    self.show_inspector = !self.show_inspector;
-                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
-                    self.show_scene = !self.show_scene;
-                }
                 if i.consume_key(egui::Modifiers::NONE, egui::Key::H) {
                     self.show_zones = !self.show_zones;
                 }

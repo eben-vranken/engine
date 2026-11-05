@@ -196,6 +196,25 @@ impl ApplicationHandler for App {
         let Some(app) = &mut self.running else {
             return;
         };
+        // Editor: Tab toggles the scene panel, Shift+Tab the inspector.
+        // Handled before egui, which would otherwise move keyboard focus
+        // between buttons; left alone while typing in a field.
+        if let (Some(editor), WindowEvent::KeyboardInput { event: key, .. }) =
+            (&mut app.editor, &event)
+            && key.physical_key == PhysicalKey::Code(KeyCode::Tab)
+            && !app.overlay.wants_keyboard()
+        {
+            if key.state.is_pressed() && !key.repeat {
+                let shift =
+                    app.input.held(KeyCode::ShiftLeft) || app.input.held(KeyCode::ShiftRight);
+                if shift {
+                    editor.show_inspector = !editor.show_inspector;
+                } else {
+                    editor.show_scene = !editor.show_scene;
+                }
+            }
+            return;
+        }
         let ui_consumed = app.overlay.on_window_event(&app.window, &event);
         match event {
             WindowEvent::CloseRequested => self.close(event_loop),
