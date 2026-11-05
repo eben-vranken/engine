@@ -98,7 +98,7 @@ A small step right after milestone 4, for background and walk-through objects.
 Steam Audio in the engine, tested by walking through spaces in first person.
 
 - [ ] Add `audionimbus` (with `auto-install`) and an audio output crate (e.g. `cpal`)
-- [ ] Audio behaviors: SoundSource, Singer, AcousticMaterial (moved here from milestone 6, where they couldn't be heard)
+- [ ] Audio behaviors: SoundSource, AcousticMaterial (moved here from milestone 6, where they couldn't be heard)
 - [ ] Test scene with four connected spaces, each with its own acoustic material: a small wooden room (dry), a narrow stone corridor (flutter echoes), a large marble hall (long tail), an open area with no walls
 - [ ] Sources: a looping recording at `sandbox/audio/guitar_loop.wav` (fallback: generated tone), a clap on a key at the listener, footsteps depending on the floor material
 - [ ] A key moves the looping source into a different space
@@ -138,3 +138,8 @@ A small step after the core milestones: stairs as an editor primitive, shaped fr
 - [ ] Collision per step, so the player's step climbing works on every shape
 
 **Acceptance:** the user builds a straight flight, a curved flight and a spiral staircase from one primitive, and walks up each.
+
+## Later (optional)
+Not scheduled; picked up only if a game needs it.
+
+- [ ] Singer behavior: characters that sing short motifs (voice, motif, interval, reacts_to_player). Needs the music system and a decision on voices (BRIEF.md open question); games can use recorded audio tracks through SoundSource meanwhile
