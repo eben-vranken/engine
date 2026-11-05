@@ -325,6 +325,24 @@ impl Running {
             if input.pressed(KeyCode::Escape) {
                 settled = editor.select(&self.scene, None);
             }
+            // Gizmo modes; while flying these keys move the camera instead.
+            if !input.looking && !ctrl {
+                for (key, kind) in [
+                    (
+                        KeyCode::KeyW,
+                        transform_gizmo::config::GizmoModeKind::Translate,
+                    ),
+                    (
+                        KeyCode::KeyE,
+                        transform_gizmo::config::GizmoModeKind::Rotate,
+                    ),
+                    (KeyCode::KeyR, transform_gizmo::config::GizmoModeKind::Scale),
+                ] {
+                    if input.pressed(key) {
+                        editor.gizmo.kind = kind;
+                    }
+                }
+            }
             if ctrl && input.pressed(KeyCode::KeyZ) {
                 changed = if shift {
                     editor.redo(&mut self.scene)
@@ -428,25 +446,6 @@ impl Running {
             }
         };
 
-        if let (Some(editor), Some(cursor)) = (&mut self.editor, self.pending_pick.take()) {
-            let [x, y, w, h] = self.renderer.image_rect();
-            let ndc = Vec2::new(
-                (cursor.x - x) / w * 2.0 - 1.0,
-                1.0 - (cursor.y - y) / h * 2.0,
-            );
-            if ndc.abs().max_element() <= 1.0 {
-                let (origin, direction) = camera.ray(ndc, w / h);
-                let hit = self
-                    .physics
-                    .pick(origin, direction, camera.far)
-                    .map(|(object, _)| object);
-                if editor.select(&self.scene, hit) {
-                    self.physics = PhysicsWorld::from_scene(&self.scene);
-                }
-                editor.reveal_selection = true;
-            }
-        }
-
         let hud = HudInfo {
             fps: self.fps.fps,
             frame_ms: self.fps.frame_ms,
@@ -488,12 +487,24 @@ impl Running {
         let editor = &mut self.editor;
         let scene = &mut self.scene;
         let mut editor_output = None;
+        let [ix, iy, iw, ih] = self.renderer.image_rect();
+        let ppp = self.window.scale_factor() as f32;
+        let view = crate::editor::gizmo::View {
+            camera: &camera,
+            image: egui::Rect::from_min_size(
+                egui::pos2(ix / ppp, iy / ppp),
+                egui::vec2(iw / ppp, ih / ppp),
+            ),
+            looking: self.input.looking,
+        };
         let ui_frame = self.overlay.run(
             &self.window,
             self.renderer.device(),
             self.renderer.queue(),
             |ui| match editor {
-                Some(editor) => editor_output = Some(editor.ui(ui, scene, &editor_stats, blink)),
+                Some(editor) => {
+                    editor_output = Some(editor.ui(ui, scene, &editor_stats, blink, &view))
+                }
                 None => {
                     draw_hud(ui, &hud, &mut actions);
                     if tuning_open {
@@ -504,6 +515,29 @@ impl Running {
         );
         if let Some(action) = tuning_action {
             self.apply_tuning(action);
+        }
+
+        // A click in the viewport selects what's under it, unless it was on a gizmo handle.
+        let on_gizmo = editor_output.as_ref().is_some_and(|o| o.gizmo_hovered);
+        if let (Some(editor), Some(cursor)) = (&mut self.editor, self.pending_pick.take())
+            && !on_gizmo
+        {
+            let [x, y, w, h] = self.renderer.image_rect();
+            let ndc = Vec2::new(
+                (cursor.x - x) / w * 2.0 - 1.0,
+                1.0 - (cursor.y - y) / h * 2.0,
+            );
+            if ndc.abs().max_element() <= 1.0 {
+                let (origin, direction) = camera.ray(ndc, w / h);
+                let hit = self
+                    .physics
+                    .pick(origin, direction, camera.far)
+                    .map(|(object, _)| object);
+                if editor.select(&self.scene, hit) {
+                    self.physics = PhysicsWorld::from_scene(&self.scene);
+                }
+                editor.reveal_selection = true;
+            }
         }
 
         if let Some(output) = &editor_output {

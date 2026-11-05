@@ -6,14 +6,17 @@
 //! value is being dragged or typed, the change is applied live but held as
 //! *pending*; it becomes one undo step when the interaction ends.
 
+pub mod gizmo;
 pub mod history;
 pub mod inspector;
 
 use crate::scene::{Object, Scene};
 use crate::ui::theme;
 use egui::{Align, Layout, Rect, RichText, Ui};
+use gizmo::{TransformGizmo, View};
 use history::{Edit, History};
 use std::path::PathBuf;
+use transform_gizmo::config::GizmoModeKind;
 
 pub struct Editor {
     /// Index into `Scene::objects`.
@@ -27,6 +30,7 @@ pub struct Editor {
     history: History,
     /// An edit in progress: the object's index and how it was before.
     pending: Option<(usize, Object)>,
+    pub gizmo: TransformGizmo,
 }
 
 /// Numbers for the top bar.
@@ -45,6 +49,8 @@ pub struct EditorOutput {
     pub changed: Vec<usize>,
     /// An edit was committed, undone or redone (rebuild collision).
     pub settled: bool,
+    /// The pointer is on a gizmo handle, so a click there isn't a selection.
+    pub gizmo_hovered: bool,
 }
 
 impl Editor {
@@ -56,6 +62,7 @@ impl Editor {
             game_name,
             history: History::default(),
             pending: None,
+            gizmo: TransformGizmo::default(),
         }
     }
 
@@ -67,11 +74,13 @@ impl Editor {
         scene: &mut Scene,
         stats: &EditorStats,
         blink: bool,
+        view: &View,
     ) -> EditorOutput {
         let mut output = EditorOutput {
             viewport: Rect::NOTHING,
             changed: Vec::new(),
             settled: false,
+            gizmo_hovered: false,
         };
         egui::Panel::top("editor_top")
             .show(ui, |ui| self.top_bar(ui, scene, stats, blink, &mut output));
@@ -87,9 +96,22 @@ impl Editor {
             .min_size(340.0)
             .show(ui, |ui| self.inspector(ui, scene, &mut output));
 
+        if let Some(index) = self.selected.filter(|&i| i < scene.objects.len()) {
+            let current = scene.objects[index].transform;
+            if let Some(moved) = self.gizmo.ui(ui, view, &current)
+                && moved != current
+            {
+                self.begin_edit(index, &scene.objects[index]);
+                scene.objects[index].transform = moved;
+                output.changed.push(index);
+            }
+            output.gizmo_hovered = self.gizmo.hovered() || self.gizmo.dragging();
+        }
+
         // A drag or text entry has ended: the pending change becomes one undo step.
-        let interacting =
-            ui.ctx().egui_is_using_pointer() || ui.ctx().memory(|m| m.focused().is_some());
+        let interacting = self.gizmo.dragging()
+            || ui.ctx().egui_is_using_pointer()
+            || ui.ctx().memory(|m| m.focused().is_some());
         if !interacting {
             output.settled |= self.commit_pending(scene);
         }
@@ -97,6 +119,14 @@ impl Editor {
         output.viewport = ui.available_rect_before_wrap();
         hints(ui, output.viewport);
         output
+    }
+
+    /// Starts (or continues) an edit of one object; `object` is its state
+    /// before this frame's change.
+    fn begin_edit(&mut self, index: usize, object: &Object) {
+        if self.pending.as_ref().is_none_or(|(i, _)| *i != index) {
+            self.pending = Some((index, object.clone()));
+        }
     }
 
     /// Records the edit in progress, if any. Returns true if one was recorded.
@@ -169,6 +199,23 @@ impl Editor {
                 output.changed.push(index);
                 output.settled = true;
             }
+
+            ui.add_space(12.0);
+            for (kind, text) in [
+                (GizmoModeKind::Translate, "MOVE W"),
+                (GizmoModeKind::Rotate, "ROTATE E"),
+                (GizmoModeKind::Scale, "SCALE R"),
+            ] {
+                let label = if self.gizmo.kind == kind {
+                    format!("[{text}]")
+                } else {
+                    format!(" {text} ")
+                };
+                if ui.small_button(label).clicked() {
+                    self.gizmo.kind = kind;
+                }
+            }
+            ui.label(dim("CTRL SNAP"));
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(format!(
@@ -274,9 +321,7 @@ impl Editor {
             });
 
         if *object != before {
-            if self.pending.as_ref().is_none_or(|(i, _)| *i != index) {
-                self.pending = Some((index, before));
-            }
+            self.begin_edit(index, &before);
             output.changed.push(index);
         }
     }
@@ -300,7 +345,7 @@ fn hints(ui: &Ui, viewport: Rect) {
         .show(ui.ctx(), |ui| {
             ui.label(
                 RichText::new(
-                    "CLICK SELECT  RMB + WASD/QE FLY  WHEEL SPEED  CTRL+Z/Y UNDO/REDO  ESC DESELECT",
+                    "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+Z/Y UNDO/REDO",
                 )
                 .small()
                 .color(theme::AMBER_DIM),

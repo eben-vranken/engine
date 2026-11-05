@@ -54,14 +54,14 @@ pub fn title(value: &dyn PartialReflect) -> String {
 
 fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect) -> bool {
     let speed = drag_speed(name);
+    let step = snap_step(name);
     let label = |ui: &mut Ui| field_label(ui, &label_text(name));
 
     if let Some(v) = field.try_downcast_mut::<f32>() {
         return ui
             .horizontal(|ui| {
                 label(ui);
-                ui.add(DragValue::new(v).speed(speed).max_decimals(3))
-                    .changed()
+                drag(ui, v, speed, step)
             })
             .inner;
     }
@@ -71,9 +71,7 @@ fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect) -> bool {
                 label(ui);
                 let mut changed = false;
                 for c in [&mut v.x, &mut v.y, &mut v.z] {
-                    changed |= ui
-                        .add(DragValue::new(c).speed(speed).max_decimals(3))
-                        .changed();
+                    changed |= drag(ui, c, speed, step);
                 }
                 changed
             })
@@ -85,9 +83,7 @@ fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect) -> bool {
                 label(ui);
                 let mut changed = false;
                 for c in [&mut v.x, &mut v.y] {
-                    changed |= ui
-                        .add(DragValue::new(c).speed(speed).max_decimals(3))
-                        .changed();
+                    changed |= drag(ui, c, speed, step);
                 }
                 changed
             })
@@ -151,11 +147,70 @@ fn label_text(name: &str) -> String {
     name.replace('_', " ").to_uppercase()
 }
 
+/// A drag field that snaps to multiples of `step` while Ctrl is held.
+///
+/// The unsnapped value is kept for the length of the drag, so small mouse
+/// movements still add up instead of being rounded away every frame.
+fn drag(ui: &mut Ui, value: &mut f32, speed: f64, step: f32) -> bool {
+    let old = *value;
+    let response = ui.add(DragValue::new(value).speed(speed).max_decimals(3));
+    let raw_id = response.id.with("snap_raw");
+    let snapping = ui.input(|i| i.modifiers.ctrl);
+    if response.dragged() && snapping {
+        let raw = ui.data(|d| d.get_temp::<f32>(raw_id)).unwrap_or(old) + (*value - old);
+        ui.data_mut(|d| d.insert_temp(raw_id, raw));
+        *value = snap(raw, step);
+    } else {
+        ui.data_mut(|d| d.remove::<f32>(raw_id));
+    }
+    *value != old
+}
+
+/// Rounds to the nearest multiple of `step`.
+pub fn snap(value: f32, step: f32) -> f32 {
+    (value / step).round() * step + 0.0
+}
+
+/// Snap increment while Ctrl is held: grid lines for distances, 15° for
+/// angles.
+pub fn snap_step(name: &str) -> f32 {
+    if name.contains("rotation") || name.contains("angle") {
+        15.0
+    } else if name.contains("scale") {
+        0.1
+    } else if name.contains("color") {
+        0.05
+    } else {
+        0.25
+    }
+}
+
 /// Degrees move faster per pixel than meters.
 fn drag_speed(name: &str) -> f64 {
     if name.contains("rotation") || name.contains("angle") {
         0.5
     } else {
         0.01
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snaps_to_steps() {
+        assert_eq!(snap(1.12, 0.25), 1.0);
+        assert_eq!(snap(1.13, 0.25), 1.25);
+        assert_eq!(snap(-0.1, 0.25), 0.0);
+        assert_eq!(snap(22.0, 15.0), 15.0);
+        assert_eq!(snap(23.0, 15.0), 30.0);
+    }
+
+    #[test]
+    fn steps_follow_field_names() {
+        assert_eq!(snap_step("position"), 0.25);
+        assert_eq!(snap_step("rotation"), 15.0);
+        assert_eq!(snap_step("scale"), 0.1);
     }
 }

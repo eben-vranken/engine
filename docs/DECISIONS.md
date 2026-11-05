@@ -53,3 +53,6 @@ Append new decisions at the bottom. Don't rewrite old entries; supersede them wi
 | 2026-11-05 | Undo commands snapshot the whole object (`SetObject { before, after }`) | One command type covers every inspector and gizmo edit; objects are small. Add finer commands (add/delete/reorder) as features need them |
 | 2026-11-05 | Edits apply live but are recorded as one undo step when the drag or text entry ends | A whole drag is one Ctrl+Z, as in other editors |
 | 2026-11-05 | Changing an enum's variant in the inspector (e.g. Box → Cylinder) is not supported yet | Needs default values per variant; add when it's missed |
+| 2026-11-05 | Gizmo uses the core `transform-gizmo` crate, drawn with our egui, instead of `transform-gizmo-egui` | The egui integration (0.11) targets egui 0.36; the core crate is renderer-agnostic, so we feed it our matrices and paint its triangles |
+| 2026-11-05 | Gizmo modes on W/E/R (Unity style), only while not flying; global orientation | Handles stay visible and discoverable; Blender-style G/R/S can be added later |
+| 2026-11-05 | Holding Ctrl while dragging snaps: 0.25 m (the grid's fine lines), 15°, scale 0.1; Shift stays egui's fine control | Requested by the user: blocky, grid-aligned placement as the opposite of Shift |

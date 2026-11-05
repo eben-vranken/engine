@@ -30,11 +30,17 @@ impl Camera {
         Vec3::new(cy, 0.0, sy)
     }
 
-    pub fn view_projection(&self, aspect: f32) -> Mat4 {
+    pub fn view(&self) -> Mat4 {
+        rh::view::look_to_mat4(self.position, self.forward(), Vec3::Y)
+    }
+
+    pub fn projection(&self, aspect: f32) -> Mat4 {
         // wgpu clip space: depth 0..1, Y up (glam calls this "directx").
-        let projection =
-            rh::proj::directx::perspective(self.fov_y.to_radians(), aspect, self.near, self.far);
-        projection * rh::view::look_to_mat4(self.position, self.forward(), Vec3::Y)
+        rh::proj::directx::perspective(self.fov_y.to_radians(), aspect, self.near, self.far)
+    }
+
+    pub fn view_projection(&self, aspect: f32) -> Mat4 {
+        self.projection(aspect) * self.view()
     }
 
     /// The world-space ray through a point on screen, given in normalized
