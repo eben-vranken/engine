@@ -513,11 +513,31 @@ impl Running {
         }
     }
 
-    fn poll_settings_file(&mut self) {
+    /// Hot reload: picks up `player.ron` and model files changed on disk.
+    fn poll_files(&mut self) {
         if self.last_reload_check.elapsed() < RELOAD_INTERVAL {
             return;
         }
         self.last_reload_check = Instant::now();
+        self.poll_settings_file();
+        self.poll_model_files();
+    }
+
+    /// Models re-exported over their file: redraw and re-collide everything.
+    fn poll_model_files(&mut self) {
+        let changed = self.assets.changed_models();
+        if changed.is_empty() {
+            return;
+        }
+        log::info!("reloaded {}", changed.join(", "));
+        self.renderer.set_scene(&self.scene, &mut self.assets);
+        self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
+        if let Some(editor) = &mut self.editor {
+            editor.show_message(format!("RELOADED {}", changed.join(", ")));
+        }
+    }
+
+    fn poll_settings_file(&mut self) {
         match self.settings_file.poll() {
             Some(Ok(settings)) => {
                 self.settings = settings;
@@ -560,7 +580,7 @@ impl Running {
 
         let mut actions = HudActions::default();
         self.handle_keys(&mut actions);
-        self.poll_settings_file();
+        self.poll_files();
         self.update_mouse_capture();
 
         let camera = match self.mode {

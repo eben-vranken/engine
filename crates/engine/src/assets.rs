@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 /// A model ready to draw: one mesh, split into parts that each use one
 /// image.
@@ -40,8 +41,16 @@ pub enum AssetError {
 pub struct Assets {
     /// The game project folder.
     root: PathBuf,
+    models: HashMap<String, CachedModel>,
+}
+
+struct CachedModel {
     /// `None` = failed to load (already reported).
-    models: HashMap<String, Option<Arc<ModelData>>>,
+    model: Option<Arc<ModelData>>,
+    /// The file's modified time when it was loaded.
+    loaded: Option<SystemTime>,
+    /// The file's modified time at the last poll.
+    seen: Option<SystemTime>,
 }
 
 impl Assets {
@@ -58,14 +67,43 @@ impl Assets {
         let root = &self.root;
         self.models
             .entry(path.to_owned())
-            .or_insert_with(|| match load_gltf(&root.join(path)) {
-                Ok(model) => Some(Arc::new(model)),
-                Err(err) => {
-                    log::error!("{err}");
-                    None
+            .or_insert_with(|| {
+                let file = root.join(path);
+                let modified = modified_time(&file);
+                let model = match load_gltf(&file) {
+                    Ok(model) => Some(Arc::new(model)),
+                    Err(err) => {
+                        log::error!("{err}");
+                        None
+                    }
+                };
+                CachedModel {
+                    model,
+                    loaded: modified,
+                    seen: modified,
                 }
             })
+            .model
             .clone()
+    }
+
+    /// Forgets models whose file changed on disk since they were loaded and
+    /// has since stopped changing (exporters may write in several steps),
+    /// so the next use loads them again. Returns their paths. Call it
+    /// periodically.
+    pub fn changed_models(&mut self) -> Vec<String> {
+        let mut changed = Vec::new();
+        for (path, cached) in &mut self.models {
+            let now = modified_time(&self.root.join(path));
+            if now.is_some() && now != cached.loaded && now == cached.seen {
+                changed.push(path.clone());
+            }
+            cached.seen = now;
+        }
+        for path in &changed {
+            self.models.remove(path);
+        }
+        changed
     }
 }
 
@@ -74,6 +112,10 @@ impl Assets {
     pub fn forget(&mut self, path: &str) {
         self.models.remove(path);
     }
+}
+
+fn modified_time(path: &Path) -> Option<SystemTime> {
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// Geometry ready to draw or collide with.
@@ -320,6 +362,35 @@ mod tests {
             vec![255, 0, 0, 255, 128, half_grey, 128, 255]
         );
         assert_eq!(model.mesh.vertices[1].uv, [1.0, 0.0]);
+    }
+
+    #[test]
+    fn changed_file_reloads_once_it_settles() {
+        let root = std::env::temp_dir().join("engine-hot-reload");
+        std::fs::create_dir_all(root.join("models")).unwrap();
+        let sandbox = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sandbox");
+        let file = root.join("models/arch.gltf");
+        std::fs::copy(sandbox.join("models/arch.gltf"), &file).unwrap();
+        let touch = |seconds: u64| {
+            let time = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds);
+            std::fs::File::options()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_modified(time)
+                .unwrap();
+        };
+        touch(1_000);
+        let mut assets = Assets::new(root.clone());
+        let first = assets.model("models/arch.gltf").unwrap();
+        assert!(assets.changed_models().is_empty(), "nothing changed");
+
+        touch(2_000);
+        assert!(assets.changed_models().is_empty(), "still being written?");
+        assert_eq!(assets.changed_models(), vec!["models/arch.gltf"]);
+        let second = assets.model("models/arch.gltf").unwrap();
+        assert!(!Arc::ptr_eq(&first, &second), "loaded again");
+        assert!(assets.changed_models().is_empty());
     }
 
     #[test]

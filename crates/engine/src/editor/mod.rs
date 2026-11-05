@@ -200,6 +200,10 @@ impl Editor {
         self.message = Some((error, true));
     }
 
+    pub fn show_message(&mut self, text: String) {
+        self.message = Some((text, false));
+    }
+
     fn open_scene(&mut self, path: PathBuf, output: &mut EditorOutput) {
         if self.is_dirty() {
             self.confirm = Some(Confirm::Open(path));
