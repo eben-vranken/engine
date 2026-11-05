@@ -172,6 +172,22 @@ impl World {
         Some(light)
     }
 
+    /// The light seen along a ray: the sky, or the surface it hits as it
+    /// looks lit (emissive + albedo × (direct + `samples` rays of bounce)).
+    /// Black if it hits the back of a surface.
+    pub fn radiance(&self, origin: Vec3, dir: Vec3, samples: u32, rng: &mut Rng) -> Vec3 {
+        let Some((t, tri)) = self.cast(origin, dir, FAR) else {
+            return self.sky_light(dir);
+        };
+        let n = self.normals[tri];
+        if n.dot(dir) > 0.0 {
+            return Vec3::ZERO;
+        }
+        let p = origin + dir * t;
+        let bounce = self.gather(p, n, samples, rng).unwrap_or(Vec3::ZERO);
+        self.emissive[tri] + self.albedo[tri] * (self.direct(p, n) + bounce)
+    }
+
     /// Average light arriving at a surface point with normal `n`, from
     /// `samples` rays. `None` if most rays start inside geometry.
     pub fn gather(&self, p: Vec3, n: Vec3, samples: u32, rng: &mut Rng) -> Option<Vec3> {

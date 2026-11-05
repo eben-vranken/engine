@@ -47,6 +47,10 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Most zones with a reflection cube at once.
+const MAX_REFLECTIONS: usize = 16;
+/// Mip levels of the reflection cubes: rougher surfaces read blurrier ones.
+const REFLECTION_MIPS: u32 = lightmap::REFLECTION_SIZE.ilog2() + 1;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 #[derive(Debug, thiserror::Error)]
@@ -89,6 +93,8 @@ struct ObjectUniform {
     emissive: Vec4,
     /// x: 1 = lit from its lightmap, 0 = from `ambient`.
     lighting: Vec4,
+    /// x: roughness, y: metalness, z: reflection cube index or -1.
+    surface: Vec4,
     /// Light arriving from +X, -X, +Y, -Y, +Z, -Z (probes or the sky).
     ambient: [Vec4; 6],
 }
@@ -102,6 +108,10 @@ struct Draw {
     textured: bool,
     /// Index into `Renderer::lightmaps`, if drawn with a lightmap.
     lightmap: Option<usize>,
+    /// Material texture path ("" = none), to notice when it changes.
+    texture: String,
+    /// The model's own roughness and metalness (primitives: matte).
+    surface: [f32; 2],
     uniform: ObjectUniform,
 }
 
@@ -120,24 +130,55 @@ impl From<Geometry<'_>> for GeometryKey {
     }
 }
 
-/// `textured`: primitives tile the grid texture; models use their own UVs.
-fn object_uniform(
-    r: &Renderable,
-    highlighted: bool,
+/// How a draw's surface looks, apart from its texture.
+#[derive(Debug, Clone, Copy)]
+struct Look {
+    /// Primitives tile their texture in meters; models use their own UVs.
     textured: bool,
     lightmapped: bool,
     ambient: AmbientCube,
-) -> ObjectUniform {
+    /// Roughness and metalness.
+    surface: [f32; 2],
+    /// Reflection cube index.
+    reflection: Option<usize>,
+}
+
+fn object_uniform(r: &Renderable, highlighted: bool, look: &Look) -> ObjectUniform {
     let model = r.transform.matrix();
+    // Texture repeats per meter of UV: primitives' UVs are in meters.
+    let uv_scale = match (look.textured, r.material) {
+        (false, _) => 1.0,
+        (true, Some(m)) => 1.0 / m.meters.max(0.01),
+        (true, None) => 1.0 / texture::GRID_METERS as f32,
+    };
+    let [roughness, metalness] = match r.material {
+        Some(m) => [m.roughness, m.metalness],
+        None => look.surface,
+    };
     ObjectUniform {
         model,
         normal_matrix: model.inverse().transpose(),
         color: r.color.extend(1.0),
-        highlight: Vec4::new(highlighted as u32 as f32, textured as u32 as f32, 0.0, 0.0),
+        highlight: Vec4::new(highlighted as u32 as f32, uv_scale, 0.0, 0.0),
         emissive: r.emissive.extend(0.0),
-        lighting: Vec4::new(lightmapped as u32 as f32, 0.0, 0.0, 0.0),
-        ambient: ambient.map(|c| c.extend(0.0)),
+        lighting: Vec4::new(look.lightmapped as u32 as f32, 0.0, 0.0, 0.0),
+        surface: Vec4::new(
+            roughness.clamp(0.0, 1.0),
+            metalness.clamp(0.0, 1.0),
+            look.reflection.map_or(-1.0, |i| i as f32),
+            0.0,
+        ),
+        ambient: look.ambient.map(|c| c.extend(0.0)),
     }
+}
+
+/// Matches `Reflection` in `scene.wgsl`.
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct GpuReflection {
+    center: Vec4,
+    min: Vec4,
+    max: Vec4,
 }
 
 /// The environment's ambient light as a cube: sky above, ground below,
@@ -212,6 +253,12 @@ pub struct Renderer {
     /// One per baked zone (`None` if it has no texels).
     lightmaps: Vec<Option<wgpu::BindGroup>>,
     baked: Option<Arc<Baked>>,
+    reflection_texture: wgpu::Texture,
+    reflection_buffer: wgpu::Buffer,
+    /// Baked zone name → reflection cube index.
+    reflections: HashMap<String, usize>,
+    /// Material textures by path.
+    textures: HashMap<String, wgpu::BindGroup>,
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     object_layout: wgpu::BindGroupLayout,
@@ -361,6 +408,23 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::CubeArray,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                storage(9),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let material_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -475,6 +539,37 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let reflection_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("reflections"),
+            size: wgpu::Extent3d {
+                width: lightmap::REFLECTION_SIZE,
+                height: lightmap::REFLECTION_SIZE,
+                depth_or_array_layers: (6 * MAX_REFLECTIONS) as u32,
+            },
+            mip_level_count: REFLECTION_MIPS,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgb9e5Ufloat,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let reflection_view = reflection_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::CubeArray),
+            ..Default::default()
+        });
+        let reflection_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("reflections"),
+            size: (size_of::<GpuReflection>() * MAX_REFLECTIONS) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let reflection_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("reflections"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
+        });
         let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("frame"),
             layout: &frame_layout,
@@ -510,6 +605,18 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 7,
                     resource: wgpu::BindingResource::Sampler(&fog_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&reflection_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: reflection_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::Sampler(&reflection_sampler),
                 },
             ],
         });
@@ -650,6 +757,10 @@ impl Renderer {
             no_lightmap,
             lightmaps: Vec::new(),
             baked: None,
+            reflection_texture,
+            reflection_buffer,
+            reflections: HashMap::new(),
+            textures: HashMap::new(),
             frame_buffer,
             frame_bind_group,
             object_layout,
@@ -696,7 +807,100 @@ impl Renderer {
                 })
             })
             .collect();
+        self.upload_reflections(baked.as_deref());
         self.baked = baked;
+    }
+
+    /// Puts every baked zone's reflection cube (with its blurrier mips) into
+    /// the cube array, and their boxes into the reflection buffer.
+    fn upload_reflections(&mut self, baked: Option<&Baked>) {
+        self.reflections.clear();
+        let mut gpu = Vec::new();
+        let zones = baked.iter().flat_map(|b| &b.zones);
+        for zone in zones
+            .filter(|z| z.reflection.is_some())
+            .take(MAX_REFLECTIONS)
+        {
+            let Some(r) = &zone.reflection else { continue };
+            let index = gpu.len();
+            let size = lightmap::REFLECTION_SIZE;
+            let face = (size * size) as usize;
+            for f in 0..6 {
+                let mut texels: Vec<Vec3> = r.texels[f * face..(f + 1) * face]
+                    .iter()
+                    .map(|&t| lightmap::from_rgb9e5(t))
+                    .collect();
+                let mut side = size;
+                for level in 0..REFLECTION_MIPS {
+                    let encoded: Vec<u32> = texels.iter().map(|&c| lightmap::rgb9e5(c)).collect();
+                    self.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &self.reflection_texture,
+                            mip_level: level,
+                            origin: wgpu::Origin3d {
+                                x: 0,
+                                y: 0,
+                                z: (index * 6 + f) as u32,
+                            },
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        bytemuck::cast_slice(&encoded),
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(side * 4),
+                            rows_per_image: Some(side),
+                        },
+                        wgpu::Extent3d {
+                            width: side,
+                            height: side,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                    if side == 1 {
+                        break;
+                    }
+                    // The next mip: each texel the average of four.
+                    let half = side / 2;
+                    let at = |x: u32, y: u32| texels[(y * side + x) as usize];
+                    texels = (0..half * half)
+                        .map(|i| {
+                            let (x, y) = (i % half * 2, i / half * 2);
+                            (at(x, y) + at(x + 1, y) + at(x, y + 1) + at(x + 1, y + 1)) * 0.25
+                        })
+                        .collect();
+                    side = half;
+                }
+            }
+            gpu.push(GpuReflection {
+                center: r.center.extend(index as f32),
+                min: r.min.extend(0.0),
+                max: r.max.extend(0.0),
+            });
+            self.reflections.insert(zone.name.clone(), index);
+        }
+        if !gpu.is_empty() {
+            self.queue
+                .write_buffer(&self.reflection_buffer, 0, bytemuck::cast_slice(&gpu));
+        }
+    }
+
+    /// The reflection cube for an object's zone, if baked.
+    fn reflection_of(&self, scene: &Scene, object: usize) -> Option<usize> {
+        self.reflections.get(&scene.objects[object].zone).copied()
+    }
+
+    /// A material texture's bind group, uploaded on first use; `None` if
+    /// the texture can't be loaded.
+    fn texture_group(&mut self, path: &str, assets: &mut Assets) -> Option<wgpu::BindGroup> {
+        if let Some(group) = self.textures.get(path) {
+            return Some(group.clone());
+        }
+        let image = assets.texture(path)?;
+        let texture = texture::upload(&self.device, &self.queue, &image);
+        let group =
+            material_bind_group(&self.device, &self.material_layout, &texture, &self.sampler);
+        self.textures.insert(path.to_owned(), group.clone());
+        Some(group)
     }
 
     /// A zone's average baked ambient light (from its probes), if baked.
@@ -728,6 +932,7 @@ impl Renderer {
         self.environment = scene.environment.clone();
         self.lights = scene_lights(scene);
         self.shadows.invalidate();
+        self.textures.clear();
         self.fog.set_regions(
             &self.queue,
             &fog::regions(scene, |zone| self.zone_light(zone)),
@@ -760,13 +965,23 @@ impl Renderer {
                 .copied()
                 .filter(|_| !lightmap::moves(&scene.objects[r.object]))
                 .filter(|d| matches!(self.lightmaps.get(d.zone as usize), Some(Some(_))));
-            let (mesh, textured, lightmapped) =
-                self.create_mesh(assets.resolve(r.geometry), baked_draw);
+            let texture = material_texture(&r);
+            let group = (!texture.is_empty())
+                .then(|| self.texture_group(&texture, assets))
+                .flatten();
+            let (mesh, textured, lightmapped, surface) =
+                self.create_mesh(assets.resolve(r.geometry), baked_draw, group);
             let lightmap = lightmapped
                 .then(|| baked_draw.map(|d| d.zone as usize))
                 .flatten();
             let center = frustum::world_sphere(&r.transform.matrix(), mesh.sphere).0;
-            let ambient = self.ambient_at(scene, r.object, center);
+            let look = Look {
+                textured,
+                lightmapped: lightmap.is_some(),
+                ambient: self.ambient_at(scene, r.object, center),
+                surface,
+                reflection: self.reflection_of(scene, r.object),
+            };
             self.meshes.push(mesh);
             let highlighted = Some(r.object) == self.highlighted;
             self.draws.push(Draw {
@@ -774,7 +989,9 @@ impl Renderer {
                 geometry: r.geometry.into(),
                 textured,
                 lightmap,
-                uniform: object_uniform(&r, highlighted, textured, lightmap.is_some(), ambient),
+                texture,
+                surface,
+                uniform: object_uniform(&r, highlighted, &look),
             });
         }
         for i in 0..self.draws.len() {
@@ -827,21 +1044,38 @@ impl Renderer {
         let highlighted = Some(index) == self.highlighted;
         for (&slot, r) in slots.iter().zip(renderables) {
             let key = GeometryKey::from(r.geometry);
-            if self.draws[slot].geometry != key {
-                // Reshaped: its lightmap no longer fits until the next bake.
-                let (mesh, textured, _) = self.create_mesh(assets.resolve(r.geometry), None);
-                self.meshes[slot] = mesh;
+            let texture = material_texture(&r);
+            if self.draws[slot].geometry != key || self.draws[slot].texture != texture {
+                // Reshaped or retextured: a reshaped mesh's lightmap no
+                // longer fits until the next bake.
+                let reshaped = self.draws[slot].geometry != key;
+                let group = (!texture.is_empty())
+                    .then(|| self.texture_group(&texture, assets))
+                    .flatten();
+                let (mesh, textured, _, surface) =
+                    self.create_mesh(assets.resolve(r.geometry), None, group);
+                if reshaped {
+                    self.meshes[slot] = mesh;
+                    self.draws[slot].lightmap = None;
+                } else {
+                    // Same mesh (keeps its lightmap UVs): only the texture.
+                    self.meshes[slot].parts = mesh.parts;
+                }
                 self.draws[slot].geometry = key;
                 self.draws[slot].textured = textured;
-                self.draws[slot].lightmap = None;
+                self.draws[slot].texture = texture;
+                self.draws[slot].surface = surface;
                 self.shadows.invalidate();
             }
-            let textured = self.draws[slot].textured;
-            let lightmapped = self.draws[slot].lightmap.is_some();
             let center = frustum::world_sphere(&r.transform.matrix(), self.meshes[slot].sphere).0;
-            let ambient = self.ambient_at(scene, index, center);
-            self.draws[slot].uniform =
-                object_uniform(&r, highlighted, textured, lightmapped, ambient);
+            let look = Look {
+                textured: self.draws[slot].textured,
+                lightmapped: self.draws[slot].lightmap.is_some(),
+                ambient: self.ambient_at(scene, index, center),
+                surface: self.draws[slot].surface,
+                reflection: self.reflection_of(scene, index),
+            };
+            self.draws[slot].uniform = object_uniform(&r, highlighted, &look);
             self.write_draw(slot);
         }
     }
@@ -880,13 +1114,19 @@ impl Renderer {
         &self,
         geometry: Resolved,
         lightmap: Option<&BakedDraw>,
-    ) -> (GpuMesh, bool, bool) {
+        texture: Option<wgpu::BindGroup>,
+    ) -> (GpuMesh, bool, bool, [f32; 2]) {
         let shape_mesh;
+        let surface = match &geometry {
+            Resolved::Model(model) => model.surface,
+            Resolved::Shape(_) => [1.0, 0.0],
+        };
         let (data, parts, textured) = match &geometry {
             Resolved::Shape(shape) => {
                 shape_mesh = MeshData::from_shape(*shape);
                 let all = 0..shape_mesh.indices.len() as u32;
-                (&shape_mesh, vec![(all, self.grid_material.clone())], true)
+                let material = texture.unwrap_or_else(|| self.grid_material.clone());
+                (&shape_mesh, vec![(all, material)], true)
             }
             Resolved::Model(model) => {
                 let max = self.device.limits().max_texture_dimension_2d;
@@ -952,7 +1192,7 @@ impl Renderer {
             index_count: data.indices.len() as u32,
             parts,
         };
-        (mesh, textured, remade.is_some())
+        (mesh, textured, remade.is_some(), surface)
     }
 
     fn write_draw(&self, i: usize) {
@@ -1355,6 +1595,15 @@ fn material_bind_group(
             },
         ],
     })
+}
+
+/// A renderable's material texture path, or "" for none (models always
+/// use their own textures).
+fn material_texture(r: &Renderable) -> String {
+    match (r.geometry, r.material) {
+        (Geometry::Shape(_), Some(m)) => m.texture.clone(),
+        _ => String::new(),
+    }
 }
 
 /// A zone's lightmap texture (RGB9E5 texels) with its sampler.

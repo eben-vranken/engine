@@ -1055,6 +1055,7 @@ dependencies = [
  "glam 0.33.12",
  "gltf",
  "hound",
+ "image",
  "log",
  "pollster",
  "rapier3d",

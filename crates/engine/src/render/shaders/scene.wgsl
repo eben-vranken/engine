@@ -26,13 +26,15 @@ struct Object {
     model: mat4x4<f32>,
     normal_matrix: mat4x4<f32>,
     color: vec4<f32>,
-    // x: selection highlight, 0 or 1. y: 1 = primitive (UVs in meters,
-    // tiling the grid texture), 0 = model (its own UVs and texture).
+    // x: selection highlight, 0 or 1. y: texture repeats per UV unit
+    // (primitives' UVs are in meters; models use 1).
     highlight: vec4<f32>,
     // rgb: light the surface gives off.
     emissive: vec4<f32>,
     // x: 1 = indirect light from the lightmap, 0 = from `ambient`.
     lighting: vec4<f32>,
+    // x: roughness, y: metalness, z: reflection cube index or -1.
+    surface: vec4<f32>,
     // Light arriving from +X, -X, +Y, -Y, +Z, -Z (probes or the sky).
     ambient: array<vec4<f32>, 6>,
 };
@@ -43,6 +45,16 @@ struct Light {
     // rgb: color × intensity, w: shadow slot or -1.
     color: vec4<f32>,
 };
+
+// A zone's reflection cube and the box it's projected onto.
+struct Reflection {
+    // xyz: where it was captured, w: its index in the cube array.
+    center: vec4<f32>,
+    min: vec4<f32>,
+    max: vec4<f32>,
+};
+
+const PI: f32 = 3.14159265;
 
 // Linear version of the UI amber, for the selection highlight.
 const HIGHLIGHT: vec3<f32> = vec3<f32>(1.0, 0.34, 0.025);
@@ -58,6 +70,10 @@ const HIGHLIGHT: vec3<f32> = vec3<f32>(1.0, 0.34, 0.025);
 // what's behind shows through.
 @group(0) @binding(6) var fog_volume: texture_3d<f32>;
 @group(0) @binding(7) var fog_sampler: sampler;
+// What glossy surfaces reflect: one cube per baked zone.
+@group(0) @binding(8) var reflections: texture_cube_array<f32>;
+@group(0) @binding(9) var<storage, read> reflection_boxes: array<Reflection>;
+@group(0) @binding(10) var reflection_sampler: sampler;
 @group(1) @binding(0) var<uniform> object: Object;
 // The grid for primitives; a model part's base color texture.
 @group(2) @binding(0) var albedo_texture: texture_2d<f32>;
@@ -176,9 +192,46 @@ fn point_visibility(light: Light, world: vec3<f32>, n: vec3<f32>, distance: f32)
     return lit * 0.25;
 }
 
-// Light from all point lights reaching a surface with normal n.
-fn point_lights(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    var total = vec3<f32>(0.0);
+// How glossy a surface is, for the lighting functions.
+struct Surface {
+    n: vec3<f32>,
+    // Toward the camera.
+    v: vec3<f32>,
+    roughness: f32,
+    // Reflectance looking straight on: 4% for stone and wood, the albedo
+    // for metal.
+    f0: vec3<f32>,
+    // Fully matte surfaces get no highlights or reflections at all.
+    glossy: bool,
+};
+
+// A highlight from light arriving along l (GGX distribution, Smith
+// visibility, Schlick Fresnel), scaled like the diffuse light (× π).
+fn highlight(s: Surface, l: vec3<f32>) -> vec3<f32> {
+    if !s.glossy {
+        return vec3<f32>(0.0);
+    }
+    let h = normalize(l + s.v);
+    let ndh = max(dot(s.n, h), 0.0);
+    let ndl = max(dot(s.n, l), 1e-4);
+    let ndv = max(dot(s.n, s.v), 1e-4);
+    let a = max(s.roughness * s.roughness, 0.002);
+    let a2 = a * a;
+    let d = a2 / (PI * pow(ndh * ndh * (a2 - 1.0) + 1.0, 2.0));
+    let k = a * 0.5;
+    let visibility = 0.25 / ((ndl * (1.0 - k) + k) * (ndv * (1.0 - k) + k));
+    let fresnel = s.f0 + (1.0 - s.f0) * pow(1.0 - max(dot(s.v, h), 0.0), 5.0);
+    return d * visibility * fresnel * PI;
+}
+
+struct Lit {
+    diffuse: vec3<f32>,
+    specular: vec3<f32>,
+};
+
+// Light from all point lights reaching a surface.
+fn point_lights(world: vec3<f32>, s: Surface) -> Lit {
+    var lit = Lit(vec3<f32>(0.0), vec3<f32>(0.0));
     let count = u32(frame.params.y);
     for (var i = 0u; i < count; i++) {
         let light = lights[i];
@@ -189,7 +242,7 @@ fn point_lights(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
             continue;
         }
         let l = to_light / max(distance, 1e-4);
-        let facing = dot(n, l);
+        let facing = dot(s.n, l);
         if facing <= 0.0 {
             continue;
         }
@@ -197,23 +250,53 @@ fn point_lights(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         let ratio = distance / range;
         let window = saturate(1.0 - ratio * ratio * ratio * ratio);
         let falloff = window * window / max(distance * distance, 0.01);
-        let visibility = point_visibility(light, world, n, distance);
-        total += light.color.rgb * facing * falloff * visibility;
+        let arriving = light.color.rgb * facing * falloff * point_visibility(light, world, s.n, distance);
+        lit.diffuse += arriving;
+        lit.specular += arriving * highlight(s, l);
     }
-    return total;
+    return lit;
+}
+
+// What a glossy surface reflects along r: its zone's cube, projected onto
+// the zone's box so walls appear where they are; the sky without a bake.
+fn reflected(world: vec3<f32>, r: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let index = i32(object.surface.z);
+    if index < 0 {
+        return mix(frame.ambient_ground.rgb, frame.ambient_sky.rgb, r.y * 0.5 + 0.5);
+    }
+    let probe = reflection_boxes[index];
+    var dir = r;
+    if all(world >= probe.min.xyz) && all(world <= probe.max.xyz) {
+        let safe = select(r, vec3<f32>(1e-5), abs(r) < vec3<f32>(1e-5));
+        let far = max((probe.max.xyz - world) / safe, (probe.min.xyz - world) / safe);
+        let t = min(min(far.x, far.y), far.z);
+        dir = world + r * t - probe.center.xyz;
+    }
+    let levels = f32(textureNumLevels(reflections) - 1u);
+    return textureSampleLevel(reflections, reflection_sampler, dir, i32(probe.center.w), roughness * levels).rgb;
+}
+
+// How much of the reflection a surface shows, averaged over its roughness
+// (Karis' fit of the split-sum lookup).
+fn reflectance(f0: vec3<f32>, roughness: f32, ndv: f32) -> vec3<f32> {
+    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+    let r = roughness * c0 + c1;
+    let a004 = min(r.x * r.x, exp2(-9.28 * ndv)) * r.x + r.y;
+    let ab = vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+    return f0 * ab.x + ab.y;
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let n = normalize(in.normal);
-    let uv = in.uv * mix(1.0, frame.params.x, object.highlight.y);
+    let uv = in.uv * object.highlight.y;
     let albedo = textureSample(albedo_texture, albedo_sampler, uv).rgb * object.color.rgb;
+    let roughness = object.surface.x;
+    let metalness = object.surface.y;
+    let to_camera = normalize(frame.camera_pos.xyz - in.world);
+    let s = Surface(n, to_camera, roughness, mix(vec3<f32>(0.04), albedo, metalness), roughness < 0.99);
 
-    let facing_sun = max(dot(n, -frame.sun_dir.xyz), 0.0);
-    var sun = vec3<f32>(0.0);
-    if facing_sun > 0.0 {
-        sun = frame.sun_color.rgb * facing_sun * sun_visibility(in.world, n);
-    }
     var ambient: vec3<f32>;
     if object.lighting.x > 0.5 {
         ambient = textureSampleLevel(lightmap, lightmap_sampler, in.lightmap_uv, 0.0).rgb;
@@ -225,11 +308,26 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             + n2.y * select(a[3], a[2], n.y >= 0.0).rgb
             + n2.z * select(a[5], a[4], n.z >= 0.0).rgb;
     }
-    let light = sun + ambient + point_lights(in.world, n);
-    var color = albedo * light + object.emissive.rgb;
+
+    var diffuse = ambient;
+    var specular = vec3<f32>(0.0);
+    let facing_sun = max(dot(n, -frame.sun_dir.xyz), 0.0);
+    if facing_sun > 0.0 {
+        let sun = frame.sun_color.rgb * facing_sun * sun_visibility(in.world, n);
+        diffuse += sun;
+        specular += sun * highlight(s, -frame.sun_dir.xyz);
+    }
+    let lamps = point_lights(in.world, s);
+    diffuse += lamps.diffuse;
+    specular += lamps.specular;
+    if s.glossy {
+        let ndv = max(dot(n, to_camera), 1e-4);
+        let r = reflect(-to_camera, n);
+        specular += reflected(in.world, r, roughness) * reflectance(s.f0, roughness, ndv);
+    }
+    var color = albedo * (1.0 - metalness) * diffuse + specular + object.emissive.rgb;
 
     // Selected: amber tint, stronger toward the silhouette.
-    let to_camera = normalize(frame.camera_pos.xyz - in.world);
     let rim = pow(1.0 - max(dot(n, to_camera), 0.0), 2.0);
     color = mix(color, HIGHLIGHT * 1.5, object.highlight.x * (0.3 + 0.6 * rim));
 

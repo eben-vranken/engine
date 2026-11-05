@@ -13,13 +13,29 @@ use std::time::SystemTime;
 
 /// A model ready to draw: one mesh, split into parts that each use one
 /// image.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ModelData {
     pub mesh: MeshData,
     pub parts: Vec<Part>,
     /// One per material: its base color texture times its base color
     /// factor, or a single texel of the factor if it has no texture.
     pub images: Vec<Image>,
+    /// Roughness and metalness of the first material (glTF factors); a
+    /// model draws with one value for both.
+    pub surface: [f32; 2],
+}
+
+impl Default for ModelData {
+    fn default() -> Self {
+        Self {
+            mesh: MeshData::default(),
+            parts: Vec::new(),
+            images: Vec::new(),
+            // Matte, not metal (glTF's own default metalness is 1, which
+            // would turn models without materials black).
+            surface: [1.0, 0.0],
+        }
+    }
 }
 
 /// A range of `mesh.indices` drawn with one image.
@@ -42,6 +58,8 @@ pub struct Assets {
     /// The game project folder.
     root: PathBuf,
     models: HashMap<String, CachedModel>,
+    /// Material textures by path; `None` = failed to load (reported once).
+    textures: HashMap<String, Option<Arc<Image>>>,
 }
 
 struct CachedModel {
@@ -58,12 +76,33 @@ impl Assets {
         Self {
             root,
             models: HashMap::new(),
+            textures: HashMap::new(),
         }
     }
 
     /// The game project folder.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// A material texture (relative to the project), loaded on first use;
+    /// `None` if it can't be loaded (logged once).
+    pub fn texture(&mut self, path: &str) -> Option<Arc<Image>> {
+        let root = &self.root;
+        self.textures
+            .entry(path.to_owned())
+            .or_insert_with(|| match image::open(root.join(path)) {
+                Ok(decoded) => {
+                    let rgba = decoded.to_rgba8();
+                    let (w, h) = rgba.dimensions();
+                    Some(Arc::new(Image::new(w, h, rgba.into_raw())))
+                }
+                Err(err) => {
+                    log::warn!("{path}: {err}");
+                    None
+                }
+            })
+            .clone()
     }
 
     /// The model at `path` (relative to the project), loading it on first use.
@@ -266,6 +305,9 @@ impl Loader<'_> {
             return image;
         }
         let pbr = material.pbr_metallic_roughness();
+        if self.materials.is_empty() {
+            self.model.surface = [pbr.roughness_factor(), pbr.metallic_factor()];
+        }
         let [r, g, b, _] = pbr.base_color_factor();
         let image = pbr
             .base_color_texture()

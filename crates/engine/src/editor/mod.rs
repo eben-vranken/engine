@@ -14,7 +14,7 @@ pub mod markers;
 
 use crate::render::mesh::Shape;
 use crate::scene::{
-    AcousticMaterial, Component, Door, Floating, FogVolume, LightSource, Model, Object,
+    AcousticMaterial, Component, Door, Floating, FogVolume, LightSource, Material, Model, Object,
     PhysicsBody, Portal, Primitive, Scene, SoundSource, Switch, Transform, Zone, ZoneVolume,
 };
 use crate::ui::theme;
@@ -1252,7 +1252,7 @@ enum ZoneAction {
 }
 
 /// Components the inspector can add (one of each per object).
-fn new_components() -> [(&'static str, Component); 10] {
+fn new_components() -> [(&'static str, Component); 11] {
     [
         ("floating", Component::Floating(Floating::default())),
         ("door", Component::Door(Door::default())),
@@ -1276,6 +1276,7 @@ fn new_components() -> [(&'static str, Component); 10] {
             Component::LightSource(LightSource::default()),
         ),
         ("fog volume", Component::FogVolume(FogVolume::default())),
+        ("material", Component::Material(Material::default())),
     ]
 }
 
