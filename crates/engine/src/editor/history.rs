@@ -11,27 +11,57 @@ pub enum Edit {
         before: Box<Object>,
         after: Box<Object>,
     },
+    /// Insert an object at `index` (new, duplicated).
+    Add { index: usize, object: Box<Object> },
+    /// Remove the object at `index`; `object` is kept to put it back.
+    Remove { index: usize, object: Box<Object> },
+}
+
+/// What applying or reverting an edit did to the scene's object list.
+/// Selection, highlight and draws all refer to objects by index, so they
+/// have to follow insertions and removals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    /// The object at this index changed; no indices moved.
+    Modified(usize),
+    /// An object was inserted here; later objects moved up by one.
+    Added(usize),
+    /// The object here was removed; later objects moved down by one.
+    Removed(usize),
 }
 
 impl Edit {
-    /// Applies the edit; returns the index of the object it changed.
-    fn apply(&self, scene: &mut Scene) -> usize {
+    fn apply(&self, scene: &mut Scene) -> Change {
         match self {
             Edit::SetObject { index, after, .. } => {
                 scene.objects[*index] = (**after).clone();
-                *index
+                Change::Modified(*index)
             }
+            Edit::Add { index, object } => insert(scene, *index, object),
+            Edit::Remove { index, .. } => remove(scene, *index),
         }
     }
 
-    fn revert(&self, scene: &mut Scene) -> usize {
+    fn revert(&self, scene: &mut Scene) -> Change {
         match self {
             Edit::SetObject { index, before, .. } => {
                 scene.objects[*index] = (**before).clone();
-                *index
+                Change::Modified(*index)
             }
+            Edit::Add { index, .. } => remove(scene, *index),
+            Edit::Remove { index, object } => insert(scene, *index, object),
         }
     }
+}
+
+fn insert(scene: &mut Scene, index: usize, object: &Object) -> Change {
+    scene.objects.insert(index, object.clone());
+    Change::Added(index)
+}
+
+fn remove(scene: &mut Scene, index: usize) -> Change {
+    scene.objects.remove(index);
+    Change::Removed(index)
 }
 
 /// Edits carry an id so "has the scene changed since it was saved?" can be
@@ -44,6 +74,13 @@ pub struct History {
 }
 
 impl History {
+    /// Applies an edit to the scene and records it.
+    pub fn push(&mut self, scene: &mut Scene, edit: Edit) -> Change {
+        let change = edit.apply(scene);
+        self.record(edit);
+        change
+    }
+
     /// Records an edit that has already been applied to the scene.
     pub fn record(&mut self, edit: Edit) {
         self.next_id += 1;
@@ -57,20 +94,20 @@ impl History {
         self.undo.last().map(|(id, _)| *id)
     }
 
-    /// Reverts the last edit; returns the changed object's index.
-    pub fn undo(&mut self, scene: &mut Scene) -> Option<usize> {
+    /// Reverts the last edit.
+    pub fn undo(&mut self, scene: &mut Scene) -> Option<Change> {
         let (id, edit) = self.undo.pop()?;
-        let index = edit.revert(scene);
+        let change = edit.revert(scene);
         self.redo.push((id, edit));
-        Some(index)
+        Some(change)
     }
 
-    /// Re-applies the last undone edit; returns the changed object's index.
-    pub fn redo(&mut self, scene: &mut Scene) -> Option<usize> {
+    /// Re-applies the last undone edit.
+    pub fn redo(&mut self, scene: &mut Scene) -> Option<Change> {
         let (id, edit) = self.redo.pop()?;
-        let index = edit.apply(scene);
+        let change = edit.apply(scene);
         self.undo.push((id, edit));
-        Some(index)
+        Some(change)
     }
 
     pub fn undo_len(&self) -> usize {
@@ -106,7 +143,7 @@ mod tests {
         moved(&mut scene, &mut history, 1.0);
         moved(&mut scene, &mut history, 2.0);
 
-        assert_eq!(history.undo(&mut scene), Some(0));
+        assert_eq!(history.undo(&mut scene), Some(Change::Modified(0)));
         assert_eq!(scene.objects[0].transform.position.x, 1.0);
         history.undo(&mut scene);
         assert_eq!(scene.objects[0].transform.position.x, 0.0);
@@ -143,5 +180,47 @@ mod tests {
         moved(&mut scene, &mut history, 5.0);
         assert_eq!(history.redo_len(), 0);
         assert_eq!(history.undo_len(), 1);
+    }
+
+    #[test]
+    fn add_and_remove_undo_back_to_the_same_list() {
+        let shapes = (0..3)
+            .map(|i| (Shape::Box { size: Vec3::ONE }, Vec3::X * i as f32))
+            .collect();
+        let mut scene = test_scene(shapes);
+        let original = scene.clone();
+        let mut history = History::default();
+
+        let mut copy = scene.objects[0].clone();
+        copy.name = "copy".into();
+        let change = history.push(
+            &mut scene,
+            Edit::Add {
+                index: 1,
+                object: Box::new(copy),
+            },
+        );
+        assert_eq!(change, Change::Added(1));
+        assert_eq!(scene.objects[1].name, "copy");
+        assert_eq!(scene.objects[2].name, "object 1");
+
+        let removed = Box::new(scene.objects[3].clone());
+        let change = history.push(
+            &mut scene,
+            Edit::Remove {
+                index: 3,
+                object: removed,
+            },
+        );
+        assert_eq!(change, Change::Removed(3));
+        assert_eq!(scene.objects.len(), 3);
+
+        assert_eq!(history.undo(&mut scene), Some(Change::Added(3)));
+        assert_eq!(history.undo(&mut scene), Some(Change::Removed(1)));
+        assert_eq!(scene, original);
+        assert_eq!(history.redo(&mut scene), Some(Change::Added(1)));
+        assert_eq!(history.redo(&mut scene), Some(Change::Removed(3)));
+        assert_eq!(scene.objects.len(), 3);
+        assert_eq!(scene.objects[1].name, "copy");
     }
 }

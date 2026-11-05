@@ -79,6 +79,27 @@ impl PhysicsWorld {
         Some((object, distance))
     }
 
+    /// Where the ray first hits a surface, and the surface normal there.
+    pub fn surface(
+        &self,
+        origin: Vec3,
+        direction: Vec3,
+        max_distance: f32,
+    ) -> Option<(Vec3, Vec3)> {
+        let ray = Ray::new(origin, direction);
+        let (_, hit) = self
+            .queries()
+            .cast_ray_and_get_normal(&ray, max_distance, true)?;
+        // Triangle meshes report the face's own normal, which can point away
+        // from the ray (back faces, flipped winding); turn it toward the ray.
+        let normal = if hit.normal.dot(direction) > 0.0 {
+            -hit.normal
+        } else {
+            hit.normal
+        };
+        Some((ray.point_at(hit.time_of_impact), normal))
+    }
+
     /// Scene queries (ray and shape casts) against everything in the world.
     pub fn queries(&self) -> QueryPipeline<'_> {
         self.broad_phase.as_query_pipeline(
@@ -185,6 +206,23 @@ mod tests {
         assert_eq!(object, 1);
         assert!((distance - 4.5).abs() < 1e-3);
         assert!(world.pick(Vec3::ZERO, Vec3::Y, 100.0).is_none());
+    }
+
+    #[test]
+    fn surface_normal_faces_the_ray() {
+        // Hit a plane from above and below.
+        let scene = test_scene(vec![(
+            Shape::Plane {
+                size: Vec2::splat(4.0),
+            },
+            Vec3::ZERO,
+        )]);
+        let world = PhysicsWorld::from_scene(&scene, &mut Assets::default());
+        let (point, normal) = world.surface(Vec3::Y * 3.0, Vec3::NEG_Y, 10.0).unwrap();
+        assert!(point.distance(Vec3::ZERO) < 1e-3);
+        assert!(normal.distance(Vec3::Y) < 1e-3);
+        let (_, normal) = world.surface(Vec3::NEG_Y * 3.0, Vec3::Y, 10.0).unwrap();
+        assert!(normal.distance(Vec3::NEG_Y) < 1e-3);
     }
 
     #[test]

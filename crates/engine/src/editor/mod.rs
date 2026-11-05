@@ -10,11 +10,13 @@ pub mod gizmo;
 pub mod history;
 pub mod inspector;
 
-use crate::scene::{Object, Scene};
+use crate::render::mesh::Shape;
+use crate::scene::{Component, Object, Primitive, Scene, Transform};
 use crate::ui::theme;
 use egui::{Align, Layout, Rect, RichText, Ui};
 use gizmo::{TransformGizmo, View};
-use history::{Edit, History};
+use glam::{Vec2, Vec3};
+use history::{Change, Edit, History};
 use std::path::PathBuf;
 use transform_gizmo::config::GizmoModeKind;
 
@@ -59,8 +61,8 @@ pub struct EditorStats {
 pub struct EditorOutput {
     /// Space left for the 3D viewport, in points.
     pub viewport: Rect,
-    /// Objects whose data changed (redraw them).
-    pub changed: Vec<usize>,
+    /// What happened to the scene's objects (redraw them).
+    pub changed: Vec<Change>,
     /// An edit was committed, undone or redone (rebuild collision).
     pub settled: bool,
     /// The pointer is on a gizmo handle, so a click there isn't a selection.
@@ -106,8 +108,9 @@ impl Editor {
             open: None,
             exit: false,
         };
-        egui::Panel::top("editor_top")
-            .show(ui, |ui| self.top_bar(ui, scene, stats, blink, &mut output));
+        egui::Panel::top("editor_top").show(ui, |ui| {
+            self.top_bar(ui, scene, stats, blink, view, &mut output)
+        });
         egui::Panel::left("editor_scene")
             .resizable(true)
             .default_size(260.0)
@@ -127,7 +130,7 @@ impl Editor {
             {
                 self.begin_edit(index, &scene.objects[index]);
                 scene.objects[index].transform = moved;
-                output.changed.push(index);
+                output.changed.push(Change::Modified(index));
             }
             output.gizmo_hovered = self.gizmo.hovered() || self.gizmo.dragging();
         }
@@ -270,16 +273,104 @@ impl Editor {
         true
     }
 
-    /// Undoes the last edit; returns the object it changed.
-    pub fn undo(&mut self, scene: &mut Scene) -> Option<usize> {
+    /// Undoes the last edit.
+    pub fn undo(&mut self, scene: &mut Scene) -> Option<Change> {
         self.commit_pending(scene);
-        self.history.undo(scene)
+        let change = self.history.undo(scene)?;
+        self.follow(change);
+        Some(change)
     }
 
-    /// Redoes the last undone edit; returns the object it changed.
-    pub fn redo(&mut self, scene: &mut Scene) -> Option<usize> {
+    /// Redoes the last undone edit.
+    pub fn redo(&mut self, scene: &mut Scene) -> Option<Change> {
         self.commit_pending(scene);
-        self.history.redo(scene)
+        let change = self.history.redo(scene)?;
+        self.follow(change);
+        Some(change)
+    }
+
+    /// Applies a new edit (not a live one) and records it.
+    fn push(&mut self, scene: &mut Scene, edit: Edit) -> Change {
+        self.commit_pending(scene);
+        let change = self.history.push(scene, edit);
+        self.follow(change);
+        change
+    }
+
+    /// Keeps the selection on the same object when indices shift; a newly
+    /// added (or restored) object becomes the selection.
+    fn follow(&mut self, change: Change) {
+        match change {
+            Change::Modified(_) => {}
+            Change::Added(index) => {
+                self.selected = Some(index);
+                self.reveal_selection = true;
+            }
+            Change::Removed(index) => {
+                self.selected = match self.selected {
+                    Some(s) if s == index => None,
+                    Some(s) if s > index => Some(s - 1),
+                    s => s,
+                }
+            }
+        }
+    }
+
+    /// Adds a primitive in front of the camera, in the selection's zone (or
+    /// the first zone). `None` if the scene has no zones.
+    fn add_primitive(
+        &mut self,
+        scene: &mut Scene,
+        kind: &str,
+        shape: Shape,
+        view: &View,
+    ) -> Option<Change> {
+        let zone = self
+            .selected
+            .and_then(|i| scene.objects.get(i))
+            .map(|o| o.zone.clone())
+            .or_else(|| scene.zones.first().map(|z| z.name.clone()))?;
+        let object = Object {
+            name: unique_name(scene, kind),
+            zone,
+            transform: Transform::at(placement(shape, view)),
+            components: vec![Component::Primitive(Primitive {
+                shape,
+                color: Vec3::splat(0.8),
+            })],
+        };
+        let index = scene.objects.len();
+        Some(self.push(
+            scene,
+            Edit::Add {
+                index,
+                object: Box::new(object),
+            },
+        ))
+    }
+
+    /// Removes the selected object.
+    pub fn delete_selected(&mut self, scene: &mut Scene) -> Option<Change> {
+        let index = self.selected.filter(|&i| i < scene.objects.len())?;
+        // Commit first so undo restores the object with its latest edit.
+        self.commit_pending(scene);
+        let object = Box::new(scene.objects[index].clone());
+        Some(self.push(scene, Edit::Remove { index, object }))
+    }
+
+    /// Copies the selected object in place, right after it in the list, and
+    /// selects the copy (move it with the gizmo).
+    pub fn duplicate_selected(&mut self, scene: &mut Scene) -> Option<Change> {
+        let index = self.selected.filter(|&i| i < scene.objects.len())?;
+        let mut object = scene.objects[index].clone();
+        object.name = unique_name(scene, &object.name);
+        Some(self.push(
+            scene,
+            Edit::Add {
+                index: index + 1,
+                object: Box::new(object),
+            },
+        ))
     }
 
     /// Changes the selection, finishing any edit on the previous one.
@@ -295,6 +386,7 @@ impl Editor {
         scene: &mut Scene,
         stats: &EditorStats,
         blink: bool,
+        view: &View,
         output: &mut EditorOutput,
     ) {
         ui.horizontal(|ui| {
@@ -333,20 +425,34 @@ impl Editor {
             if ui
                 .add_enabled(self.history.undo_len() > 0, egui::Button::new(undo).small())
                 .clicked()
-                && let Some(index) = self.undo(scene)
+                && let Some(change) = self.undo(scene)
             {
-                output.changed.push(index);
+                output.changed.push(change);
                 output.settled = true;
             }
             let redo = format!("REDO [{}]", self.history.redo_len());
             if ui
                 .add_enabled(self.history.redo_len() > 0, egui::Button::new(redo).small())
                 .clicked()
-                && let Some(index) = self.redo(scene)
+                && let Some(change) = self.redo(scene)
             {
-                output.changed.push(index);
+                output.changed.push(change);
                 output.settled = true;
             }
+
+            ui.add_space(12.0);
+            ui.add_enabled_ui(!scene.zones.is_empty(), |ui| {
+                ui.menu_button("ADD", |ui| {
+                    for (kind, shape) in primitives() {
+                        if ui.button(kind.to_uppercase()).clicked()
+                            && let Some(change) = self.add_primitive(scene, kind, shape, view)
+                        {
+                            output.changed.push(change);
+                            output.settled = true;
+                        }
+                    }
+                });
+            });
 
             ui.add_space(12.0);
             for (kind, text) in [
@@ -433,6 +539,22 @@ impl Editor {
             return;
         };
 
+        let mut structural = None;
+        ui.horizontal(|ui| {
+            if ui.small_button("DUPLICATE CTRL+D").clicked() {
+                structural = self.duplicate_selected(scene);
+            }
+            if ui.small_button("DELETE DEL").clicked() {
+                structural = self.delete_selected(scene);
+            }
+        });
+        if let Some(change) = structural {
+            output.changed.push(change);
+            output.settled = true;
+            return;
+        }
+        ui.add_space(4.0);
+
         let zones = &scene.zones;
         let object = &mut scene.objects[index];
         let before = object.clone();
@@ -470,9 +592,81 @@ impl Editor {
 
         if *object != before {
             self.begin_edit(index, &before);
-            output.changed.push(index);
+            output.changed.push(Change::Modified(index));
         }
     }
+}
+
+/// How far in front of the camera new objects float when the camera isn't
+/// looking at a surface, in meters.
+const NEW_OBJECT_DISTANCE: f32 = 4.0;
+/// The fine grid (same as Ctrl-snapping), in meters.
+const SNAP: f32 = 0.25;
+
+/// Where a new primitive goes: resting on the surface the camera looks at,
+/// or floating in front of it. Snapped to the fine grid along the surface
+/// (so snapped moves stay aligned) but not into it.
+fn placement(shape: Shape, view: &View) -> Vec3 {
+    let Some((point, normal)) = view.aim else {
+        let position = view.camera.position + view.camera.forward() * NEW_OBJECT_DISTANCE;
+        return (position / SNAP).round() * SNAP;
+    };
+    // Push the shape out along the normal until its bounding box touches.
+    let position = point + normal * normal.abs().dot(shape.half_extents());
+    let snapped = (position / SNAP).round() * SNAP;
+    Vec3::select(normal.abs().cmpgt(Vec3::splat(0.5)), position, snapped)
+}
+
+/// The Add menu: each primitive with a starting size of about a meter.
+fn primitives() -> [(&'static str, Shape); 5] {
+    [
+        ("box", Shape::Box { size: Vec3::ONE }),
+        (
+            "plane",
+            Shape::Plane {
+                size: Vec2::splat(4.0),
+            },
+        ),
+        (
+            "wedge",
+            Shape::Wedge {
+                size: Vec3::new(1.0, 1.0, 2.0),
+            },
+        ),
+        (
+            "cylinder",
+            Shape::Cylinder {
+                radius: 0.5,
+                height: 1.0,
+                segments: 12,
+            },
+        ),
+        (
+            "sphere",
+            Shape::Sphere {
+                radius: 0.5,
+                segments: 12,
+                rings: 8,
+            },
+        ),
+    ]
+}
+
+/// `base`, or `base 2`, `base 3`... if that name is taken. A trailing number
+/// on `base` is replaced, so copies of "box 2" are "box 3", not "box 2 2".
+fn unique_name(scene: &Scene, base: &str) -> String {
+    let taken = |name: &str| scene.objects.iter().any(|o| o.name == name);
+    if !taken(base) {
+        return base.to_owned();
+    }
+    let stem = match base.rsplit_once(' ') {
+        Some((stem, n)) if n.parse::<u32>().is_ok() => stem,
+        _ => base,
+    };
+    (2..)
+        .map(|n| format!("{stem} {n}"))
+        .find(|name| !taken(name))
+        .expect("some number is free")
 }
 
 /// Scene files in the project's `scenes/` folder, relative to the project.
@@ -503,15 +697,146 @@ fn dim(text: &str) -> RichText {
 /// Controls, in the viewport's bottom-left corner.
 fn hints(ui: &Ui, viewport: Rect) {
     egui::Area::new(egui::Id::unique("editor_hints"))
-        .fixed_pos(viewport.left_bottom() + egui::vec2(10.0, -26.0))
+        // Anchored at the bottom, so wrapped lines grow upward.
+        .pivot(egui::Align2::LEFT_BOTTOM)
+        .fixed_pos(viewport.left_bottom() + egui::vec2(10.0, -8.0))
         .interactable(false)
         .show(ui.ctx(), |ui| {
+            ui.set_max_width(viewport.width() - 20.0);
             ui.label(
                 RichText::new(
-                    "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE",
+                    "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+D DUPLICATE  DEL DELETE  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE",
                 )
                 .small()
                 .color(theme::AMBER_DIM),
             );
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::camera::Camera;
+    use crate::scene::test_scene;
+
+    fn editor() -> Editor {
+        Editor::new("test".into(), PathBuf::new(), PathBuf::new())
+    }
+
+    fn boxes(count: usize) -> Scene {
+        test_scene(
+            (0..count)
+                .map(|i| (Shape::Box { size: Vec3::ONE }, Vec3::X * i as f32))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn unique_names_count_up() {
+        let mut scene = boxes(1);
+        scene.objects[0].name = "box".into();
+        assert_eq!(unique_name(&scene, "lamp"), "lamp");
+        assert_eq!(unique_name(&scene, "box"), "box 2");
+        scene.objects[0].name = "box 2".into();
+        assert_eq!(unique_name(&scene, "box 2"), "box 3");
+    }
+
+    #[test]
+    fn selection_follows_deletes_and_undo() {
+        let mut scene = boxes(3);
+        let mut editor = editor();
+
+        // Deleting an earlier object keeps the same object selected.
+        editor.selected = Some(0);
+        editor.delete_selected(&mut scene);
+        assert_eq!(editor.selected, None);
+        editor.selected = Some(1);
+        editor.undo(&mut scene);
+        assert_eq!(editor.selected, Some(0), "restored object is selected");
+        assert_eq!(scene.objects[2].name, "object 2");
+
+        editor.redo(&mut scene);
+        assert_eq!(editor.selected, None);
+        assert_eq!(scene.objects.len(), 2);
+    }
+
+    #[test]
+    fn duplicate_goes_after_the_original_and_undoes() {
+        let mut scene = boxes(2);
+        let original = scene.clone();
+        let mut editor = editor();
+        editor.selected = Some(0);
+        assert_eq!(
+            editor.duplicate_selected(&mut scene),
+            Some(Change::Added(1))
+        );
+        assert_eq!(editor.selected, Some(1));
+        assert_eq!(scene.objects[1].name, "object 2");
+        assert_eq!(scene.objects[1].transform, scene.objects[0].transform);
+
+        editor.undo(&mut scene);
+        assert_eq!(scene, original);
+        assert_eq!(editor.selected, None);
+    }
+
+    #[test]
+    fn added_primitive_lands_in_the_selected_zone_on_the_grid() {
+        let mut scene = boxes(1);
+        scene.zones.push(crate::scene::Zone {
+            name: "other".into(),
+        });
+        scene.objects[0].zone = "other".into();
+        let mut editor = editor();
+        editor.selected = Some(0);
+        let camera = Camera {
+            position: Vec3::new(0.1, 1.7, 0.0),
+            yaw: 0.3,
+            pitch: -0.2,
+            fov_y: 70.0,
+            near: 0.1,
+            far: 100.0,
+        };
+        let view = View {
+            camera: &camera,
+            image: Rect::NOTHING,
+            looking: false,
+            aim: None,
+        };
+        let (kind, shape) = primitives()[0];
+        let change = editor.add_primitive(&mut scene, kind, shape, &view);
+        assert_eq!(change, Some(Change::Added(1)));
+        let added = &scene.objects[1];
+        assert_eq!(added.zone, "other");
+        let p = added.transform.position;
+        assert_eq!(p, (p / SNAP).round() * SNAP);
+        assert!((p - camera.position).length() > 3.0);
+    }
+
+    #[test]
+    fn placement_rests_on_the_aimed_surface() {
+        let camera = Camera {
+            position: Vec3::ZERO,
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_y: 70.0,
+            near: 0.1,
+            far: 100.0,
+        };
+        let mut view = View {
+            camera: &camera,
+            image: Rect::NOTHING,
+            looking: false,
+            aim: Some((Vec3::new(0.3, 0.1, -2.0), Vec3::Y)),
+        };
+        let cylinder = primitives()[3].1;
+        // On a floor at y = 0.1: bottom touches it, x/z on the grid.
+        assert_eq!(
+            placement(cylinder, &view),
+            Vec3::new(0.25, 0.6, -2.0),
+            "half height 0.5 above the floor"
+        );
+        // Against a wall facing +X at x = 1.1.
+        view.aim = Some((Vec3::new(1.1, 0.4, -2.0), Vec3::X));
+        assert_eq!(placement(cylinder, &view), Vec3::new(1.6, 0.5, -2.0));
+    }
 }

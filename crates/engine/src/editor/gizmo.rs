@@ -38,6 +38,9 @@ pub struct View<'a> {
     pub image: Rect,
     /// The camera is in mouse-look mode; the gizmo stays out of the way.
     pub looking: bool,
+    /// The surface point and normal straight ahead of the camera, if one
+    /// is near enough to place new objects on.
+    pub aim: Option<(Vec3, Vec3)>,
 }
 
 impl TransformGizmo {

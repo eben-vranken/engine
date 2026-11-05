@@ -4,6 +4,7 @@
 
 use crate::assets::Assets;
 use crate::camera::FlyCamera;
+use crate::editor::history::Change;
 use crate::editor::{Editor, EditorStats};
 use crate::input::Input;
 use crate::physics::PhysicsWorld;
@@ -384,9 +385,15 @@ impl Running {
             if ctrl && input.pressed(KeyCode::KeyS) {
                 settled |= editor.save(&self.scene);
             }
-            if let Some(index) = changed {
-                self.renderer
-                    .update_object(&self.scene, index, &mut self.assets);
+            if input.pressed(KeyCode::Delete) {
+                changed = editor.delete_selected(&mut self.scene);
+            }
+            // Not while flying, where D strafes.
+            if ctrl && !input.looking && input.pressed(KeyCode::KeyD) {
+                changed = editor.duplicate_selected(&mut self.scene);
+            }
+            if let Some(change) = changed {
+                self.show_change(change);
                 settled = true;
             }
             if settled {
@@ -413,6 +420,23 @@ impl Running {
         }
         if input.pressed(KeyCode::KeyR) {
             self.player.respawn(&self.settings);
+        }
+    }
+
+    /// Editor: redraws what an edit changed. Adding or removing objects
+    /// shifts the indices the draws refer to, so those rebuild all draws.
+    fn show_change(&mut self, change: Change) {
+        match change {
+            Change::Modified(index) => {
+                self.renderer
+                    .update_object(&self.scene, index, &mut self.assets);
+            }
+            Change::Added(_) | Change::Removed(_) => {
+                let selected = self.editor.as_ref().and_then(|e| e.selected);
+                self.renderer.set_highlight(selected);
+                self.highlighted = selected;
+                self.renderer.set_scene(&self.scene, &mut self.assets);
+            }
         }
     }
 
@@ -547,6 +571,12 @@ impl Running {
                 egui::vec2(iw / ppp, ih / ppp),
             ),
             looking: self.input.looking,
+            aim: if editor.is_some() {
+                self.physics
+                    .surface(camera.position, camera.forward(), AIM_DISTANCE)
+            } else {
+                None
+            },
         };
         let ui_frame = self.overlay.run(
             &self.window,
@@ -598,9 +628,8 @@ impl Running {
             if let Some(path) = &output.open {
                 self.open_scene(path.clone());
             }
-            for &index in &output.changed {
-                self.renderer
-                    .update_object(&self.scene, index, &mut self.assets);
+            for &change in &output.changed {
+                self.show_change(change);
             }
             if output.settled {
                 self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
@@ -643,6 +672,9 @@ impl Running {
         self.input.end_frame();
     }
 }
+
+/// Editor: new objects go on surfaces up to this far ahead (meters).
+const AIM_DISTANCE: f32 = 20.0;
 
 /// FPS averaged over half-second windows so the number is readable.
 #[derive(Default)]

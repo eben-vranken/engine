@@ -45,6 +45,18 @@ pub enum Shape {
     },
 }
 
+impl Shape {
+    /// Half the size of the shape's bounding box.
+    pub fn half_extents(&self) -> Vec3 {
+        match *self {
+            Shape::Box { size } | Shape::Wedge { size } => size * 0.5,
+            Shape::Plane { size } => Vec3::new(size.x, 0.0, size.y) * 0.5,
+            Shape::Cylinder { radius, height, .. } => Vec3::new(radius, height * 0.5, radius),
+            Shape::Sphere { radius, .. } => Vec3::splat(radius),
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct MeshData {
     pub vertices: Vec<Vertex>,
