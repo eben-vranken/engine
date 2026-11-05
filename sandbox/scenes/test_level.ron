@@ -874,7 +874,7 @@
         (
             name: "arch",
             zone: "ground",
-            transform: (position: (-5.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            transform: (position: (-1.0914673, 0.0, -0.57951033), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 12.570234)),
             components: [Model((path: "models/arch.gltf", color: (0.3, 0.28, 0.25)))],
         ),
     ],
