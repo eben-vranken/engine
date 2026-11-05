@@ -3,6 +3,7 @@
 //! drag fields, vectors three fields in a row, booleans toggles, text a text
 //! box; nested structs and enum fields are indented underneath.
 
+use crate::scene::ObjectRef;
 use crate::ui::theme;
 use bevy_reflect::{PartialReflect, ReflectMut};
 use egui::{DragValue, Ui};
@@ -10,16 +11,17 @@ use glam::{Vec2, Vec3};
 
 const LABEL_WIDTH: f32 = 96.0;
 
-/// Draws one row per field of a struct or enum value. Returns true if
+/// Draws one row per field of a struct or enum value. `names` are the
+/// scene's objects, offered for object references. Returns true if
 /// anything changed.
-pub fn fields(ui: &mut Ui, value: &mut dyn PartialReflect) -> bool {
+pub fn fields(ui: &mut Ui, value: &mut dyn PartialReflect, names: &[String]) -> bool {
     let mut changed = false;
     match value.reflect_mut() {
         ReflectMut::Struct(s) => {
             for i in 0..s.field_len() {
                 let name = s.name_at(i).unwrap_or_default().to_owned();
                 if let Some(field) = s.field_at_mut(i) {
-                    changed |= row(ui, &name, field);
+                    changed |= row(ui, &name, field, names);
                 }
             }
         }
@@ -30,9 +32,9 @@ pub fn fields(ui: &mut Ui, value: &mut dyn PartialReflect) -> bool {
                     continue;
                 };
                 match name {
-                    Some(name) => changed |= row(ui, &name, field),
+                    Some(name) => changed |= row(ui, &name, field, names),
                     // A tuple variant wrapping one struct: show the struct's fields.
-                    None => changed |= fields(ui, field),
+                    None => changed |= fields(ui, field, names),
                 }
             }
         }
@@ -52,7 +54,7 @@ pub fn title(value: &dyn PartialReflect) -> String {
     }
 }
 
-fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect) -> bool {
+fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect, names: &[String]) -> bool {
     let speed = drag_speed(name);
     let step = snap_step(name);
     let label = |ui: &mut Ui| field_label(ui, &label_text(name));
@@ -110,6 +112,14 @@ fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect) -> bool {
             })
             .inner;
     }
+    if let Some(v) = field.try_downcast_mut::<ObjectRef>() {
+        return ui
+            .horizontal(|ui| {
+                label(ui);
+                object_picker(ui, name, v, names)
+            })
+            .inner;
+    }
     if let Some(v) = field.try_downcast_mut::<String>() {
         return ui
             .horizontal(|ui| {
@@ -126,7 +136,41 @@ fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect) -> bool {
             ui.label(label_text(e.variant_name()));
         }
     });
-    ui.indent(name, |ui| fields(ui, field)).inner
+    ui.indent(name, |ui| fields(ui, field, names)).inner
+}
+
+/// A dropdown of the scene's objects; a name that no longer exists shows
+/// as missing.
+fn object_picker(ui: &mut Ui, name: &str, value: &mut ObjectRef, names: &[String]) -> bool {
+    let current = &value.0;
+    let text = if current.is_empty() {
+        "NONE".to_owned()
+    } else if names.contains(current) {
+        current.clone()
+    } else {
+        format!("{current} (MISSING)")
+    };
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(("object_ref", name))
+        .selected_text(text)
+        .height(320.0)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(current.is_empty(), "NONE").clicked() {
+                picked = Some(String::new());
+            }
+            for option in names {
+                if ui.selectable_label(option == current, option).clicked() {
+                    picked = Some(option.clone());
+                }
+            }
+        });
+    match picked {
+        Some(name) if name != value.0 => {
+            value.0 = name;
+            true
+        }
+        _ => false,
+    }
 }
 
 /// A left-aligned, fixed-width label so the values line up in a column.

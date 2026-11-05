@@ -3,7 +3,7 @@
 //! player tuning panel.
 
 use crate::assets::Assets;
-use crate::behaviors::Behaviors;
+use crate::behaviors::{Behaviors, Interaction, is_usable_switch};
 use crate::camera::{Camera, FlyCamera};
 use crate::editor::history::Change;
 use crate::editor::import;
@@ -137,6 +137,8 @@ struct Running {
     play: Option<PlaySnapshot>,
     /// Running behaviors: always in play mode, in the editor while playing.
     behaviors: Option<Behaviors>,
+    /// A text prompt for what the player is looking at.
+    prompt: Option<&'static str>,
 }
 
 /// The editor's state when Play was pressed.
@@ -296,7 +298,11 @@ impl Running {
             window,
             renderer,
             overlay,
-            physics: PhysicsWorld::from_scene(&config.scene, &mut assets),
+            physics: if config.editor {
+                PhysicsWorld::from_scene(&config.scene, &mut assets)
+            } else {
+                PhysicsWorld::for_game(&config.scene, &mut assets)
+            },
             assets,
             player,
             settings,
@@ -328,6 +334,7 @@ impl Running {
             exit_requested: false,
             play: None,
             behaviors: (!config.editor).then(|| Behaviors::start(&config.scene)),
+            prompt: None,
         })
     }
 
@@ -457,20 +464,81 @@ impl Running {
 
     /// Behaviors act on the scene; moved objects are redrawn and their
     /// colliders follow.
-    fn run_behaviors(&mut self, dt: f32) {
+    fn run_game(&mut self, dt: f32) {
+        if self.behaviors.is_none() {
+            return;
+        }
+        let interaction = self.interaction();
         let Some(behaviors) = &mut self.behaviors else {
             return;
         };
-        let moved = behaviors.update(&mut self.scene, dt);
+        let moved = behaviors.update(&mut self.scene, dt, &interaction);
         for &index in &moved {
             self.renderer
                 .update_object(&self.scene, index, &mut self.assets);
             self.physics
                 .move_object(index, &self.scene.objects[index].transform);
         }
-        if !moved.is_empty() {
-            self.physics.step(dt);
+
+        if self.mode == CameraMode::Player {
+            let body = &self.settings.body;
+            let height = if self.player.crouching {
+                body.crouch_height
+            } else {
+                body.height
+            };
+            // The capsule floats a step above the feet.
+            let bottom = self.player.feet + Vec3::Y * body.step_height;
+            self.physics.push_bodies(
+                bottom,
+                height - body.step_height,
+                body.radius,
+                self.player.velocity,
+            );
         }
+        self.physics.advance(dt);
+        let poses: Vec<_> = self.physics.body_poses().collect();
+        for (index, position, rotation) in poses {
+            let transform = &mut self.scene.objects[index].transform;
+            transform.position = position;
+            transform.set_quat(rotation);
+            self.renderer
+                .update_object(&self.scene, index, &mut self.assets);
+        }
+    }
+
+    /// What the player does that behaviors react to: pressing E at a switch
+    /// in reach (a prompt shows while one is aimed at), standing on things.
+    fn interaction(&mut self) -> Interaction {
+        self.prompt = None;
+        if self.mode != CameraMode::Player {
+            return Interaction::default();
+        }
+        let eye = self.player.camera(&self.settings);
+        let aimed = self
+            .physics
+            .pick(eye.position, eye.forward(), REACH)
+            .map(|(object, _)| object)
+            .filter(|&object| is_usable_switch(&self.scene, object));
+        if aimed.is_some() {
+            self.prompt = Some("E  USE");
+        }
+        Interaction {
+            used: aimed.filter(|_| self.input.pressed(KeyCode::KeyE)),
+            standing_on: self
+                .physics
+                .object_below(self.player.feet + Vec3::Y * 0.1, 0.4),
+        }
+    }
+
+    /// The physics world for the current state: dynamic bodies only while
+    /// the game runs.
+    fn rebuild_physics(&mut self) {
+        self.physics = if self.behaviors.is_some() {
+            PhysicsWorld::for_game(&self.scene, &mut self.assets)
+        } else {
+            PhysicsWorld::from_scene(&self.scene, &mut self.assets)
+        };
     }
 
     /// Editor: Play runs the scene from its PlayerStart; Stop puts back the
@@ -493,9 +561,9 @@ impl Running {
             scene: self.scene.clone(),
             camera: self.fly.camera.clone(),
         });
-        self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
-        self.player = Player::new(spawn_point(&self.scene), &self.settings);
         self.behaviors = Some(Behaviors::start(&self.scene));
+        self.rebuild_physics();
+        self.player = Player::new(spawn_point(&self.scene), &self.settings);
         self.mode = CameraMode::Player;
         self.mouse_released = false;
         self.tuning_open = false;
@@ -614,7 +682,7 @@ impl Running {
         }
         log::info!("reloaded {}", changed.join(", "));
         self.renderer.set_scene(&self.scene, &mut self.assets);
-        self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
+        self.rebuild_physics();
         if let Some(editor) = &mut self.editor {
             editor.show_message(format!("RELOADED {}", changed.join(", ")));
         }
@@ -665,7 +733,7 @@ impl Running {
         self.handle_keys(&mut actions);
         self.poll_files();
         self.update_mouse_capture();
-        self.run_behaviors(dt);
+        self.run_game(dt);
 
         let camera = match self.mode {
             CameraMode::Player => {
@@ -736,22 +804,28 @@ impl Running {
                 None
             },
         };
+        let prompt = self.prompt;
         let ui_frame = self.overlay.run(
             &self.window,
             self.renderer.device(),
             self.renderer.queue(),
-            |ui| match editor {
-                Some(editor) => {
-                    editor_output = Some(editor.ui(ui, scene, &editor_stats, blink, &view));
-                    if editor.playing && tuning_open {
-                        tuning_action = tuning::panel(ui, settings, &file_name, status, error);
+            |ui| {
+                match editor {
+                    Some(editor) => {
+                        editor_output = Some(editor.ui(ui, scene, &editor_stats, blink, &view));
+                        if editor.playing && tuning_open {
+                            tuning_action = tuning::panel(ui, settings, &file_name, status, error);
+                        }
+                    }
+                    None => {
+                        draw_hud(ui, &hud, &mut actions);
+                        if tuning_open {
+                            tuning_action = tuning::panel(ui, settings, &file_name, status, error);
+                        }
                     }
                 }
-                None => {
-                    draw_hud(ui, &hud, &mut actions);
-                    if tuning_open {
-                        tuning_action = tuning::panel(ui, settings, &file_name, status, error);
-                    }
+                if let Some(text) = prompt {
+                    draw_prompt(ui, view.image, text);
                 }
             },
         );
@@ -856,6 +930,20 @@ fn spawn_point(scene: &Scene) -> Spawn {
         },
         Spawn::from_transform,
     )
+}
+
+/// How far the player reaches to use a switch (meters).
+const REACH: f32 = 2.5;
+
+/// A quiet text prompt just below the middle of the view.
+fn draw_prompt(ui: &egui::Ui, image: egui::Rect, text: &str) {
+    egui::Area::new(egui::Id::unique("prompt"))
+        .pivot(egui::Align2::CENTER_TOP)
+        .fixed_pos(image.center() + egui::vec2(0.0, 28.0))
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            ui.label(egui::RichText::new(text).color(crate::ui::theme::AMBER));
+        });
 }
 
 /// Editor: new objects go on surfaces up to this far ahead (meters).

@@ -13,7 +13,9 @@ pub mod inspector;
 pub mod markers;
 
 use crate::render::mesh::Shape;
-use crate::scene::{Component, Floating, Model, Object, Primitive, Scene, Transform};
+use crate::scene::{
+    Component, Door, Floating, Model, Object, PhysicsBody, Primitive, Scene, Switch, Transform,
+};
 use crate::ui::theme;
 use egui::{Align, Layout, Rect, RichText, Ui};
 use gizmo::{TransformGizmo, View};
@@ -663,6 +665,9 @@ impl Editor {
         }
         ui.add_space(4.0);
 
+        // For object reference pickers.
+        let mut names: Vec<String> = scene.objects.iter().map(|o| o.name.clone()).collect();
+        names.sort();
         let zones = &scene.zones;
         let object = &mut scene.objects[index];
         let before = object.clone();
@@ -690,7 +695,7 @@ impl Editor {
                 });
 
                 section(ui, "TRANSFORM");
-                inspector::fields(ui, &mut object.transform);
+                inspector::fields(ui, &mut object.transform, &names);
 
                 let mut remove = None;
                 for (i, component) in object.components.iter_mut().enumerate() {
@@ -700,7 +705,7 @@ impl Editor {
                     if let Component::Primitive(primitive) = component {
                         shape_kind(ui, i, &mut primitive.shape);
                     }
-                    inspector::fields(ui, component);
+                    inspector::fields(ui, component, &names);
                 }
                 if let Some(i) = remove {
                     object.components.remove(i);
@@ -841,8 +846,16 @@ fn shape_kind(ui: &mut Ui, id: usize, shape: &mut Shape) {
 }
 
 /// Components the inspector can add (one of each per object).
-fn new_components() -> [(&'static str, Component); 1] {
-    [("floating", Component::Floating(Floating::default()))]
+fn new_components() -> [(&'static str, Component); 4] {
+    [
+        ("floating", Component::Floating(Floating::default())),
+        ("door", Component::Door(Door::default())),
+        ("switch", Component::Switch(Switch::default())),
+        (
+            "physics body",
+            Component::PhysicsBody(PhysicsBody::default()),
+        ),
+    ]
 }
 
 /// A component's title with a REMOVE button; returns true if it was clicked.
@@ -874,7 +887,7 @@ fn dim(text: &str) -> RichText {
 /// Controls, in the viewport's bottom-left corner.
 fn hints(ui: &Ui, viewport: Rect, playing: bool) {
     let text = if playing {
-        "F5 STOP  ESC FREE MOUSE  CLICK CAPTURE MOUSE  R RESPAWN  F1 TUNING  F2 FLY"
+        "F5 STOP  E USE  ESC FREE MOUSE  CLICK CAPTURE MOUSE  R RESPAWN  F1 TUNING  F2 FLY"
     } else {
         "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+D DUPLICATE  DEL DELETE  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE  F5 PLAY"
     };

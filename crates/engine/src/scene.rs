@@ -71,6 +71,12 @@ impl Transform {
         Quat::from_euler(EulerRot::YXZ, r.y, r.x, r.z)
     }
 
+    /// Sets the rotation from a quaternion (the inverse of `quat`).
+    pub fn set_quat(&mut self, rotation: Quat) {
+        let (y, x, z) = rotation.to_euler(EulerRot::YXZ);
+        self.rotation = Vec3::new(x, y, z) * (180.0 / std::f32::consts::PI);
+    }
+
     pub fn matrix(&self) -> Mat4 {
         Mat4::from_scale_rotation_translation(self.scale, self.quat(), self.position)
     }
@@ -83,7 +89,15 @@ pub enum Component {
     /// Where the player spawns; faces the object's yaw.
     PlayerStart,
     Floating(Floating),
+    Door(Door),
+    Switch(Switch),
+    PhysicsBody(PhysicsBody),
 }
+
+/// Another object in the scene, by name. The inspector shows a picker.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
+#[serde(transparent)]
+pub struct ObjectRef(pub String);
 
 /// A shape generated in code, drawn with the grid texture and a collider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
@@ -130,6 +144,66 @@ impl Default for Floating {
             height: 0.25,
             speed: 0.25,
             phase: 0.0,
+        }
+    }
+}
+
+/// Opens and closes when a switch targets it: slides, swings around a
+/// hinge, or both. Placed closed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Door {
+    /// How far it slides when open, along its own axes (meters).
+    pub slide: Vec3,
+    /// Degrees it turns around its vertical axis when open.
+    pub swing: f32,
+    /// The point it swings around, along its own axes from its origin
+    /// (meters); e.g. (-1, 0, 0) is the left edge of a 2 m wide box door.
+    pub hinge: Vec3,
+    /// Seconds to open or close.
+    pub duration: f32,
+    pub starts_open: bool,
+}
+
+impl Default for Door {
+    fn default() -> Self {
+        Self {
+            slide: Vec3::ZERO,
+            swing: 90.0,
+            hinge: Vec3::ZERO,
+            duration: 1.0,
+            starts_open: false,
+        }
+    }
+}
+
+/// Opens or closes its target door: the player presses E while looking at
+/// it, or, as a pressure plate, stands on it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Switch {
+    pub target: ObjectRef,
+    /// Toggles the target while the player stands on it, and back when
+    /// they step off.
+    pub pressure_plate: bool,
+}
+
+/// Falls, tumbles and can be pushed while the game runs. In the editor it
+/// stays where it's placed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct PhysicsBody {
+    /// kg; the player (about 80 kg) pushes heavy bodies slower.
+    pub mass: f32,
+    /// Hangs where it's placed until something touches it.
+    pub starts_asleep: bool,
+}
+
+impl Default for PhysicsBody {
+    fn default() -> Self {
+        Self {
+            mass: 20.0,
+            starts_asleep: false,
         }
     }
 }
@@ -253,7 +327,7 @@ impl Scene {
                 Component::Model(m) => {
                     Some((index, Geometry::Model(&m.path), m.color, &object.transform))
                 }
-                Component::PlayerStart | Component::Floating(_) => None,
+                _ => None,
             })
         })
     }
@@ -275,7 +349,7 @@ impl Scene {
                     &object.transform,
                     m.collision,
                 )),
-                Component::PlayerStart | Component::Floating(_) => None,
+                _ => None,
             })
         })
     }
@@ -375,6 +449,20 @@ mod tests {
     }
 
     #[test]
+    fn every_sandbox_scene_loads() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sandbox/scenes");
+        let mut count = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_some_and(|e| e == "ron") {
+                Scene::load(&path).unwrap_or_else(|err| panic!("{err}"));
+                count += 1;
+            }
+        }
+        assert!(count >= 2);
+    }
+
+    #[test]
     fn unknown_zone_is_an_error() {
         let mut scene = sample();
         scene.objects[0].zone = "cellar".into();
@@ -390,6 +478,29 @@ mod tests {
             ron::from_str(r#"(zones: [(name: "a")], objects: [(name: "x", zone: "a")])"#).unwrap();
         assert_eq!(scene.objects[0].transform, Transform::default());
         assert!(scene.objects[0].components.is_empty());
+    }
+
+    #[test]
+    fn rotation_round_trips_through_a_quaternion() {
+        let mut t = Transform {
+            rotation: Vec3::new(20.0, -135.0, 10.0),
+            ..Default::default()
+        };
+        let q = t.quat();
+        t.set_quat(q);
+        assert!((t.quat().dot(q).abs() - 1.0).abs() < 1e-5);
+        assert!((t.rotation - Vec3::new(20.0, -135.0, 10.0)).length() < 1e-3);
+    }
+
+    #[test]
+    fn switch_targets_are_plain_names_in_ron() {
+        let switch = Switch {
+            target: ObjectRef("hall door".into()),
+            pressure_plate: false,
+        };
+        let text = ron::to_string(&switch).unwrap();
+        assert!(text.contains(r#"target:"hall door""#), "{text}");
+        assert_eq!(ron::from_str::<Switch>(&text).unwrap(), switch);
     }
 
     #[test]

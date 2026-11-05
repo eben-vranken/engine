@@ -91,13 +91,14 @@ A small step right after milestone 4, for background and walk-through objects.
 - [x] PlayerStart object; the player uses the game project's `player.ron`
 
 ## 6. First behaviors ← current
-- [ ] Floating, Door, Switch, PhysicsBody, SoundSource, Singer, AcousticMaterial
+- [ ] Floating, Door, Switch, PhysicsBody
 - [ ] Object references in the inspector (switch → door)
 
 ## 7. Audio
 Steam Audio in the engine, tested by walking through spaces in first person.
 
 - [ ] Add `audionimbus` (with `auto-install`) and an audio output crate (e.g. `cpal`)
+- [ ] Audio behaviors: SoundSource, Singer, AcousticMaterial (moved here from milestone 6, where they couldn't be heard)
 - [ ] Test scene with four connected spaces, each with its own acoustic material: a small wooden room (dry), a narrow stone corridor (flutter echoes), a large marble hall (long tail), an open area with no walls
 - [ ] Sources: a looping recording at `sandbox/audio/guitar_loop.wav` (fallback: generated tone), a clap on a key at the listener, footsteps depending on the floor material
 - [ ] A key moves the looping source into a different space

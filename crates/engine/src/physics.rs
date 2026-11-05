@@ -1,11 +1,21 @@
-//! rapier3d world. For now it only holds static colliders built from the
-//! scene; the character controller queries it.
+//! rapier3d world built from the scene: colliders for everything solid
+//! (the character controller queries them), and while the game runs,
+//! dynamic bodies for objects with a `PhysicsBody`.
 
 use crate::assets::{Assets, Resolved};
 use crate::render::mesh::{MeshData, Shape};
-use crate::scene::{Scene, Transform};
-use glam::Vec3;
+use crate::scene::{Component, PhysicsBody, Scene, Transform};
+use glam::{Quat, Vec3};
 use rapier3d::prelude::*;
+use std::collections::HashMap;
+
+/// The simulation advances in fixed steps of this many seconds.
+const STEP: f32 = 1.0 / 60.0;
+/// At most this much time is caught up per frame, so a hitch doesn't
+/// trigger a burst of steps.
+const MAX_CATCH_UP: f32 = 0.1;
+/// For pushing: roughly the player's mass (kg).
+const PLAYER_MASS: f32 = 80.0;
 
 /// Collider groups: solid colliders are in every group (rapier's default);
 /// walk-through ones only in their own, which gameplay queries skip.
@@ -24,12 +34,26 @@ pub struct PhysicsWorld {
     multibody_joints: MultibodyJointSet,
     soft_bodies: SoftBodySet,
     ccd: CCDSolver,
-    /// Every collider with its object and its pose relative to the object.
+    /// Colliders without a body, with their object and pose relative to it.
     placed: Vec<(ColliderHandle, usize, Pose)>,
+    /// Dynamic bodies and their objects.
+    dynamic: Vec<(RigidBodyHandle, usize)>,
+    /// Time not yet simulated (less than one step).
+    accumulator: f32,
 }
 
 impl PhysicsWorld {
+    /// Everything static: for the editor.
     pub fn from_scene(scene: &Scene, assets: &mut Assets) -> Self {
+        Self::build(scene, assets, false)
+    }
+
+    /// For the running game: objects with a `PhysicsBody` get dynamic bodies.
+    pub fn for_game(scene: &Scene, assets: &mut Assets) -> Self {
+        Self::build(scene, assets, true)
+    }
+
+    fn build(scene: &Scene, assets: &mut Assets, game: bool) -> Self {
         let mut world = Self {
             pipeline: PhysicsPipeline::new(),
             params: IntegrationParameters::default(),
@@ -43,22 +67,49 @@ impl PhysicsWorld {
             soft_bodies: SoftBodySet::new(),
             ccd: CCDSolver::new(),
             placed: Vec::new(),
+            dynamic: Vec::new(),
+            accumulator: 0.0,
         };
+        let mut object_bodies = HashMap::new();
         for (object, geometry, transform, solid) in scene.colliders() {
+            let body = game.then(|| physics_body(scene, object)).flatten();
             let collider = match assets.resolve(geometry) {
                 Resolved::Shape(shape) => collider_for(shape, transform),
-                Resolved::Model(model) => mesh_collider(&model.mesh, transform),
+                // Moving triangle meshes don't collide well; a hull does.
+                Resolved::Model(model) => mesh_collider(&model.mesh, transform, body.is_some()),
             };
-            if let Some(mut collider) = collider {
-                collider.user_data = object as u128;
-                let relative = object_pose(transform).inverse() * *collider.position();
-                if !solid {
-                    collider.set_collision_groups(
-                        InteractionGroups::all().with_memberships(WALK_THROUGH),
-                    );
+            let Some(mut collider) = collider else {
+                continue;
+            };
+            collider.user_data = object as u128;
+            let relative = object_pose(transform).inverse() * *collider.position();
+            if !solid {
+                collider
+                    .set_collision_groups(InteractionGroups::all().with_memberships(WALK_THROUGH));
+            }
+            match body {
+                Some(body) => {
+                    let handle = *object_bodies.entry(object).or_insert_with(|| {
+                        let rigid = RigidBodyBuilder::dynamic()
+                            .pose(object_pose(transform))
+                            .sleeping(body.starts_asleep)
+                            .build();
+                        let handle = world.bodies.insert(rigid);
+                        world.dynamic.push((handle, object));
+                        handle
+                    });
+                    collider.set_mass(body.mass.max(0.01));
+                    let collider =
+                        world
+                            .colliders
+                            .insert_with_parent(collider, handle, &mut world.bodies);
+                    // Only takes effect once the collider has a parent.
+                    world.colliders[collider].set_position_wrt_parent(relative);
                 }
-                let handle = world.colliders.insert(collider);
-                world.placed.push((handle, object, relative));
+                None => {
+                    let handle = world.colliders.insert(collider);
+                    world.placed.push((handle, object, relative));
+                }
             }
         }
         // One step registers the colliders with the broad phase so queries see them.
@@ -77,6 +128,63 @@ impl PhysicsWorld {
                 collider.set_position(pose * relative);
             }
         }
+    }
+
+    /// Simulates `dt` seconds in fixed steps; leftover time carries over.
+    pub fn advance(&mut self, dt: f32) {
+        self.accumulator = (self.accumulator + dt).min(MAX_CATCH_UP);
+        while self.accumulator >= STEP {
+            self.step(STEP);
+            self.accumulator -= STEP;
+        }
+    }
+
+    /// Where each awake dynamic body is now: its object, position and rotation.
+    pub fn body_poses(&self) -> impl Iterator<Item = (usize, Vec3, Quat)> + '_ {
+        self.dynamic.iter().filter_map(|&(handle, object)| {
+            let body = self.bodies.get(handle)?;
+            (!body.is_sleeping()).then(|| (object, body.translation(), *body.rotation()))
+        })
+    }
+
+    /// The player walking into dynamic bodies shoves them along at up to
+    /// its own speed; heavier bodies move slower. The capsule runs from
+    /// `bottom` up `height` meters.
+    pub fn push_bodies(&mut self, bottom: Vec3, height: f32, radius: f32, velocity: Vec3) {
+        let horizontal = velocity.with_y(0.0);
+        if horizontal.length() < 0.01 || self.dynamic.is_empty() {
+            return;
+        }
+        let reach = radius + 0.08;
+        let center = bottom + Vec3::Y * height * 0.5;
+        let shape = SharedShape::capsule_y((height * 0.5 - reach).max(0.01), reach);
+        let touched: Vec<RigidBodyHandle> = self
+            .queries()
+            .intersect_shape(Pose::from_translation(center), shape.as_ref())
+            .filter_map(|(_, collider)| collider.parent())
+            .collect();
+        for handle in touched {
+            let Some(body) = self.bodies.get_mut(handle) else {
+                continue;
+            };
+            let away = (body.translation() - center)
+                .with_y(0.0)
+                .normalize_or_zero();
+            let push =
+                horizontal.dot(away) * (2.0 * PLAYER_MASS / (PLAYER_MASS + body.mass())).min(1.0);
+            let velocity = body.linvel();
+            let along = velocity.dot(away);
+            if push > along {
+                body.set_linvel(velocity + away * (push - along), true);
+            }
+        }
+    }
+
+    /// The solid object right under `point`, at most `distance` below it.
+    pub fn object_below(&self, point: Vec3, distance: f32) -> Option<usize> {
+        let ray = Ray::new(point, Vec3::NEG_Y);
+        let (handle, _) = self.queries().cast_ray(&ray, distance, true)?;
+        Some(self.colliders.get(handle)?.user_data as usize)
     }
 
     pub fn step(&mut self, dt: f32) {
@@ -151,6 +259,16 @@ impl PhysicsWorld {
     }
 }
 
+fn physics_body(scene: &Scene, object: usize) -> Option<&PhysicsBody> {
+    scene.objects[object]
+        .components
+        .iter()
+        .find_map(|c| match c {
+            Component::PhysicsBody(body) => Some(body),
+            _ => None,
+        })
+}
+
 fn object_pose(transform: &Transform) -> Pose {
     Pose::from_parts(transform.position, transform.quat())
 }
@@ -194,7 +312,9 @@ fn collider_for(shape: Shape, transform: &Transform) -> Option<Collider> {
 }
 
 /// An exact triangle-mesh collider for a model (static only), scale baked in.
-fn mesh_collider(mesh: &MeshData, transform: &Transform) -> Option<Collider> {
+/// A collider for a model: its exact triangles, or with `convex` its
+/// convex hull (needed for bodies that move).
+fn mesh_collider(mesh: &MeshData, transform: &Transform, convex: bool) -> Option<Collider> {
     let vertices: Vec<Vector> = mesh
         .vertices
         .iter()
@@ -205,9 +325,13 @@ fn mesh_collider(mesh: &MeshData, transform: &Transform) -> Option<Collider> {
         .chunks_exact(3)
         .map(|t| [t[0], t[1], t[2]])
         .collect();
-    let shape = SharedShape::trimesh(vertices, indices)
-        .inspect_err(|err| log::error!("bad model mesh: {err}"))
-        .ok()?;
+    let shape = if convex {
+        SharedShape::convex_hull(&vertices)
+    } else {
+        SharedShape::trimesh(vertices, indices)
+            .inspect_err(|err| log::error!("bad model mesh: {err}"))
+            .ok()
+    }?;
     Some(
         ColliderBuilder::new(shape)
             .position(Pose::from_parts(transform.position, transform.quat()))
@@ -304,6 +428,68 @@ mod tests {
             (point.y - 2.0).abs() < 1e-3,
             "plane now at 2 m, hit {point}"
         );
+    }
+
+    /// A floor (0) and a box (1) with a `PhysicsBody` 3 m above it.
+    fn falling_box() -> Scene {
+        let mut scene = test_scene(vec![
+            (
+                Shape::Box {
+                    size: Vec3::new(10.0, 1.0, 10.0),
+                },
+                Vec3::new(0.0, -0.5, 0.0),
+            ),
+            (Shape::Box { size: Vec3::ONE }, Vec3::new(0.0, 3.5, 0.0)),
+        ]);
+        scene.objects[1]
+            .components
+            .push(Component::PhysicsBody(PhysicsBody::default()));
+        scene
+    }
+
+    #[test]
+    fn bodies_fall_in_the_game_but_not_in_the_editor() {
+        let scene = falling_box();
+        let mut editor = PhysicsWorld::from_scene(&scene, &mut Assets::default());
+        editor.advance(0.1);
+        assert_eq!(editor.body_poses().count(), 0);
+
+        let mut game = PhysicsWorld::for_game(&scene, &mut Assets::default());
+        for _ in 0..180 {
+            game.advance(1.0 / 60.0);
+        }
+        // It may have fallen asleep after settling, so read the body itself.
+        assert_eq!(game.dynamic.len(), 1);
+        assert_eq!(game.dynamic[0].1, 1);
+        let position = game.bodies[game.dynamic[0].0].translation();
+        assert!(
+            (position.y - 0.5).abs() < 0.05,
+            "resting on the floor, at {position}"
+        );
+        assert_eq!(
+            game.object_below(position + Vec3::Y, 2.0),
+            Some(1),
+            "the box"
+        );
+        let beside = position + Vec3::new(2.0, 0.0, 0.0);
+        assert_eq!(game.object_below(beside, 2.0), Some(0), "the floor");
+    }
+
+    #[test]
+    fn walking_into_a_body_pushes_it() {
+        let scene = falling_box();
+        let mut game = PhysicsWorld::for_game(&scene, &mut Assets::default());
+        for _ in 0..180 {
+            game.advance(1.0 / 60.0);
+        }
+        // A player standing right next to the box, walking toward +X into it.
+        let start = game.bodies.iter().next().unwrap().1.translation();
+        for _ in 0..30 {
+            game.push_bodies(start - Vec3::new(0.85, 0.5, 0.0), 1.8, 0.35, Vec3::X * 3.0);
+            game.advance(1.0 / 60.0);
+        }
+        let end = game.bodies.iter().next().unwrap().1.translation();
+        assert!(end.x - start.x > 0.3, "moved from {start} to {end}");
     }
 
     #[test]
