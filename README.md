@@ -2,9 +2,12 @@
 
 A small Rust 3D engine and editor for quiet, atmospheric, audio-first games: crisp HD output, very low-poly worlds, strong light and real volumetric fog, and sound that is physically simulated from the scene's geometry.
 
-[https://github.com/eben-vranken/engine/blob/main/preview.mp4
-](https://github.com/eben-vranken/engine/blob/main/preview.mp4
-)
+
+
+https://github.com/user-attachments/assets/07985f75-9701-407d-8a18-6c98663c12f8
+
+
+
 *Working name.* Games made with it are content-only project folders that live outside this repo; the editor is the game with a UI on top. Built with [Claude Code](https://claude.com/claude-code).
 
 ## What it does
