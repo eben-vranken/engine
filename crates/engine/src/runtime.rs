@@ -2,6 +2,7 @@
 //! scene in first person, with a free-fly debug camera, the debug HUD and the
 //! player tuning panel.
 
+use crate::assets::Assets;
 use crate::camera::FlyCamera;
 use crate::editor::{Editor, EditorStats};
 use crate::input::Input;
@@ -68,6 +69,18 @@ struct App {
     error: Option<RunError>,
 }
 
+impl App {
+    fn close(&mut self, event_loop: &ActiveEventLoop) {
+        let may_close = match self.running.as_mut().and_then(|r| r.editor.as_mut()) {
+            Some(editor) => editor.request_close(),
+            None => true,
+        };
+        if may_close {
+            event_loop.exit();
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CameraMode {
     Player,
@@ -107,6 +120,10 @@ struct Running {
     viewport: Option<egui::Rect>,
     /// Editor: a left click in the viewport to resolve this frame, in window pixels.
     pending_pick: Option<Vec2>,
+    game_dir: PathBuf,
+    assets: Assets,
+    /// The editor confirmed closing; the event loop exits next.
+    exit_requested: bool,
 }
 
 impl ApplicationHandler for App {
@@ -129,7 +146,7 @@ impl ApplicationHandler for App {
         };
         let ui_consumed = app.overlay.on_window_event(&app.window, &event);
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => self.close(event_loop),
             WindowEvent::Resized(size) => app.renderer.resize(size.width, size.height),
             WindowEvent::Focused(focused) => {
                 app.focused = focused;
@@ -193,8 +210,11 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _: &ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(app) = &self.running {
+            if app.exit_requested {
+                event_loop.exit();
+            }
             app.window.request_redraw();
         }
     }
@@ -210,7 +230,8 @@ impl Running {
             )?,
         );
         let mut renderer = Renderer::new(window.clone())?;
-        renderer.set_scene(&config.scene);
+        let mut assets = Assets::new(config.game_dir.clone());
+        renderer.set_scene(&config.scene, &mut assets);
         let overlay = Overlay::new(&window, renderer.device(), renderer.surface_format());
 
         let settings_file = SettingsFile::new(config.game_dir.join("player.ron"));
@@ -235,9 +256,13 @@ impl Running {
         let start = player.camera(&settings);
         let mut fly = FlyCamera::new(start.position, start.yaw, start.pitch);
         fly.camera.fov_y = start.fov_y;
-        let editor = config
-            .editor
-            .then(|| Editor::new(config.game_name.clone(), config.scene_path.clone()));
+        let editor = config.editor.then(|| {
+            Editor::new(
+                config.game_name.clone(),
+                config.game_dir.clone(),
+                config.scene_path.clone(),
+            )
+        });
         if editor.is_some() {
             fly.move_requires_look = true;
         }
@@ -246,7 +271,8 @@ impl Running {
             window,
             renderer,
             overlay,
-            physics: PhysicsWorld::from_scene(&config.scene),
+            physics: PhysicsWorld::from_scene(&config.scene, &mut assets),
+            assets,
             player,
             settings,
             settings_file,
@@ -272,6 +298,8 @@ impl Running {
             cursor: Vec2::ZERO,
             viewport: None,
             pending_pick: None,
+            game_dir: config.game_dir.clone(),
+            exit_requested: false,
         })
     }
 
@@ -353,12 +381,16 @@ impl Running {
             if ctrl && input.pressed(KeyCode::KeyY) {
                 changed = editor.redo(&mut self.scene);
             }
+            if ctrl && input.pressed(KeyCode::KeyS) {
+                settled |= editor.save(&self.scene);
+            }
             if let Some(index) = changed {
-                self.renderer.update_object(&self.scene, index);
+                self.renderer
+                    .update_object(&self.scene, index, &mut self.assets);
                 settled = true;
             }
             if settled {
-                self.physics = PhysicsWorld::from_scene(&self.scene);
+                self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
             }
             return;
         }
@@ -381,6 +413,25 @@ impl Running {
         }
         if input.pressed(KeyCode::KeyR) {
             self.player.respawn(&self.settings);
+        }
+    }
+
+    /// Editor: replace the scene with another file from the project.
+    fn open_scene(&mut self, path: PathBuf) {
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        match Scene::load(&self.game_dir.join(&path)) {
+            Ok(scene) => {
+                self.scene = scene;
+                self.renderer.set_scene(&self.scene, &mut self.assets);
+                self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
+                editor.scene_loaded(path);
+            }
+            Err(err) => {
+                log::error!("{err}");
+                editor.show_error(err.to_string());
+            }
         }
     }
 
@@ -534,18 +585,25 @@ impl Running {
                     .pick(origin, direction, camera.far)
                     .map(|(object, _)| object);
                 if editor.select(&self.scene, hit) {
-                    self.physics = PhysicsWorld::from_scene(&self.scene);
+                    self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
                 }
                 editor.reveal_selection = true;
             }
         }
 
         if let Some(output) = &editor_output {
+            if output.exit {
+                self.exit_requested = true;
+            }
+            if let Some(path) = &output.open {
+                self.open_scene(path.clone());
+            }
             for &index in &output.changed {
-                self.renderer.update_object(&self.scene, index);
+                self.renderer
+                    .update_object(&self.scene, index, &mut self.assets);
             }
             if output.settled {
-                self.physics = PhysicsWorld::from_scene(&self.scene);
+                self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
             }
         }
 

@@ -483,16 +483,20 @@ fn smoothstep(t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::Assets;
     use crate::render::mesh::Shape;
     use crate::scene::test_scene;
 
     fn flat_world() -> PhysicsWorld {
-        PhysicsWorld::from_scene(&test_scene(vec![(
-            Shape::Box {
-                size: Vec3::new(100.0, 1.0, 100.0),
-            },
-            Vec3::new(0.0, -0.5, 0.0),
-        )]))
+        PhysicsWorld::from_scene(
+            &test_scene(vec![(
+                Shape::Box {
+                    size: Vec3::new(100.0, 1.0, 100.0),
+                },
+                Vec3::new(0.0, -0.5, 0.0),
+            )]),
+            &mut Assets::default(),
+        )
     }
 
     fn spawn() -> Spawn {
@@ -586,7 +590,7 @@ mod tests {
             },
             Vec3::new(0.0, -0.5, 0.0),
         ));
-        PhysicsWorld::from_scene(&test_scene(objects))
+        PhysicsWorld::from_scene(&test_scene(objects), &mut Assets::default())
     }
 
     /// Holds `keys` for `seconds` and returns the lowest horizontal speed seen

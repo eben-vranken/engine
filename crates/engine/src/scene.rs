@@ -79,6 +79,7 @@ impl Transform {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 pub enum Component {
     Primitive(Primitive),
+    Model(Model),
     /// Where the player spawns; faces the object's yaw.
     PlayerStart,
 }
@@ -90,6 +91,24 @@ pub struct Primitive {
     /// Linear RGB tint multiplied with the grid texture.
     #[serde(default = "white")]
     pub color: Vec3,
+}
+
+/// A glTF model from the game project, drawn with flat color (no grid
+/// texture) and given a matching triangle-mesh collider.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+pub struct Model {
+    /// Path relative to the project folder, e.g. `models/arch.gltf`.
+    pub path: String,
+    /// Linear RGB tint.
+    #[serde(default = "white")]
+    pub color: Vec3,
+}
+
+/// What an object looks like and collides as.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Geometry<'a> {
+    Shape(Shape),
+    Model(&'a str),
 }
 
 fn white() -> Vec3 {
@@ -186,12 +205,17 @@ impl Scene {
         Ok(())
     }
 
-    /// Every primitive with its object's index and world transform.
-    pub fn primitives(&self) -> impl Iterator<Item = (usize, &Primitive, &Transform)> {
+    /// Everything visible: object index, geometry, color and transform.
+    pub fn renderables(&self) -> impl Iterator<Item = (usize, Geometry<'_>, Vec3, &Transform)> {
         self.objects.iter().enumerate().flat_map(|(index, object)| {
             object.components.iter().filter_map(move |c| match c {
-                Component::Primitive(p) => Some((index, p, &object.transform)),
-                _ => None,
+                Component::Primitive(p) => {
+                    Some((index, Geometry::Shape(p.shape), p.color, &object.transform))
+                }
+                Component::Model(m) => {
+                    Some((index, Geometry::Model(&m.path), m.color, &object.transform))
+                }
+                Component::PlayerStart => None,
             })
         })
     }
@@ -307,6 +331,6 @@ mod tests {
     fn finds_player_start() {
         let scene = sample();
         assert_eq!(scene.player_start().unwrap().rotation.y, 90.0);
-        assert_eq!(scene.primitives().count(), 1);
+        assert_eq!(scene.renderables().count(), 1);
     }
 }

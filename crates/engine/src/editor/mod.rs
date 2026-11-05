@@ -24,13 +24,27 @@ pub struct Editor {
     /// Open the selection's zone and scroll to it in the hierarchy (set when
     /// it was picked in the viewport).
     pub reveal_selection: bool,
-    /// The scene file being edited, for display.
+    /// The scene file being edited, relative to the project folder.
     pub scene_path: PathBuf,
     pub game_name: String,
+    project_dir: PathBuf,
+    /// History state at the last save (or load).
+    saved_state: Option<u64>,
+    /// Last save/load result for the top bar; true = error.
+    message: Option<(String, bool)>,
+    /// Waiting for the user to decide about unsaved changes.
+    confirm: Option<Confirm>,
     history: History,
     /// An edit in progress: the object's index and how it was before.
     pending: Option<(usize, Object)>,
     pub gizmo: TransformGizmo,
+}
+
+/// What to do once unsaved changes are dealt with.
+#[derive(Debug, Clone)]
+enum Confirm {
+    Open(PathBuf),
+    Close,
 }
 
 /// Numbers for the top bar.
@@ -51,15 +65,23 @@ pub struct EditorOutput {
     pub settled: bool,
     /// The pointer is on a gizmo handle, so a click there isn't a selection.
     pub gizmo_hovered: bool,
+    /// Load this scene (relative to the project folder).
+    pub open: Option<PathBuf>,
+    /// The user confirmed closing the editor.
+    pub exit: bool,
 }
 
 impl Editor {
-    pub fn new(game_name: String, scene_path: PathBuf) -> Self {
+    pub fn new(game_name: String, project_dir: PathBuf, scene_path: PathBuf) -> Self {
         Self {
             selected: None,
             reveal_selection: false,
             scene_path,
             game_name,
+            project_dir,
+            saved_state: None,
+            message: None,
+            confirm: None,
             history: History::default(),
             pending: None,
             gizmo: TransformGizmo::default(),
@@ -81,6 +103,8 @@ impl Editor {
             changed: Vec::new(),
             settled: false,
             gizmo_hovered: false,
+            open: None,
+            exit: false,
         };
         egui::Panel::top("editor_top")
             .show(ui, |ui| self.top_bar(ui, scene, stats, blink, &mut output));
@@ -116,9 +140,109 @@ impl Editor {
             output.settled |= self.commit_pending(scene);
         }
 
+        self.confirm_dialog(ui, scene, &mut output);
+
         output.viewport = ui.available_rect_before_wrap();
         hints(ui, output.viewport);
         output
+    }
+
+    /// Unsaved changes, including an edit still in progress.
+    pub fn is_dirty(&self) -> bool {
+        self.pending.is_some() || self.history.state() != self.saved_state
+    }
+
+    /// Writes the scene to its file. Returns true if a pending edit was
+    /// committed first (collision needs a rebuild).
+    pub fn save(&mut self, scene: &Scene) -> bool {
+        let settled = self.commit_pending(scene);
+        let path = self.project_dir.join(&self.scene_path);
+        match scene.save(&path) {
+            Ok(()) => {
+                self.saved_state = self.history.state();
+                self.message = Some((format!("SAVED {}", self.scene_path.display()), false));
+                log::info!("saved {}", path.display());
+            }
+            Err(err) => {
+                log::error!("{err}");
+                self.message = Some((err.to_string(), true));
+            }
+        }
+        settled
+    }
+
+    /// The window wants to close. Returns true if it may close now;
+    /// otherwise asks about unsaved changes first.
+    pub fn request_close(&mut self) -> bool {
+        if self.is_dirty() {
+            self.confirm = Some(Confirm::Close);
+            false
+        } else {
+            true
+        }
+    }
+
+    /// A new scene was loaded: start fresh.
+    pub fn scene_loaded(&mut self, scene_path: PathBuf) {
+        self.message = Some((format!("OPENED {}", scene_path.display()), false));
+        self.scene_path = scene_path;
+        self.selected = None;
+        self.pending = None;
+        self.history = History::default();
+        self.saved_state = None;
+    }
+
+    pub fn show_error(&mut self, error: String) {
+        self.message = Some((error, true));
+    }
+
+    fn open_scene(&mut self, path: PathBuf, output: &mut EditorOutput) {
+        if self.is_dirty() {
+            self.confirm = Some(Confirm::Open(path));
+        } else {
+            output.open = Some(path);
+        }
+    }
+
+    /// Save / discard / cancel, when unsaved changes are in the way.
+    fn confirm_dialog(&mut self, ui: &Ui, scene: &Scene, output: &mut EditorOutput) {
+        let Some(confirm) = self.confirm.clone() else {
+            return;
+        };
+        let mut decision = None;
+        egui::Modal::new(egui::Id::unique("unsaved_changes")).show(ui.ctx(), |ui| {
+            ui.label(RichText::new("UNSAVED CHANGES").strong());
+            ui.label(dim(&format!(
+                "{} HAS CHANGES THAT AREN'T SAVED.",
+                self.scene_path.display().to_string().to_uppercase()
+            )));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.button("SAVE").clicked() {
+                    decision = Some(true);
+                }
+                if ui.button("DISCARD").clicked() {
+                    decision = Some(false);
+                }
+                if ui.button("CANCEL").clicked() {
+                    self.confirm = None;
+                }
+            });
+        });
+        let Some(save) = decision else {
+            return;
+        };
+        self.confirm = None;
+        if save {
+            output.settled |= self.save(scene);
+            if self.is_dirty() {
+                return; // saving failed; the error is in the top bar
+            }
+        }
+        match confirm {
+            Confirm::Open(path) => output.open = Some(path),
+            Confirm::Close => output.exit = true,
+        }
     }
 
     /// Starts (or continues) an edit of one object; `object` is its state
@@ -178,7 +302,31 @@ impl Editor {
             ui.label(RichText::new(format!("ENGINE // EDITOR{cursor}")).strong());
             ui.add_space(12.0);
             ui.label(self.game_name.to_uppercase());
-            ui.label(dim(&self.scene_path.display().to_string().to_uppercase()));
+            egui::ComboBox::from_id_salt("scene_picker")
+                .selected_text(self.scene_path.display().to_string().to_uppercase())
+                .show_ui(ui, |ui| {
+                    for path in scene_files(&self.project_dir) {
+                        let current = path == self.scene_path;
+                        let text = path.display().to_string().to_uppercase();
+                        if ui.selectable_label(current, text).clicked() && !current {
+                            self.open_scene(path, output);
+                        }
+                    }
+                });
+            if self.is_dirty() {
+                ui.label(RichText::new("[MODIFIED]").color(theme::AMBER));
+            }
+            if ui.small_button("SAVE").clicked() {
+                output.settled |= self.save(scene);
+            }
+            if let Some((text, error)) = &self.message {
+                let color = if *error {
+                    theme::ALERT
+                } else {
+                    theme::AMBER_DIM
+                };
+                ui.label(RichText::new(text.to_uppercase()).small().color(color));
+            }
             ui.add_space(12.0);
 
             let undo = format!("UNDO [{}]", self.history.undo_len());
@@ -327,6 +475,21 @@ impl Editor {
     }
 }
 
+/// Scene files in the project's `scenes/` folder, relative to the project.
+fn scene_files(project_dir: &std::path::Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(project_dir.join("scenes")) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "ron"))
+        .filter_map(|p| p.strip_prefix(project_dir).ok().map(PathBuf::from))
+        .collect();
+    files.sort();
+    files
+}
+
 fn section(ui: &mut Ui, title: &str) {
     ui.add_space(10.0);
     ui.label(RichText::new(title).strong());
@@ -345,7 +508,7 @@ fn hints(ui: &Ui, viewport: Rect) {
         .show(ui.ctx(), |ui| {
             ui.label(
                 RichText::new(
-                    "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+Z/Y UNDO/REDO",
+                    "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE",
                 )
                 .small()
                 .color(theme::AMBER_DIM),

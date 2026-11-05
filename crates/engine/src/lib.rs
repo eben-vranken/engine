@@ -13,6 +13,7 @@
 //! - `behaviors` Floating, Door, Switch, PhysicsBody, Singer, ...
 //! - `player`    character controller, camera, abilities
 
+pub mod assets;
 pub mod camera;
 pub mod editor;
 pub mod input;

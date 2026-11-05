@@ -10,10 +10,11 @@ pub mod mesh;
 pub mod scale;
 pub mod texture;
 
+use crate::assets::{Assets, Resolved};
 use crate::camera::Camera;
-use crate::scene::{Environment, Primitive, Scene, Transform};
+use crate::scene::{Environment, Geometry, Scene, Transform};
 use bytemuck::{Pod, Zeroable};
-use glam::{Mat4, Vec4};
+use glam::{Mat4, Vec3, Vec4};
 use mesh::{MeshData, Shape};
 use scale::ScaleLayout;
 use std::sync::Arc;
@@ -68,21 +69,41 @@ struct UpscaleParams {
 struct Draw {
     /// Index into `Scene::objects`.
     object: usize,
-    shape: Shape,
+    /// What the mesh was built from, to notice when it changes.
+    geometry: GeometryKey,
+    /// Uses the grid texture (primitives) or flat color (models).
+    textured: bool,
     uniform: ObjectUniform,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum GeometryKey {
+    Shape(Shape),
+    Model(String),
+}
+
+impl From<Geometry<'_>> for GeometryKey {
+    fn from(geometry: Geometry) -> Self {
+        match geometry {
+            Geometry::Shape(shape) => GeometryKey::Shape(shape),
+            Geometry::Model(path) => GeometryKey::Model(path.to_owned()),
+        }
+    }
+}
+
+/// `textured`: primitives use the grid texture; models are flat-colored.
 fn object_uniform(
-    primitive: &Primitive,
+    color: Vec3,
     transform: &Transform,
     highlighted: bool,
+    textured: bool,
 ) -> ObjectUniform {
     let model = transform.matrix();
     ObjectUniform {
         model,
         normal_matrix: model.inverse().transpose(),
-        color: primitive.color.extend(1.0),
-        highlight: Vec4::new(highlighted as u32 as f32, 0.0, 0.0, 0.0),
+        color: color.extend(1.0),
+        highlight: Vec4::new(highlighted as u32 as f32, textured as u32 as f32, 0.0, 0.0),
     }
 }
 
@@ -423,56 +444,61 @@ impl Renderer {
     }
 
     /// Uploads every object's mesh and transform.
-    pub fn set_scene(&mut self, scene: &Scene) {
+    pub fn set_scene(&mut self, scene: &Scene, assets: &mut Assets) {
         self.environment = scene.environment.clone();
-        let primitives: Vec<_> = scene.primitives().collect();
-        self.meshes = primitives
-            .iter()
-            .map(|(_, primitive, _)| self.create_mesh(primitive.shape))
-            .collect();
+        let renderables: Vec<_> = scene.renderables().collect();
         let (buffer, bind_group) = create_object_buffer(
             &self.device,
             &self.object_layout,
             self.object_stride,
-            primitives.len().max(1),
+            renderables.len().max(1),
         );
         self.object_buffer = buffer;
         self.object_bind_group = bind_group;
-        self.draws = primitives
-            .iter()
-            .map(|&(object, primitive, transform)| Draw {
+        self.meshes.clear();
+        self.draws.clear();
+        for (object, geometry, color, transform) in renderables {
+            let (mesh, textured) = self.create_mesh(assets.resolve(geometry));
+            self.meshes.push(mesh);
+            let highlighted = Some(object) == self.highlighted;
+            self.draws.push(Draw {
                 object,
-                shape: primitive.shape,
-                uniform: object_uniform(primitive, transform, Some(object) == self.highlighted),
-            })
-            .collect();
+                geometry: geometry.into(),
+                textured,
+                uniform: object_uniform(color, transform, highlighted, textured),
+            });
+        }
         for i in 0..self.draws.len() {
             self.write_draw(i);
         }
     }
 
     /// Re-uploads one object after it was edited: its transform and color,
-    /// and its mesh if the shape changed.
-    pub fn update_object(&mut self, scene: &Scene, index: usize) {
-        let primitives: Vec<_> = scene
-            .primitives()
-            .filter(|(object, _, _)| *object == index)
+    /// and its mesh if the geometry changed.
+    pub fn update_object(&mut self, scene: &Scene, index: usize, assets: &mut Assets) {
+        let renderables: Vec<_> = scene
+            .renderables()
+            .filter(|(object, ..)| *object == index)
             .collect();
         let slots: Vec<usize> = (0..self.draws.len())
             .filter(|&i| self.draws[i].object == index)
             .collect();
-        if primitives.len() != slots.len() {
+        if renderables.len() != slots.len() {
             // Components were added or removed: rebuild everything.
-            self.set_scene(scene);
+            self.set_scene(scene, assets);
             return;
         }
         let highlighted = Some(index) == self.highlighted;
-        for (&slot, (_, primitive, transform)) in slots.iter().zip(primitives) {
-            if self.draws[slot].shape != primitive.shape {
-                self.meshes[slot] = self.create_mesh(primitive.shape);
-                self.draws[slot].shape = primitive.shape;
+        for (&slot, (_, geometry, color, transform)) in slots.iter().zip(renderables) {
+            let key = GeometryKey::from(geometry);
+            if self.draws[slot].geometry != key {
+                let (mesh, textured) = self.create_mesh(assets.resolve(geometry));
+                self.meshes[slot] = mesh;
+                self.draws[slot].geometry = key;
+                self.draws[slot].textured = textured;
             }
-            self.draws[slot].uniform = object_uniform(primitive, transform, highlighted);
+            let textured = self.draws[slot].textured;
+            self.draws[slot].uniform = object_uniform(color, transform, highlighted, textured);
             self.write_draw(slot);
         }
     }
@@ -489,8 +515,12 @@ impl Renderer {
         }
     }
 
-    fn create_mesh(&self, shape: Shape) -> GpuMesh {
-        let data = MeshData::from_shape(shape);
+    /// Uploads a mesh; also says whether it gets the grid texture.
+    fn create_mesh(&self, geometry: Resolved) -> (GpuMesh, bool) {
+        let (data, textured) = match geometry {
+            Resolved::Shape(shape) => (std::sync::Arc::new(MeshData::from_shape(shape)), true),
+            Resolved::Mesh(mesh) => (mesh, false),
+        };
         let buffer = |label, contents: &[u8], usage| {
             self.device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -499,7 +529,7 @@ impl Renderer {
                     usage,
                 })
         };
-        GpuMesh {
+        let mesh = GpuMesh {
             vertices: buffer(
                 "vertices",
                 bytemuck::cast_slice(&data.vertices),
@@ -511,7 +541,8 @@ impl Renderer {
                 wgpu::BufferUsages::INDEX,
             ),
             index_count: data.indices.len() as u32,
-        }
+        };
+        (mesh, textured)
     }
 
     fn write_draw(&self, i: usize) {

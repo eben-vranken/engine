@@ -19,7 +19,7 @@ struct Object {
     model: mat4x4<f32>,
     normal_matrix: mat4x4<f32>,
     color: vec4<f32>,
-    // x: selection highlight, 0 or 1.
+    // x: selection highlight, 0 or 1. y: 1 = grid texture, 0 = flat color.
     highlight: vec4<f32>,
 };
 
@@ -56,8 +56,8 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let n = normalize(in.normal);
-    let albedo = textureSample(grid_texture, grid_sampler, in.uv * frame.params.x).rgb
-        * object.color.rgb;
+    let grid = textureSample(grid_texture, grid_sampler, in.uv * frame.params.x).rgb;
+    let albedo = mix(vec3<f32>(1.0), grid, object.highlight.y) * object.color.rgb;
 
     let sun = max(dot(n, -frame.sun_dir.xyz), 0.0) * frame.sun_color.rgb;
     let ambient = mix(frame.ambient_ground.rgb, frame.ambient_sky.rgb, n.y * 0.5 + 0.5);

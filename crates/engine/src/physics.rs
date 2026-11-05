@@ -1,8 +1,9 @@
 //! rapier3d world. For now it only holds static colliders built from the
 //! scene; the character controller queries it.
 
+use crate::assets::{Assets, Resolved};
 use crate::render::mesh::{MeshData, Shape};
-use crate::scene::{Primitive, Scene, Transform};
+use crate::scene::{Scene, Transform};
 use glam::Vec3;
 use rapier3d::prelude::*;
 
@@ -21,7 +22,7 @@ pub struct PhysicsWorld {
 }
 
 impl PhysicsWorld {
-    pub fn from_scene(scene: &Scene) -> Self {
+    pub fn from_scene(scene: &Scene, assets: &mut Assets) -> Self {
         let mut world = Self {
             pipeline: PhysicsPipeline::new(),
             params: IntegrationParameters::default(),
@@ -35,8 +36,12 @@ impl PhysicsWorld {
             soft_bodies: SoftBodySet::new(),
             ccd: CCDSolver::new(),
         };
-        for (object, primitive, transform) in scene.primitives() {
-            if let Some(mut collider) = collider_for(primitive, transform) {
+        for (object, geometry, _, transform) in scene.renderables() {
+            let collider = match assets.resolve(geometry) {
+                Resolved::Shape(shape) => collider_for(shape, transform),
+                Resolved::Mesh(mesh) => mesh_collider(&mesh, transform),
+            };
+            if let Some(mut collider) = collider {
                 collider.user_data = object as u128;
                 world.colliders.insert(collider);
             }
@@ -87,9 +92,9 @@ impl PhysicsWorld {
 
 /// A collider matching the primitive's render mesh. Scale is baked into the
 /// shape, since colliders can't be scaled after the fact.
-fn collider_for(primitive: &Primitive, transform: &Transform) -> Option<Collider> {
+fn collider_for(shape: Shape, transform: &Transform) -> Option<Collider> {
     let scale = transform.scale.abs();
-    let shape = match primitive.shape {
+    let collider_shape = match shape {
         Shape::Box { size } => {
             let half = size * scale * 0.5;
             SharedShape::cuboid(half.x, half.y, half.z)
@@ -109,16 +114,38 @@ fn collider_for(primitive: &Primitive, transform: &Transform) -> Option<Collider
         }
     };
     let rotation = transform.quat();
-    let offset = match primitive.shape {
+    let offset = match shape {
         Shape::Plane { .. } => Vector::Y * -0.005,
         _ => Vector::ZERO,
     };
     Some(
-        ColliderBuilder::new(shape)
+        ColliderBuilder::new(collider_shape)
             .position(Pose::from_parts(
                 transform.position + rotation * offset,
                 rotation,
             ))
+            .build(),
+    )
+}
+
+/// An exact triangle-mesh collider for a model (static only), scale baked in.
+fn mesh_collider(mesh: &MeshData, transform: &Transform) -> Option<Collider> {
+    let vertices: Vec<Vector> = mesh
+        .vertices
+        .iter()
+        .map(|v| Vector::from(v.position) * transform.scale)
+        .collect();
+    let indices: Vec<[u32; 3]> = mesh
+        .indices
+        .chunks_exact(3)
+        .map(|t| [t[0], t[1], t[2]])
+        .collect();
+    let shape = SharedShape::trimesh(vertices, indices)
+        .inspect_err(|err| log::error!("bad model mesh: {err}"))
+        .ok()?;
+    Some(
+        ColliderBuilder::new(shape)
+            .position(Pose::from_parts(transform.position, transform.quat()))
             .build(),
     )
 }
@@ -137,7 +164,7 @@ mod tests {
             },
             Vec3::new(0.0, -0.5, 0.0),
         )]);
-        let world = PhysicsWorld::from_scene(&scene);
+        let world = PhysicsWorld::from_scene(&scene, &mut Assets::default());
         let ray = Ray::new(Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y);
         let (_, toi) = world
             .queries()
@@ -153,7 +180,7 @@ mod tests {
             (Shape::Box { size: Vec3::ONE }, Vec3::new(0.0, 0.0, -5.0)),
             (Shape::Box { size: Vec3::ONE }, Vec3::new(3.0, 0.0, -2.0)),
         ]);
-        let world = PhysicsWorld::from_scene(&scene);
+        let world = PhysicsWorld::from_scene(&scene, &mut Assets::default());
         let (object, distance) = world.pick(Vec3::ZERO, Vec3::NEG_Z, 100.0).unwrap();
         assert_eq!(object, 1);
         assert!((distance - 4.5).abs() < 1e-3);
@@ -179,12 +206,8 @@ mod tests {
             },
         ];
         for shape in shapes {
-            let primitive = Primitive {
-                shape,
-                color: Vec3::ONE,
-            };
             assert!(
-                collider_for(&primitive, &Transform::default()).is_some(),
+                collider_for(shape, &Transform::default()).is_some(),
                 "{shape:?}"
             );
         }
@@ -194,7 +217,7 @@ mod tests {
     fn scale_is_baked_into_the_collider() {
         let mut scene = test_scene(vec![(Shape::Box { size: Vec3::ONE }, Vec3::ZERO)]);
         scene.objects[0].transform.scale = Vec3::new(1.0, 4.0, 1.0);
-        let world = PhysicsWorld::from_scene(&scene);
+        let world = PhysicsWorld::from_scene(&scene, &mut Assets::default());
         let ray = Ray::new(Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y);
         let (_, toi) = world.queries().cast_ray(&ray, 100.0, true).unwrap();
         // A unit box scaled ×4 in Y has its top at y = 2.

@@ -34,32 +34,42 @@ impl Edit {
     }
 }
 
+/// Edits carry an id so "has the scene changed since it was saved?" can be
+/// answered exactly, even after undo and redo.
 #[derive(Debug, Default)]
 pub struct History {
-    undo: Vec<Edit>,
-    redo: Vec<Edit>,
+    undo: Vec<(u64, Edit)>,
+    redo: Vec<(u64, Edit)>,
+    next_id: u64,
 }
 
 impl History {
     /// Records an edit that has already been applied to the scene.
     pub fn record(&mut self, edit: Edit) {
-        self.undo.push(edit);
+        self.next_id += 1;
+        self.undo.push((self.next_id, edit));
         self.redo.clear();
+    }
+
+    /// Identifies the current state: the id of the newest applied edit.
+    /// Equal ids mean identical scenes.
+    pub fn state(&self) -> Option<u64> {
+        self.undo.last().map(|(id, _)| *id)
     }
 
     /// Reverts the last edit; returns the changed object's index.
     pub fn undo(&mut self, scene: &mut Scene) -> Option<usize> {
-        let edit = self.undo.pop()?;
+        let (id, edit) = self.undo.pop()?;
         let index = edit.revert(scene);
-        self.redo.push(edit);
+        self.redo.push((id, edit));
         Some(index)
     }
 
     /// Re-applies the last undone edit; returns the changed object's index.
     pub fn redo(&mut self, scene: &mut Scene) -> Option<usize> {
-        let edit = self.redo.pop()?;
+        let (id, edit) = self.redo.pop()?;
         let index = edit.apply(scene);
-        self.undo.push(edit);
+        self.undo.push((id, edit));
         Some(index)
     }
 
@@ -106,6 +116,22 @@ mod tests {
         history.redo(&mut scene);
         assert_eq!(scene.objects[0].transform.position.x, 2.0);
         assert_eq!(history.redo(&mut scene), None);
+    }
+
+    #[test]
+    fn state_tracks_saved_point_through_undo_and_redo() {
+        let mut scene = test_scene(vec![(Shape::Box { size: Vec3::ONE }, Vec3::ZERO)]);
+        let mut history = History::default();
+        moved(&mut scene, &mut history, 1.0);
+        let saved = history.state();
+        moved(&mut scene, &mut history, 2.0);
+        assert_ne!(history.state(), saved);
+        history.undo(&mut scene);
+        assert_eq!(history.state(), saved);
+        // Undo past the save and make a different edit: not the saved state.
+        history.undo(&mut scene);
+        moved(&mut scene, &mut history, 3.0);
+        assert_ne!(history.state(), saved);
     }
 
     #[test]
