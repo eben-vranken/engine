@@ -55,6 +55,47 @@ impl Shape {
             Shape::Sphere { radius, .. } => Vec3::splat(radius),
         }
     }
+
+    pub const KINDS: [&'static str; 5] = ["box", "plane", "wedge", "cylinder", "sphere"];
+
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Shape::Box { .. } => "box",
+            Shape::Plane { .. } => "plane",
+            Shape::Wedge { .. } => "wedge",
+            Shape::Cylinder { .. } => "cylinder",
+            Shape::Sphere { .. } => "sphere",
+        }
+    }
+
+    /// This shape as another kind (one of [`Shape::KINDS`]) that fills about
+    /// the same bounding box. Segment counts carry over between round shapes.
+    pub fn with_kind(&self, kind: &str) -> Shape {
+        let mut size = self.half_extents() * 2.0;
+        if size.y < 0.01 {
+            // From a plane: give it some height.
+            size.y = 1.0;
+        }
+        let segments = match *self {
+            Shape::Cylinder { segments, .. } | Shape::Sphere { segments, .. } => segments,
+            _ => 12,
+        };
+        match kind {
+            "plane" => Shape::Plane { size: size.xz() },
+            "wedge" => Shape::Wedge { size },
+            "cylinder" => Shape::Cylinder {
+                radius: size.x.max(size.z) * 0.5,
+                height: size.y,
+                segments,
+            },
+            "sphere" => Shape::Sphere {
+                radius: size.max_element() * 0.5,
+                segments,
+                rings: (segments * 2 / 3).max(2),
+            },
+            _ => Shape::Box { size },
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -216,6 +257,35 @@ impl MeshData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn changing_kind_keeps_the_size() {
+        let wide = Shape::Box {
+            size: Vec3::new(2.0, 3.0, 1.0),
+        };
+        assert_eq!(
+            wide.with_kind("cylinder"),
+            Shape::Cylinder {
+                radius: 1.0,
+                height: 3.0,
+                segments: 12
+            }
+        );
+        assert_eq!(wide.with_kind("cylinder").with_kind("box").kind(), "box");
+        let plane = Shape::Plane {
+            size: Vec2::new(4.0, 2.0),
+        };
+        assert_eq!(
+            plane.with_kind("box"),
+            Shape::Box {
+                size: Vec3::new(4.0, 1.0, 2.0)
+            }
+        );
+        assert_eq!(plane.with_kind("box").with_kind("plane"), plane);
+        for kind in Shape::KINDS {
+            assert_eq!(wide.with_kind(kind).kind(), kind);
+        }
+    }
 
     fn all_shapes() -> Vec<Shape> {
         vec![

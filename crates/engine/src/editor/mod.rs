@@ -584,8 +584,11 @@ impl Editor {
                 section(ui, "TRANSFORM");
                 inspector::fields(ui, &mut object.transform);
 
-                for component in &mut object.components {
+                for (i, component) in object.components.iter_mut().enumerate() {
                     section(ui, &inspector::title(component));
+                    if let Component::Primitive(primitive) = component {
+                        shape_kind(ui, i, &mut primitive.shape);
+                    }
                     inspector::fields(ui, component);
                 }
             });
@@ -682,6 +685,26 @@ fn scene_files(project_dir: &std::path::Path) -> Vec<PathBuf> {
         .collect();
     files.sort();
     files
+}
+
+/// Picks a primitive's shape type; the new shape keeps about the same size.
+fn shape_kind(ui: &mut Ui, id: usize, shape: &mut Shape) {
+    ui.horizontal(|ui| {
+        inspector::field_label(ui, "TYPE");
+        egui::ComboBox::from_id_salt(("shape_kind", id))
+            .selected_text(shape.kind().to_uppercase())
+            .show_ui(ui, |ui| {
+                for kind in Shape::KINDS {
+                    if ui
+                        .selectable_label(shape.kind() == kind, kind.to_uppercase())
+                        .clicked()
+                        && shape.kind() != kind
+                    {
+                        *shape = shape.with_kind(kind);
+                    }
+                }
+            });
+    });
 }
 
 fn section(ui: &mut Ui, title: &str) {
