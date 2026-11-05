@@ -3,6 +3,7 @@
 //! player tuning panel.
 
 use crate::assets::Assets;
+use crate::behaviors::Behaviors;
 use crate::camera::{Camera, FlyCamera};
 use crate::editor::history::Change;
 use crate::editor::import;
@@ -134,6 +135,8 @@ struct Running {
     exit_requested: bool,
     /// Editor: playing in place; what Stop restores.
     play: Option<PlaySnapshot>,
+    /// Running behaviors: always in play mode, in the editor while playing.
+    behaviors: Option<Behaviors>,
 }
 
 /// The editor's state when Play was pressed.
@@ -324,6 +327,7 @@ impl Running {
             game_dir: config.game_dir.clone(),
             exit_requested: false,
             play: None,
+            behaviors: (!config.editor).then(|| Behaviors::start(&config.scene)),
         })
     }
 
@@ -451,6 +455,24 @@ impl Running {
         }
     }
 
+    /// Behaviors act on the scene; moved objects are redrawn and their
+    /// colliders follow.
+    fn run_behaviors(&mut self, dt: f32) {
+        let Some(behaviors) = &mut self.behaviors else {
+            return;
+        };
+        let moved = behaviors.update(&mut self.scene, dt);
+        for &index in &moved {
+            self.renderer
+                .update_object(&self.scene, index, &mut self.assets);
+            self.physics
+                .move_object(index, &self.scene.objects[index].transform);
+        }
+        if !moved.is_empty() {
+            self.physics.step(dt);
+        }
+    }
+
     /// Editor: Play runs the scene from its PlayerStart; Stop puts back the
     /// scene and the editor camera as they were.
     fn toggle_play(&mut self) {
@@ -473,6 +495,7 @@ impl Running {
         });
         self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
         self.player = Player::new(spawn_point(&self.scene), &self.settings);
+        self.behaviors = Some(Behaviors::start(&self.scene));
         self.mode = CameraMode::Player;
         self.mouse_released = false;
         self.tuning_open = false;
@@ -484,6 +507,7 @@ impl Running {
         };
         self.scene = snapshot.scene;
         self.fly.camera = snapshot.camera;
+        self.behaviors = None;
         self.renderer.set_scene(&self.scene, &mut self.assets);
         self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
         self.mode = CameraMode::Fly;
@@ -641,6 +665,7 @@ impl Running {
         self.handle_keys(&mut actions);
         self.poll_files();
         self.update_mouse_capture();
+        self.run_behaviors(dt);
 
         let camera = match self.mode {
             CameraMode::Player => {

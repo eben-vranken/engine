@@ -13,7 +13,7 @@ pub mod inspector;
 pub mod markers;
 
 use crate::render::mesh::Shape;
-use crate::scene::{Component, Model, Object, Primitive, Scene, Transform};
+use crate::scene::{Component, Floating, Model, Object, Primitive, Scene, Transform};
 use crate::ui::theme;
 use egui::{Align, Layout, Rect, RichText, Ui};
 use gizmo::{TransformGizmo, View};
@@ -692,13 +692,36 @@ impl Editor {
                 section(ui, "TRANSFORM");
                 inspector::fields(ui, &mut object.transform);
 
+                let mut remove = None;
                 for (i, component) in object.components.iter_mut().enumerate() {
-                    section(ui, &inspector::title(component));
+                    if component_header(ui, &inspector::title(component)) {
+                        remove = Some(i);
+                    }
                     if let Component::Primitive(primitive) = component {
                         shape_kind(ui, i, &mut primitive.shape);
                     }
                     inspector::fields(ui, component);
                 }
+                if let Some(i) = remove {
+                    object.components.remove(i);
+                }
+
+                ui.add_space(10.0);
+                ui.menu_button("ADD COMPONENT", |ui| {
+                    for (name, component) in new_components() {
+                        let kind = std::mem::discriminant(&component);
+                        let present = object
+                            .components
+                            .iter()
+                            .any(|c| std::mem::discriminant(c) == kind);
+                        if ui
+                            .add_enabled(!present, egui::Button::new(name.to_uppercase()))
+                            .clicked()
+                        {
+                            object.components.push(component);
+                        }
+                    }
+                });
             });
 
         if *object != before {
@@ -815,6 +838,27 @@ fn shape_kind(ui: &mut Ui, id: usize, shape: &mut Shape) {
                 }
             });
     });
+}
+
+/// Components the inspector can add (one of each per object).
+fn new_components() -> [(&'static str, Component); 1] {
+    [("floating", Component::Floating(Floating::default()))]
+}
+
+/// A component's title with a REMOVE button; returns true if it was clicked.
+fn component_header(ui: &mut Ui, title: &str) -> bool {
+    ui.add_space(10.0);
+    let removed = ui
+        .horizontal(|ui| {
+            ui.label(RichText::new(title).strong());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.small_button("REMOVE").clicked()
+            })
+            .inner
+        })
+        .inner;
+    ui.separator();
+    removed
 }
 
 fn section(ui: &mut Ui, title: &str) {

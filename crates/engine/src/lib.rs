@@ -14,6 +14,7 @@
 //! - `player`    character controller, camera, abilities
 
 pub mod assets;
+pub mod behaviors;
 pub mod camera;
 mod cursor;
 pub mod editor;

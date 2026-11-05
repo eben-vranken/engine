@@ -24,6 +24,8 @@ pub struct PhysicsWorld {
     multibody_joints: MultibodyJointSet,
     soft_bodies: SoftBodySet,
     ccd: CCDSolver,
+    /// Every collider with its object and its pose relative to the object.
+    placed: Vec<(ColliderHandle, usize, Pose)>,
 }
 
 impl PhysicsWorld {
@@ -40,6 +42,7 @@ impl PhysicsWorld {
             multibody_joints: MultibodyJointSet::new(),
             soft_bodies: SoftBodySet::new(),
             ccd: CCDSolver::new(),
+            placed: Vec::new(),
         };
         for (object, geometry, transform, solid) in scene.colliders() {
             let collider = match assets.resolve(geometry) {
@@ -48,17 +51,32 @@ impl PhysicsWorld {
             };
             if let Some(mut collider) = collider {
                 collider.user_data = object as u128;
+                let relative = object_pose(transform).inverse() * *collider.position();
                 if !solid {
                     collider.set_collision_groups(
                         InteractionGroups::all().with_memberships(WALK_THROUGH),
                     );
                 }
-                world.colliders.insert(collider);
+                let handle = world.colliders.insert(collider);
+                world.placed.push((handle, object, relative));
             }
         }
         // One step registers the colliders with the broad phase so queries see them.
         world.step(1.0 / 60.0);
         world
+    }
+
+    /// Moves an object's colliders along with it (behaviors). The move
+    /// shows in queries after the next `step`.
+    pub fn move_object(&mut self, object: usize, transform: &Transform) {
+        let pose = object_pose(transform);
+        for &(handle, owner, relative) in &self.placed {
+            if owner == object
+                && let Some(collider) = self.colliders.get_mut(handle)
+            {
+                collider.set_position(pose * relative);
+            }
+        }
     }
 
     pub fn step(&mut self, dt: f32) {
@@ -131,6 +149,10 @@ impl PhysicsWorld {
             filter,
         )
     }
+}
+
+fn object_pose(transform: &Transform) -> Pose {
+    Pose::from_parts(transform.position, transform.quat())
 }
 
 /// A collider matching the primitive's render mesh. Scale is baked into the
@@ -261,6 +283,27 @@ mod tests {
         assert!(world.surface(Vec3::ZERO, Vec3::NEG_Z, 100.0).is_some());
         let ray = Ray::new(Vec3::ZERO, Vec3::NEG_Z);
         assert!(world.queries().cast_ray(&ray, 100.0, true).is_none());
+    }
+
+    #[test]
+    fn moved_objects_are_hit_where_they_are_now() {
+        let scene = test_scene(vec![(
+            Shape::Plane {
+                size: Vec2::splat(2.0),
+            },
+            Vec3::ZERO,
+        )]);
+        let mut world = PhysicsWorld::from_scene(&scene, &mut Assets::default());
+        let down = |world: &PhysicsWorld| world.surface(Vec3::Y * 5.0, Vec3::NEG_Y, 10.0);
+        assert!(down(&world).unwrap().0.y.abs() < 1e-3);
+
+        world.move_object(0, &Transform::at(Vec3::Y * 2.0));
+        world.step(1.0 / 60.0);
+        let (point, _) = down(&world).unwrap();
+        assert!(
+            (point.y - 2.0).abs() < 1e-3,
+            "plane now at 2 m, hit {point}"
+        );
     }
 
     #[test]

@@ -82,6 +82,7 @@ pub enum Component {
     Model(Model),
     /// Where the player spawns; faces the object's yaw.
     PlayerStart,
+    Floating(Floating),
 }
 
 /// A shape generated in code, drawn with the grid texture and a collider.
@@ -109,6 +110,28 @@ pub struct Model {
     /// Blocks the player. Off: walk-through, but still clickable in the editor.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub collision: bool,
+}
+
+/// Bobs up and down around where it was placed while the game runs.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Floating {
+    /// Meters above and below the rest position.
+    pub height: f32,
+    /// Bobs per second.
+    pub speed: f32,
+    /// Where in the bob it starts, 0–1, so neighbours can bob out of step.
+    pub phase: f32,
+}
+
+impl Default for Floating {
+    fn default() -> Self {
+        Self {
+            height: 0.25,
+            speed: 0.25,
+            phase: 0.0,
+        }
+    }
 }
 
 /// What an object looks like and collides as.
@@ -230,7 +253,7 @@ impl Scene {
                 Component::Model(m) => {
                     Some((index, Geometry::Model(&m.path), m.color, &object.transform))
                 }
-                Component::PlayerStart => None,
+                Component::PlayerStart | Component::Floating(_) => None,
             })
         })
     }
@@ -252,7 +275,7 @@ impl Scene {
                     &object.transform,
                     m.collision,
                 )),
-                Component::PlayerStart => None,
+                Component::PlayerStart | Component::Floating(_) => None,
             })
         })
     }
