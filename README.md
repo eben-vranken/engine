@@ -1,12 +1,20 @@
 # engine
 
-A small Rust 3D engine and editor for quiet, atmospheric, audio-first games: crisp HD output, very low-poly worlds, strong light and real volumetric fog, and sound that is physically simulated from the scene's geometry.
+*A small Rust 3D engine and editor for quiet, atmospheric, audio-first games.*
 
-<video src="https://github.com/eben-vranken/engine/raw/main/preview.mp4" controls autoplay loop muted playsinline width="100%"></video>
+Crisp HD output. Very low-poly worlds. Strong light and real volumetric fog. Sound physically simulated from the geometry of the scene.
 
-*A dark grey-box hall: sunlight falls through one window as a shaft in the fog, a lantern glows at the far end ([video](preview.mp4)).*
+## Demo
 
-*Working name.* Games made with it are content-only project folders that live outside this repo; the editor is the game with a UI on top. Built with [Claude Code](https://claude.com/claude-code).
+https://github.com/eben-vranken/engine/blob/main/preview.mp4
+
+*A dark grey-box hall. Sunlight cuts through a window as a shaft in the fog; a lantern glows at the far end.*
+
+## About
+
+**Working name.** Games made with the engine are content-only project folders that live outside this repository. The editor is the game with a UI on top.
+
+Built with [Claude Code](https://claude.com/claude-code).
 
 ## What it does
 
