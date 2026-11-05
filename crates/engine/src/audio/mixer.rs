@@ -1,12 +1,21 @@
 //! The audio thread's side. Every voice goes through Steam Audio's direct
-//! effect (distance attenuation, air absorption) and HRTF binaural
-//! rendering, then the mix through a master limiter. It never blocks: new
-//! voices arrive over a channel, new parameters through a `try_lock`.
+//! effect (distance, air absorption, occlusion, transmission) and is placed
+//! with HRTF (or plain panning); its reflections are convolved into a shared
+//! ambisonic bus that is decoded once per frame. The mix goes through a
+//! master limiter.
+//!
+//! It never blocks: voices arrive as commands over a channel, per-frame
+//! parameters through a `try_lock`, reflection results through a lock-free
+//! swap.
 
+use super::Toggles;
 use super::clip::Clip;
+use audionimbus::wiring::{ReflectionsOutput, SharedSimulationOutput};
 use audionimbus::{
-    AudioBufferMut, AudioBufferRef, BinauralEffect, BinauralEffectParams, DirectEffect,
-    DirectEffectParams, Direction, Equalizer, Hrtf, HrtfInterpolation, Transmission,
+    AmbisonicsDecodeEffect, AmbisonicsDecodeEffectParams, AudioBufferMut, AudioBufferRef,
+    BinauralEffect, BinauralEffectParams, Convolution, CoordinateSystem, DirectEffect,
+    DirectEffectParams, Direction, Equalizer, Hrtf, HrtfInterpolation, PanningEffect,
+    PanningEffectParams, ReflectionEffect, Transmission,
 };
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -15,13 +24,29 @@ use std::sync::{Arc, Mutex};
 const CEILING: f32 = 0.9;
 /// Seconds for the limiter to let go after a loud peak.
 const RELEASE: f32 = 0.25;
+/// First-order ambisonics: 4 channels.
+pub const AMBISONIC_CHANNELS: usize = 4;
 
-/// One playing sound and its effects' state.
+/// One sound the mixer can play, with its effects' state.
 pub struct Voice {
-    pub clip: Clip,
+    pub id: u32,
+    /// `None` until a one-shot voice is given something to play.
+    pub clip: Option<Clip>,
     pub position: usize,
     pub direct: DirectEffect,
     pub binaural: BinauralEffect,
+    pub panning: PanningEffect,
+    pub reflection: ReflectionEffect<Convolution>,
+}
+
+pub enum Command {
+    Add(Voice),
+    Remove(u32),
+    /// Start a clip on a (one-shot) voice from the beginning.
+    Play {
+        id: u32,
+        clip: Clip,
+    },
 }
 
 /// Per-voice values the main thread computes each frame.
@@ -54,19 +79,37 @@ impl Default for VoiceParams {
     }
 }
 
+/// What the main thread shares with the mixer each frame.
+#[derive(Clone, Default)]
+pub struct Shared {
+    pub voices: Vec<(u32, VoiceParams)>,
+    pub listener: CoordinateSystem,
+    pub toggles: Toggles,
+}
+
+/// The ambisonic decoders for the reverb bus, one per HRTF setting.
+pub struct Decoders {
+    pub binaural: AmbisonicsDecodeEffect,
+    pub panning: AmbisonicsDecodeEffect,
+}
+
 pub struct Mixer {
     hrtf: Hrtf,
     frame_size: usize,
     voices: Vec<Voice>,
-    params: Vec<VoiceParams>,
-    new_voices: Receiver<Vec<Voice>>,
-    shared_params: Arc<Mutex<Vec<VoiceParams>>>,
+    commands: Receiver<Command>,
+    shared_in: Arc<Mutex<Shared>>,
+    shared: Shared,
+    reflections: SharedSimulationOutput<ReflectionsOutput<u32, Convolution>>,
+    decoders: Decoders,
     /// The current frame (deinterleaved stereo) and how much of it is played.
     mix: Vec<f32>,
     cursor: usize,
     input: Vec<f32>,
     attenuated: Vec<f32>,
     spatial: Vec<f32>,
+    reflected: Vec<f32>,
+    reverb_bus: Vec<f32>,
     limiter: Limiter,
 }
 
@@ -75,21 +118,27 @@ impl Mixer {
         hrtf: Hrtf,
         frame_size: usize,
         rate: u32,
-        new_voices: Receiver<Vec<Voice>>,
-        shared_params: Arc<Mutex<Vec<VoiceParams>>>,
+        commands: Receiver<Command>,
+        shared_in: Arc<Mutex<Shared>>,
+        reflections: SharedSimulationOutput<ReflectionsOutput<u32, Convolution>>,
+        decoders: Decoders,
     ) -> Self {
         Self {
             hrtf,
             frame_size,
             voices: Vec::new(),
-            params: Vec::new(),
-            new_voices,
-            shared_params,
+            commands,
+            shared_in,
+            shared: Shared::default(),
+            reflections,
+            decoders,
             mix: vec![0.0; frame_size * 2],
             cursor: frame_size,
             input: vec![0.0; frame_size],
             attenuated: vec![0.0; frame_size],
             spatial: vec![0.0; frame_size * 2],
+            reflected: vec![0.0; frame_size * AMBISONIC_CHANNELS],
+            reverb_bus: vec![0.0; frame_size * AMBISONIC_CHANNELS],
             limiter: Limiter::new(rate),
         }
     }
@@ -111,78 +160,148 @@ impl Mixer {
         }
     }
 
+    fn apply_commands(&mut self) {
+        while let Ok(command) = self.commands.try_recv() {
+            match command {
+                Command::Add(voice) => self.voices.push(voice),
+                Command::Remove(id) => self.voices.retain(|v| v.id != id),
+                Command::Play { id, clip } => {
+                    if let Some(voice) = self.voices.iter_mut().find(|v| v.id == id) {
+                        voice.clip = Some(clip);
+                        voice.position = 0;
+                    }
+                }
+            }
+        }
+    }
+
     /// Renders the next frame into `mix`.
     fn render(&mut self) {
-        while let Ok(voices) = self.new_voices.try_recv() {
-            self.voices = voices;
+        self.apply_commands();
+        if let Ok(shared) = self.shared_in.try_lock() {
+            self.shared.clone_from(&shared);
         }
-        if let Ok(params) = self.shared_params.try_lock() {
-            self.params.clone_from(&params);
-        }
+        let toggles = self.shared.toggles;
+        let reflections = self.reflections.load();
         self.mix.fill(0.0);
-        let n = self.frame_size;
-        for (voice, params) in self.voices.iter_mut().zip(&self.params) {
-            if !read(voice, params, &mut self.input) {
+        self.reverb_bus.fill(0.0);
+        let mut reverb = false;
+
+        for voice in &mut self.voices {
+            let Some(params) = self
+                .shared
+                .voices
+                .iter()
+                .find(|(id, _)| *id == voice.id)
+                .map(|(_, p)| *p)
+            else {
+                continue;
+            };
+            if !read(voice, &params, &mut self.input) {
                 continue;
             }
+            let Ok(input) = AudioBufferRef::try_from(&self.input[..]) else {
+                continue;
+            };
             let direct = DirectEffectParams {
                 distance_attenuation: Some(params.distance_attenuation),
-                air_absorption: Some(Equalizer(params.air_absorption)),
+                air_absorption: toggles
+                    .air_absorption
+                    .then_some(Equalizer(params.air_absorption)),
                 directivity: None,
-                occlusion: Some(params.occlusion),
-                transmission: Some(Transmission::FrequencyDependent(Equalizer(
-                    params.transmission,
-                ))),
+                occlusion: toggles.occlusion.then_some(params.occlusion),
+                transmission: toggles
+                    .occlusion
+                    .then_some(Transmission::FrequencyDependent(Equalizer(
+                        params.transmission,
+                    ))),
             };
-            let binaural = BinauralEffectParams {
-                direction: Direction::new(
-                    params.direction[0],
-                    params.direction[1],
-                    params.direction[2],
-                ),
-                interpolation: HrtfInterpolation::Bilinear,
-                spatial_blend: 1.0,
-                hrtf: self.hrtf.clone(),
-                peak_delays: None,
-            };
-            let (Ok(input), Ok(mut attenuated), Ok(mut spatial)) = (
-                AudioBufferRef::try_from(&self.input[..]),
-                AudioBufferMut::try_new(&mut self.attenuated, 1),
+            if let Ok(mut attenuated) = AudioBufferMut::try_new(&mut self.attenuated, 1) {
+                let _ = voice.direct.apply(&direct, &input, &mut attenuated);
+            }
+            let [x, y, z] = params.direction;
+            let direction = Direction::new(x, y, z);
+            if let (Ok(attenuated), Ok(mut spatial)) = (
+                AudioBufferRef::try_from(&self.attenuated[..]),
                 AudioBufferMut::try_new(&mut self.spatial, 2),
-            ) else {
-                continue;
-            };
-            if voice
-                .direct
-                .apply(&direct, &input, &mut attenuated)
-                .is_err()
-            {
-                continue;
+            ) {
+                let placed = if toggles.hrtf {
+                    let params = BinauralEffectParams {
+                        direction,
+                        interpolation: HrtfInterpolation::Bilinear,
+                        spatial_blend: 1.0,
+                        hrtf: self.hrtf.clone(),
+                        peak_delays: None,
+                    };
+                    voice
+                        .binaural
+                        .apply(&params, &attenuated, &mut spatial)
+                        .is_ok()
+                } else {
+                    let params = PanningEffectParams { direction };
+                    voice
+                        .panning
+                        .apply(&params, &attenuated, &mut spatial)
+                        .is_ok()
+                };
+                if placed {
+                    for (mix, sample) in self.mix.iter_mut().zip(&self.spatial) {
+                        *mix += sample;
+                    }
+                }
             }
-            let Ok(attenuated) = AudioBufferRef::try_from(&self.attenuated[..]) else {
-                continue;
-            };
-            if voice
-                .binaural
-                .apply(&binaural, &attenuated, &mut spatial)
-                .is_err()
+
+            // Reflections: the dry sound convolved with the room's response.
+            if toggles.reflections
+                && let Some(room) = reflections.sources.get(&voice.id)
+                && let Ok(mut reflected) =
+                    AudioBufferMut::try_new(&mut self.reflected, AMBISONIC_CHANNELS)
+                && voice.reflection.apply(room, &input, &mut reflected).is_ok()
             {
-                continue;
-            }
-            for (mix, sample) in self.mix.iter_mut().zip(&self.spatial[..2 * n]) {
-                *mix += sample;
+                for (bus, sample) in self.reverb_bus.iter_mut().zip(&self.reflected) {
+                    *bus += sample;
+                }
+                reverb = true;
             }
         }
-        let (left, right) = self.mix.split_at_mut(n);
+
+        if reverb
+            && let (Ok(bus), Ok(mut spatial)) = (
+                AudioBufferRef::try_new(&self.reverb_bus, AMBISONIC_CHANNELS),
+                AudioBufferMut::try_new(&mut self.spatial, 2),
+            )
+        {
+            let params = AmbisonicsDecodeEffectParams {
+                order: 1,
+                hrtf: self.hrtf.clone(),
+                orientation: self.shared.listener,
+            };
+            let decoder = if toggles.hrtf {
+                &mut self.decoders.binaural
+            } else {
+                &mut self.decoders.panning
+            };
+            if decoder.apply(&params, &bus, &mut spatial).is_ok() {
+                for (mix, sample) in self.mix.iter_mut().zip(&self.spatial) {
+                    *mix += sample;
+                }
+            }
+        }
+
+        let (left, right) = self.mix.split_at_mut(self.frame_size);
         self.limiter.process(left, right);
     }
 }
 
 /// The voice's next frame of samples into `out`, scaled by its volume.
-/// False once a one-shot clip has finished.
+/// False when there's nothing to play: no clip, or a one-shot that has
+/// finished (its reverb tail still rings out through the convolution, which
+/// is fed silence).
 fn read(voice: &mut Voice, params: &VoiceParams, out: &mut [f32]) -> bool {
-    let clip = &voice.clip;
-    if clip.is_empty() || (!params.looping && voice.position >= clip.len()) {
+    let Some(clip) = &voice.clip else {
+        return false;
+    };
+    if clip.is_empty() {
         return false;
     }
     for sample in out.iter_mut() {

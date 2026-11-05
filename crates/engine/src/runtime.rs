@@ -3,7 +3,7 @@
 //! player tuning panel.
 
 use crate::assets::Assets;
-use crate::audio::Audio;
+use crate::audio::{Audio, Toggles};
 use crate::behaviors::{Behaviors, Interaction, is_usable_switch};
 use crate::camera::{Camera, FlyCamera};
 use crate::editor::history::Change;
@@ -15,7 +15,7 @@ use crate::player::settings::{PlayerSettings, SettingsFile};
 use crate::player::tuning::{self, TuningAction};
 use crate::player::{Player, Spawn};
 use crate::render::{RenderError, Renderer, scale};
-use crate::scene::Scene;
+use crate::scene::{Component, Scene};
 use crate::ui::{Overlay, theme};
 use egui::{Align2, RichText};
 use glam::{Vec2, Vec3};
@@ -140,6 +140,10 @@ struct Running {
     behaviors: Option<Behaviors>,
     /// A text prompt for what the player is looking at.
     prompt: Option<&'static str>,
+    /// Footsteps: meters walked since the last step, and whether the player
+    /// was on the ground last frame (landing makes a step too).
+    stride: f32,
+    was_grounded: bool,
     /// `None` without an output device (the game runs silent).
     audio: Option<Audio>,
 }
@@ -338,6 +342,8 @@ impl Running {
             play: None,
             behaviors: (!config.editor).then(|| Behaviors::start(&config.scene)),
             prompt: None,
+            stride: 0.0,
+            was_grounded: true,
             audio: Audio::new(config.game_dir.clone())
                 .inspect_err(|err| log::error!("{err}; running without sound"))
                 .ok(),
@@ -374,6 +380,20 @@ impl Running {
     fn handle_keys(&mut self, actions: &mut HudActions) {
         if self.editor.is_some() && self.input.pressed(KeyCode::F5) {
             self.toggle_play();
+        }
+        // A/B comparison of the acoustic simulation, anywhere.
+        if let Some(audio) = &mut self.audio {
+            let toggles = &mut audio.toggles;
+            for (key, flag) in [
+                (KeyCode::F6, &mut toggles.occlusion),
+                (KeyCode::F7, &mut toggles.reflections),
+                (KeyCode::F8, &mut toggles.hrtf),
+                (KeyCode::F9, &mut toggles.air_absorption),
+            ] {
+                if self.input.pressed(key) {
+                    *flag = !*flag;
+                }
+            }
         }
         // While playing in the editor, the game's keys apply (below).
         let playing = self.play.is_some();
@@ -474,6 +494,7 @@ impl Running {
         if self.behaviors.is_none() {
             return;
         }
+        self.game_sounds(dt);
         let interaction = self.interaction();
         let Some(behaviors) = &mut self.behaviors else {
             return;
@@ -510,6 +531,61 @@ impl Running {
             transform.set_quat(rotation);
             self.renderer
                 .update_object(&self.scene, index, &mut self.assets);
+        }
+    }
+
+    /// Sounds the player makes: claps (Q), footsteps by floor material, and
+    /// M to bring the looping sound to where the player stands.
+    fn game_sounds(&mut self, dt: f32) {
+        let eye = match self.mode {
+            CameraMode::Player => self.player.camera(&self.settings),
+            CameraMode::Fly => self.fly.camera.clone(),
+        };
+        if self.input.pressed(KeyCode::KeyM) {
+            let ahead = eye.forward().with_y(0.0).normalize_or(Vec3::NEG_Z);
+            let looping = self.scene.objects.iter().position(|o| {
+                o.components
+                    .iter()
+                    .any(|c| matches!(c, Component::SoundSource(s) if s.looping))
+            });
+            if let Some(index) = looping {
+                self.scene.objects[index].transform.position = eye.position + ahead * 1.5;
+                self.renderer
+                    .update_object(&self.scene, index, &mut self.assets);
+                self.rebuild_physics();
+            }
+        }
+        let Some(audio) = &mut self.audio else {
+            return;
+        };
+        if self.input.pressed(KeyCode::KeyQ) {
+            audio.clap(eye.position);
+        }
+        if self.mode != CameraMode::Player {
+            return;
+        }
+        let grounded = self.player.grounded;
+        let landed = grounded && !self.was_grounded;
+        self.was_grounded = grounded;
+        if grounded {
+            self.stride += self.player.horizontal_speed() * dt;
+        }
+        if landed || self.stride >= STRIDE {
+            self.stride = 0.0;
+            let feet = self.player.feet;
+            let floor = self.physics.object_below(feet + Vec3::Y * 0.1, 0.4);
+            let material = floor
+                .and_then(|i| self.scene.objects.get(i))
+                .and_then(|o| {
+                    o.components.iter().find_map(|c| match c {
+                        Component::AcousticMaterial(m) => Some(m.preset),
+                        _ => None,
+                    })
+                })
+                .unwrap_or_default();
+            if floor.is_some() {
+                audio.footstep(material, feet);
+            }
         }
     }
 
@@ -814,6 +890,8 @@ impl Running {
             },
         };
         let prompt = self.prompt;
+        let toggles = self.audio.as_ref().map(|a| a.toggles);
+        let game_running = self.behaviors.is_some();
         let ui_frame = self.overlay.run(
             &self.window,
             self.renderer.device(),
@@ -835,6 +913,9 @@ impl Running {
                 }
                 if let Some(text) = prompt {
                     draw_prompt(ui, view.image, text);
+                }
+                if let Some(toggles) = toggles {
+                    draw_audio_panel(ui, view.image, &toggles, game_running);
                 }
             },
         );
@@ -945,6 +1026,37 @@ fn spawn_point(scene: &Scene) -> Spawn {
 const REACH: f32 = 2.5;
 
 /// A quiet text prompt just below the middle of the view.
+/// Meters walked per footstep.
+const STRIDE: f32 = 0.75;
+
+/// The acoustic simulation's switches, top right of the view.
+fn draw_audio_panel(ui: &egui::Ui, image: egui::Rect, toggles: &Toggles, game_running: bool) {
+    let state = |on: bool| if on { "[ON] " } else { "[OFF]" };
+    let mut lines = vec![
+        format!("F6 OCCLUSION   {}", state(toggles.occlusion)),
+        format!("F7 REFLECTIONS {}", state(toggles.reflections)),
+        format!("F8 HRTF        {}", state(toggles.hrtf)),
+        format!("F9 AIR         {}", state(toggles.air_absorption)),
+    ];
+    if game_running {
+        lines.push("Q CLAP   M MOVE SOUND HERE".into());
+    }
+    egui::Area::new(egui::Id::unique("audio_panel"))
+        .pivot(egui::Align2::RIGHT_TOP)
+        .fixed_pos(image.right_top() + egui::vec2(-10.0, 10.0))
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            for line in lines {
+                let color = if line.contains("[OFF]") {
+                    crate::ui::theme::ALERT
+                } else {
+                    crate::ui::theme::AMBER_DIM
+                };
+                ui.label(egui::RichText::new(line).small().color(color));
+            }
+        });
+}
+
 fn draw_prompt(ui: &egui::Ui, image: egui::Rect, text: &str) {
     egui::Area::new(egui::Id::unique("prompt"))
         .pivot(egui::Align2::CENTER_TOP)

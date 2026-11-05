@@ -49,8 +49,7 @@ impl AcousticGeometry {
         let mut world = MeshBuilder::default();
         let mut instances = Vec::new();
         for (object, geometry, transform, solid) in scene.colliders() {
-            // Walk-through objects (collision off) don't block sound either.
-            if !solid {
+            if !blocks_sound(scene, object, solid) {
                 continue;
             }
             let resolved = assets.resolve(geometry);
@@ -96,7 +95,7 @@ impl AcousticGeometry {
     }
 
     /// Moves the instanced meshes to where their objects are now. Returns
-    /// true if any moved (the scene was committed again).
+    /// true if any moved; the scene then needs a commit.
     pub fn follow(&mut self, scene: &Scene) -> bool {
         let mut moved = false;
         for (object, handle, placed) in &mut self.instances {
@@ -110,9 +109,6 @@ impl AcousticGeometry {
                 moved = true;
             }
         }
-        if moved {
-            self.scene.commit();
-        }
         moved
     }
 }
@@ -123,7 +119,7 @@ impl AcousticGeometry {
 pub fn signature(scene: &Scene) -> u64 {
     let mut hasher = DefaultHasher::new();
     for (object, geometry, transform, solid) in scene.colliders() {
-        if !solid {
+        if !blocks_sound(scene, object, solid) {
             continue;
         }
         object.hash(&mut hasher);
@@ -138,6 +134,17 @@ pub fn signature(scene: &Scene) -> u64 {
         }
     }
     hasher.finish()
+}
+
+/// Walk-through objects (collision off) don't block sound, and neither
+/// does an object that is itself a sound source: its own shape would muffle
+/// it.
+fn blocks_sound(scene: &Scene, object: usize, solid: bool) -> bool {
+    solid
+        && !scene.objects[object]
+            .components
+            .iter()
+            .any(|c| matches!(c, Component::SoundSource(_)))
 }
 
 /// Objects whose geometry moves while the game runs.
@@ -306,6 +313,111 @@ mod tests {
     fn walls_occlude_unless_their_collision_is_off() {
         assert!(occlusion_through_wall(true) < 0.1, "behind a wall");
         assert!(occlusion_through_wall(false) > 0.9, "walk-through wall");
+    }
+
+    /// Energy of a click's reflections in a closed 6×4×6 m room made of
+    /// `preset`, from 0.25 s after the click on (the reverb tail).
+    fn reverb_tail(preset: AcousticPreset) -> f32 {
+        use audionimbus::*;
+        let room = |size: Vec3, at: Vec3| (Shape::Box { size }, at);
+        let mut scene = test_scene(vec![
+            room(Vec3::new(6.4, 0.2, 6.4), Vec3::new(0.0, -0.1, 0.0)),
+            room(Vec3::new(6.4, 0.2, 6.4), Vec3::new(0.0, 4.1, 0.0)),
+            room(Vec3::new(0.2, 4.0, 6.4), Vec3::new(-3.1, 2.0, 0.0)),
+            room(Vec3::new(0.2, 4.0, 6.4), Vec3::new(3.1, 2.0, 0.0)),
+            room(Vec3::new(6.4, 4.0, 0.2), Vec3::new(0.0, 2.0, -3.1)),
+            room(Vec3::new(6.4, 4.0, 0.2), Vec3::new(0.0, 2.0, 3.1)),
+        ]);
+        for object in &mut scene.objects {
+            object
+                .components
+                .push(Component::AcousticMaterial(AcousticMaterial { preset }));
+        }
+        let context = Context::default();
+        let settings = AudioSettings::default();
+        let simulator = Simulator::try_new(
+            &context,
+            &SimulationSettings::new(&settings).with_reflections(ConvolutionSettings {
+                max_num_rays: 4096,
+                num_diffuse_samples: 32,
+                max_duration: 2.0,
+                max_num_sources: 1,
+                num_threads: 2,
+                max_order: 1,
+            }),
+        );
+        let mut simulator = simulator.unwrap();
+        let geometry = AcousticGeometry::build(&context, &scene, &mut Assets::default()).unwrap();
+        simulator.set_scene(&geometry.scene);
+        let source = Source::<(), Reflections, (), Convolution>::try_new(&simulator).unwrap();
+        simulator.add_source(&source);
+        simulator.commit();
+        let listener = CoordinateSystem {
+            origin: Vector3::new(1.0, 1.7, 1.0),
+            ..Default::default()
+        };
+        simulator
+            .set_shared_inputs(&SimulationSharedInputs::new(listener).with_reflections(
+                ReflectionsSharedInputs {
+                    num_rays: 4096,
+                    num_bounces: 16,
+                    duration: 2.0,
+                    order: 1,
+                    irradiance_min_distance: 1.0,
+                },
+            ))
+            .unwrap();
+        source
+            .set_inputs(&SimulationInputs {
+                source: CoordinateSystem {
+                    origin: Vector3::new(-1.5, 1.5, -1.0),
+                    ..Default::default()
+                },
+                parameters: SimulationParameters::new().with_reflections(ConvolutionParameters {
+                    baked_data_identifier: None,
+                }),
+            })
+            .unwrap();
+        simulator.run_reflections().unwrap();
+        let room_response = source.get_outputs().unwrap().reflections();
+
+        let mut effect = ReflectionEffect::<Convolution>::try_new(
+            &context,
+            &settings,
+            &ReflectionEffectSettings {
+                impulse_response_size: 2 * settings.sampling_rate,
+                num_channels: 4,
+            },
+        )
+        .unwrap();
+        let frame = settings.frame_size as usize;
+        let mut input = vec![0.0; frame];
+        let mut output = vec![0.0; frame * 4];
+        let quarter_second = settings.sampling_rate as usize / 4 / frame;
+        let mut tail = 0.0;
+        for i in 0..quarter_second * 3 {
+            input.fill(0.0);
+            if i == 0 {
+                input[0] = 1.0;
+            }
+            let input_buffer = AudioBufferRef::try_from(&input[..]).unwrap();
+            let mut output_buffer = AudioBufferMut::try_new(&mut output, 4).unwrap();
+            effect
+                .apply(&room_response, &input_buffer, &mut output_buffer)
+                .unwrap();
+            if i >= quarter_second {
+                tail += output.iter().map(|s| s * s).sum::<f32>();
+            }
+        }
+        tail
+    }
+
+    #[test]
+    fn hard_rooms_ring_longer_than_soft_ones() {
+        let marble = reverb_tail(AcousticPreset::Marble);
+        let carpet = reverb_tail(AcousticPreset::Carpet);
+        assert!(marble > 0.0, "a closed marble room rings");
+        assert!(marble > carpet * 4.0, "marble {marble} vs carpet {carpet}");
     }
 
     #[test]

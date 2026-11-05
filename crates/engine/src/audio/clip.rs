@@ -99,9 +99,111 @@ pub fn plucked_loop(rate: u32) -> Clip {
     Arc::new(out)
 }
 
+/// Deterministic white noise in -1..1 (xorshift).
+struct Noise(u32);
+
+impl Noise {
+    fn next(&mut self) -> f32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        self.0 as f32 / u32::MAX as f32 * 2.0 - 1.0
+    }
+}
+
+/// A hand clap: a few quick bursts of bright noise. Sharp enough to excite
+/// a room's echoes clearly.
+pub fn clap(rate: u32) -> Clip {
+    let len = rate as usize / 5;
+    let mut noise = Noise(0x9e37_79b9);
+    let mut out = vec![0.0; len];
+    let (mut low, mut previous) = (0.0, 0.0);
+    for (i, sample) in out.iter_mut().enumerate() {
+        let t = i as f32 / rate as f32;
+        // Three bursts 8–9 ms apart, each decaying in a few milliseconds.
+        let envelope: f32 = [0.0, 0.008, 0.017]
+            .iter()
+            .filter(|&&start| t >= start)
+            .map(|start| (-(t - start) / 0.006).exp())
+            .sum();
+        let x = noise.next() * envelope;
+        // High-pass: a clap has little low end.
+        low += 0.12 * (x - low);
+        let bright = x - low;
+        *sample = 0.6 * (bright + previous) * 0.5;
+        previous = bright;
+    }
+    Arc::new(out)
+}
+
+/// A footstep on `material` (a preset name, lowercase). `variant` picks one
+/// of several slightly different steps so walking doesn't sound looped.
+pub fn footstep(material: &str, variant: u32, rate: u32) -> Clip {
+    // brightness: one-pole low-pass amount (higher = brighter);
+    // decay: seconds; thump: low "body" of the step; ring: metallic tone.
+    let (brightness, decay, thump, ring, gain, crunch) = match material {
+        "wood" => (0.15, 0.030, 0.5, 0.0, 0.8, false),
+        "marble" | "glass" => (0.70, 0.015, 0.2, 0.0, 0.7, false),
+        "carpet" | "velvet" => (0.05, 0.040, 0.25, 0.0, 0.4, false),
+        "metal" => (0.60, 0.020, 0.3, 0.15, 0.7, false),
+        "water" => (0.30, 0.120, 0.1, 0.0, 0.5, false),
+        "gravel" => (0.50, 0.020, 0.2, 0.0, 0.7, true),
+        // stone, concrete, brick, plaster, generic
+        _ => (0.40, 0.020, 0.3, 0.0, 0.7, false),
+    };
+    let len = rate as usize * 3 / 10;
+    let mut noise = Noise(0x1234_5678 ^ variant.wrapping_mul(0x85eb_ca6b).max(1));
+    // Gravel: many tiny clicks over 120 ms instead of one impact.
+    let clicks: Vec<f32> = if crunch {
+        (0..24).map(|_| (noise.next() * 0.5 + 0.5) * 0.12).collect()
+    } else {
+        vec![0.0]
+    };
+    let pitch = 1.0 + 0.06 * noise.next();
+    let mut out = vec![0.0; len];
+    let mut low = 0.0;
+    for (i, sample) in out.iter_mut().enumerate() {
+        let t = i as f32 / rate as f32;
+        let envelope: f32 = clicks
+            .iter()
+            .filter(|&&start| t >= start)
+            .map(|start| (-(t - start) / decay).exp())
+            .sum::<f32>()
+            / clicks.len().max(1) as f32
+            * if crunch { 6.0 } else { 1.0 };
+        low += brightness * (noise.next() * envelope - low);
+        let body = thump * (-t / 0.05).exp() * (std::f32::consts::TAU * 80.0 * pitch * t).sin();
+        let tone = ring * (-t / 0.15).exp() * (std::f32::consts::TAU * 900.0 * pitch * t).sin();
+        *sample = low * 2.0 + body + tone;
+    }
+    // Same loudness on every surface, apart from `gain` (soft floors quieter).
+    let peak = out.iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-6);
+    for sample in &mut out {
+        *sample *= gain / peak;
+    }
+    Arc::new(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_sounds_are_audible_and_in_range() {
+        let peak = |clip: &Clip| clip.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!((0.05..1.0).contains(&peak(&clap(48_000))));
+        for material in [
+            "wood", "stone", "marble", "carpet", "metal", "water", "gravel",
+        ] {
+            let step = footstep(material, 0, 48_000);
+            assert!(
+                (0.02..1.0).contains(&peak(&step)),
+                "{material}: {}",
+                peak(&step)
+            );
+        }
+        assert_ne!(footstep("wood", 0, 48_000), footstep("wood", 1, 48_000));
+    }
 
     #[test]
     fn resampling_keeps_the_duration() {
