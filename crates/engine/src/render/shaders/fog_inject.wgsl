@@ -127,6 +127,30 @@ fn point_visibility(light: Light, p: vec3<f32>) -> f32 {
     return textureSampleCompareLevel(point_shadows, shadow_sampler, c.xy, layer, c.z);
 }
 
+// Smooth 3D value noise, 0..1.
+fn noise3(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    var v = 0.0;
+    for (var c = 0u; c < 8u; c++) {
+        let o = vec3<f32>(f32(c & 1u), f32((c >> 1u) & 1u), f32((c >> 2u) & 1u));
+        let q = vec3<i32>(i + o) + vec3<i32>(4096);
+        let r = hash(vec3<u32>(q));
+        let w = mix(1.0 - u, u, o);
+        v += r * w.x * w.y * w.z;
+    }
+    return v;
+}
+
+// Drifting wisps in the fog (two octaves of noise moving with time).
+fn wisps(p: vec3<f32>) -> f32 {
+    let t = fog.camera_pos.w;
+    let drift = vec3<f32>(0.11, 0.03, 0.07) * t;
+    let n = noise3(p * 0.45 + drift) * 0.65 + noise3(p * 1.3 - drift * 1.7) * 0.35;
+    return mix(0.35, 1.65, n);
+}
+
 // Ambient light where `medium` was last called: the zone's (baked), or
 // the environment's outside every zone.
 var<private> local_ambient: vec3<f32>;
@@ -165,7 +189,7 @@ fn medium(p: vec3<f32>) -> vec4<f32> {
             extra += vec4<f32>(r.fog.rgb * d, d);
         }
     }
-    let d = zone_fog.a * exp(-falloff * max(p.y - height, 0.0));
+    let d = zone_fog.a * exp(-falloff * max(p.y - height, 0.0)) * wisps(p);
     return vec4<f32>(zone_fog.rgb * d, d) + extra;
 }
 

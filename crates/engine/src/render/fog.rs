@@ -434,7 +434,8 @@ impl VolumetricFog {
         let uniform = InjectUniform {
             sun_view_proj: f.sun_view_proj,
             prev_view_proj: self.prev_view_proj.unwrap_or(f.view_proj),
-            camera_pos: f.camera.position.extend(1.0),
+            // w: seconds, for the drifting wisps.
+            camera_pos: f.camera.position.extend(self.frame as f32 / 60.0),
             camera_forward: forward.extend(weight),
             camera_right: right.extend(0.0),
             camera_up: up.extend(0.0),
