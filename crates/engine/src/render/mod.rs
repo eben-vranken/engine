@@ -78,6 +78,8 @@ struct Targets {
 }
 
 pub struct Renderer {
+    instance: wgpu::Instance,
+    window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -358,6 +360,8 @@ impl Renderer {
         let targets = create_targets(&device, &upscale_layout, &upscale_params, layout);
 
         let renderer = Self {
+            instance,
+            window,
             surface,
             device,
             queue,
@@ -476,6 +480,13 @@ impl Renderer {
         } else {
             wgpu::PresentMode::AutoNoVsync
         };
+        // Reconfiguring the existing surface back to FIFO leaves NVIDIA's
+        // Vulkan driver on Windows presenting to nowhere, so start fresh.
+        // Assigning drops the old surface (and swapchain) before configure.
+        match self.instance.create_surface(self.window.clone()) {
+            Ok(surface) => self.surface = surface,
+            Err(err) => log::error!("could not recreate the surface: {err}"),
+        }
         self.surface.configure(&self.device, &self.config);
     }
 
