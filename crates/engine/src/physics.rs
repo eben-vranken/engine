@@ -494,7 +494,7 @@ mod tests {
     #[test]
     fn bodies_outside_the_simulation_radius_wait_in_the_air() {
         let mut scene = falling_box();
-        scene.zones.push(crate::scene::Zone { name: "far".into() });
+        scene.zones.push(crate::scene::Zone::new("far"));
         scene.objects[1].zone = "far".into();
         let map = ZoneMap::new(&scene);
         let mut game = PhysicsWorld::for_game(&scene, &mut Assets::default());

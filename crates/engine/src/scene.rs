@@ -22,9 +22,52 @@ pub struct Scene {
 /// A region of the world: a room, an island, a building. Every object
 /// belongs to exactly one. Where a zone is comes from its `ZoneVolume`
 /// objects; how zones connect, from `Portal` objects.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Zone {
     pub name: String,
+    /// Color grading while the camera is in this zone; `None` = the
+    /// environment's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grade: Option<Grade>,
+}
+
+impl Zone {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Default::default()
+        }
+    }
+}
+
+/// Color grading, applied after tone mapping. Blends over a second or so
+/// when the camera moves into a zone with a different grade.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Grade {
+    /// Stops of brightness before tone mapping; 0 = as lit.
+    pub exposure: f32,
+    /// 1 = unchanged; higher = punchier.
+    pub contrast: f32,
+    /// 1 = unchanged, 0 = grey.
+    pub saturation: f32,
+    /// Multiplies the final color; (1, 1, 1) = none.
+    pub tint: Vec3,
+    /// Optional `.cube` LUT in the project (e.g. `grades/cold.cube`),
+    /// applied after the values above. Empty = none.
+    pub lut: String,
+}
+
+impl Default for Grade {
+    fn default() -> Self {
+        Self {
+            exposure: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            tint: Vec3::ONE,
+            lut: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -97,6 +140,39 @@ pub enum Component {
     AcousticMaterial(AcousticMaterial),
     ZoneVolume(ZoneVolume),
     Portal(Portal),
+    LightSource(LightSource),
+}
+
+/// A point light: lantern, candle, brazier. Lights the scene in real time
+/// and casts shadows; with `baked`, the light it bounces off surfaces is
+/// also baked into the lightmaps (keep it for lights that never move).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct LightSource {
+    /// Linear RGB.
+    pub color: Vec3,
+    /// Brightness 1 m away; it falls off with the square of the distance.
+    pub intensity: f32,
+    /// Meters; the light fades out completely by here.
+    pub range: f32,
+    /// 0 = steady, 1 = a nervous flame.
+    pub flicker: f32,
+    pub shadows: bool,
+    /// Its bounce light goes into the lightmap (BAKE LIGHTING).
+    pub baked: bool,
+}
+
+impl Default for LightSource {
+    fn default() -> Self {
+        Self {
+            color: Vec3::new(1.0, 0.62, 0.3),
+            intensity: 3.0,
+            range: 8.0,
+            flicker: 0.0,
+            shadows: true,
+            baked: true,
+        }
+    }
 }
 
 /// Another object in the scene, by name. The inspector shows a picker.
@@ -150,6 +226,10 @@ pub struct Primitive {
     /// Linear RGB tint multiplied with the grid texture.
     #[serde(default = "white")]
     pub color: Vec3,
+    /// Light the surface gives off (linear RGB, above 1 for bright glow);
+    /// it lights its surroundings in the bake and glows in the fog.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub emissive: Vec3,
     /// Blocks the player. Off: walk-through, but still clickable in the editor.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub collision: bool,
@@ -165,6 +245,9 @@ pub struct Model {
     /// Linear RGB tint.
     #[serde(default = "white")]
     pub color: Vec3,
+    /// Light the surface gives off; see `Primitive::emissive`.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub emissive: Vec3,
     /// Blocks the player. Off: walk-through, but still clickable in the editor.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub collision: bool,
@@ -325,6 +408,20 @@ fn is_true(value: &bool) -> bool {
     *value
 }
 
+fn is_zero(value: &Vec3) -> bool {
+    *value == Vec3::ZERO
+}
+
+/// One drawable part of an object.
+#[derive(Debug, Clone, Copy)]
+pub struct Renderable<'a> {
+    pub object: usize,
+    pub geometry: Geometry<'a>,
+    pub color: Vec3,
+    pub emissive: Vec3,
+    pub transform: &'a Transform,
+}
+
 /// Global lighting and atmosphere. All colors are linear RGB; light colors
 /// include intensity, so values above 1 are expected.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -339,6 +436,14 @@ pub struct Environment {
     pub fog_color: Vec3,
     /// Fog per meter; 0 turns fog off.
     pub fog_density: f32,
+    /// Meters around the camera where the sun casts real-time shadows.
+    pub shadow_distance: f32,
+    /// How much bright light glows past its edges; 0 = off.
+    pub bloom: f32,
+    /// Film grain strength; 0 = off.
+    pub grain: f32,
+    /// Grading for zones without their own.
+    pub grade: Grade,
 }
 
 impl Default for Environment {
@@ -350,6 +455,10 @@ impl Default for Environment {
             ambient_ground: Vec3::new(0.05, 0.045, 0.04),
             fog_color: Vec3::new(0.045, 0.05, 0.065),
             fog_density: 0.035,
+            shadow_distance: 40.0,
+            bloom: 0.05,
+            grain: 0.03,
+            grade: Grade::default(),
         }
     }
 }
@@ -415,16 +524,31 @@ impl Scene {
         Ok(())
     }
 
-    /// Everything visible: object index, geometry, color and transform.
-    pub fn renderables(&self) -> impl Iterator<Item = (usize, Geometry<'_>, Vec3, &Transform)> {
+    /// Everything visible.
+    pub fn renderables(&self) -> impl Iterator<Item = Renderable<'_>> {
+        self.objects.iter().enumerate().flat_map(|(index, object)| {
+            object.components.iter().filter_map(move |c| {
+                let (geometry, color, emissive) = match c {
+                    Component::Primitive(p) => (Geometry::Shape(p.shape), p.color, p.emissive),
+                    Component::Model(m) => (Geometry::Model(&m.path), m.color, m.emissive),
+                    _ => return None,
+                };
+                Some(Renderable {
+                    object: index,
+                    geometry,
+                    color,
+                    emissive,
+                    transform: &object.transform,
+                })
+            })
+        })
+    }
+
+    /// Every light: object index, the light, and where it is.
+    pub fn lights(&self) -> impl Iterator<Item = (usize, &LightSource, Vec3)> {
         self.objects.iter().enumerate().flat_map(|(index, object)| {
             object.components.iter().filter_map(move |c| match c {
-                Component::Primitive(p) => {
-                    Some((index, Geometry::Shape(p.shape), p.color, &object.transform))
-                }
-                Component::Model(m) => {
-                    Some((index, Geometry::Model(&m.path), m.color, &object.transform))
-                }
+                Component::LightSource(light) => Some((index, light, object.transform.position)),
                 _ => None,
             })
         })
@@ -465,9 +589,7 @@ impl Scene {
 #[cfg(test)]
 pub(crate) fn test_scene(shapes: Vec<(Shape, Vec3)>) -> Scene {
     Scene {
-        zones: vec![Zone {
-            name: "test".into(),
-        }],
+        zones: vec![Zone::new("test")],
         objects: shapes
             .into_iter()
             .enumerate()
@@ -478,6 +600,7 @@ pub(crate) fn test_scene(shapes: Vec<(Shape, Vec3)>) -> Scene {
                 components: vec![Component::Primitive(Primitive {
                     shape,
                     color: Vec3::ONE,
+                    emissive: Vec3::ZERO,
                     collision: true,
                 })],
             })
@@ -492,9 +615,7 @@ mod tests {
 
     fn sample() -> Scene {
         Scene {
-            zones: vec![Zone {
-                name: "hall".into(),
-            }],
+            zones: vec![Zone::new("hall")],
             objects: vec![
                 Object {
                     name: "floor".into(),
@@ -505,6 +626,7 @@ mod tests {
                             size: Vec3::new(10.0, 0.5, 10.0),
                         },
                         color: Vec3::splat(0.6),
+                        emissive: Vec3::ZERO,
                         collision: true,
                     })],
                 },

@@ -14,8 +14,8 @@ pub mod markers;
 
 use crate::render::mesh::Shape;
 use crate::scene::{
-    AcousticMaterial, Component, Door, Floating, Model, Object, PhysicsBody, Portal, Primitive,
-    Scene, SoundSource, Switch, Transform, Zone, ZoneVolume,
+    AcousticMaterial, Component, Door, Floating, LightSource, Model, Object, PhysicsBody, Portal,
+    Primitive, Scene, SoundSource, Switch, Transform, Zone, ZoneVolume,
 };
 use crate::ui::theme;
 use egui::{Align, Layout, Rect, RichText, Ui};
@@ -389,6 +389,7 @@ impl Editor {
             components: vec![Component::Primitive(Primitive {
                 shape,
                 color: Vec3::splat(0.8),
+                emissive: Vec3::ZERO,
                 collision: true,
             })],
         };
@@ -466,7 +467,7 @@ impl Editor {
             .find(|name| !taken(name))
             .expect("some number is free");
         let mut after = scene.clone();
-        after.zones.push(Zone { name: name.clone() });
+        after.zones.push(Zone::new(name.clone()));
         self.renaming = Some((name.clone(), name));
         self.push_scene(scene, after)
     }
@@ -532,6 +533,7 @@ impl Editor {
             components: vec![Component::Model(Model {
                 path: path.clone(),
                 color: Vec3::ONE,
+                emissive: Vec3::ZERO,
                 collision: true,
             })],
         };
@@ -1092,7 +1094,7 @@ enum ZoneAction {
 }
 
 /// Components the inspector can add (one of each per object).
-fn new_components() -> [(&'static str, Component); 8] {
+fn new_components() -> [(&'static str, Component); 9] {
     [
         ("floating", Component::Floating(Floating::default())),
         ("door", Component::Door(Door::default())),
@@ -1111,6 +1113,10 @@ fn new_components() -> [(&'static str, Component); 8] {
         ),
         ("zone volume", Component::ZoneVolume(ZoneVolume::default())),
         ("portal", Component::Portal(Portal::default())),
+        (
+            "light source",
+            Component::LightSource(LightSource::default()),
+        ),
     ]
 }
 
@@ -1227,9 +1233,7 @@ mod tests {
     #[test]
     fn renaming_a_zone_moves_its_objects_and_portals_and_undoes() {
         let mut scene = boxes(2);
-        scene.zones.push(crate::scene::Zone {
-            name: "hall".into(),
-        });
+        scene.zones.push(crate::scene::Zone::new("hall"));
         scene.objects[1].components = vec![Component::Portal(Portal {
             to: crate::scene::ZoneRef("test".into()),
         })];
@@ -1269,9 +1273,7 @@ mod tests {
     #[test]
     fn added_primitive_lands_in_the_selected_zone_on_the_grid() {
         let mut scene = boxes(1);
-        scene.zones.push(crate::scene::Zone {
-            name: "other".into(),
-        });
+        scene.zones.push(crate::scene::Zone::new("other"));
         scene.objects[0].zone = "other".into();
         let mut editor = editor();
         editor.selected = Some(0);

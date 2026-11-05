@@ -971,6 +971,7 @@ impl Running {
         let zones = ZoneMap::new(&self.scene);
         let current = self.zone.update(&self.scene, &zones, camera.position);
         self.active = Active::new(&self.scene, &zones, current);
+        self.renderer.set_zone(current);
         let zone = current.map(|z| self.scene.zones[z].name.clone());
         let active_zones = self.active.zone_names(&self.scene);
         if let Some(audio) = &mut self.audio {

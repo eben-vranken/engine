@@ -1,26 +1,36 @@
 //! wgpu renderer. Each frame:
 //!
-//! 1. scene pass: objects → HDR color + depth at internal resolution
-//! 2. upscale pass: nearest-neighbor blow-up + tone mapping → window
-//! 3. overlay: egui at native resolution on top
+//! 1. shadow passes: depth from the sun and from shadowed lights
+//! 2. scene pass: objects → HDR color + depth at internal resolution
+//! 3. post: bloom, tone mapping, grading, grain, nearest-neighbor upscale
+//!    → window
+//! 4. overlay: egui at native resolution on top
 //!
 //! See `scale` for how the internal resolution is chosen.
 
 mod frustum;
+pub mod grade;
+pub mod lights;
 pub mod mesh;
+mod post;
 pub mod scale;
+mod shadows;
 pub mod texture;
 
 use crate::assets::{Assets, Resolved};
 use crate::camera::Camera;
-use crate::scene::{Environment, Geometry, Scene, Transform};
+use crate::scene::{Component, Environment, Geometry, LightSource, Renderable, Scene};
 use bytemuck::{Pod, Zeroable};
 use frustum::Frustum;
 use glam::{Mat4, Vec3, Vec4};
+use lights::{GpuLight, MAX_LIGHTS};
 use mesh::{MeshData, Shape};
+use post::Post;
 use scale::ScaleLayout;
+use shadows::{Caster, Shadows};
 use std::ops::Range;
 use std::sync::Arc;
+use std::time::Instant;
 use texture::Image;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
@@ -40,10 +50,12 @@ pub enum RenderError {
     NoSurfaceFormat,
 }
 
+/// Matches `Frame` in `scene.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct FrameUniform {
     view_proj: Mat4,
+    sun_view_proj: Mat4,
     camera_pos: Vec4,
     sun_dir: Vec4,
     sun_color: Vec4,
@@ -51,8 +63,10 @@ struct FrameUniform {
     ambient_ground: Vec4,
     fog: Vec4,
     params: Vec4,
+    shadow: Vec4,
 }
 
+/// Matches `Object` in `scene.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ObjectUniform {
@@ -60,14 +74,7 @@ struct ObjectUniform {
     normal_matrix: Mat4,
     color: Vec4,
     highlight: Vec4,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct UpscaleParams {
-    origin: [f32; 2],
-    factor: f32,
-    linear_output: u32,
+    emissive: Vec4,
 }
 
 struct Draw {
@@ -96,18 +103,14 @@ impl From<Geometry<'_>> for GeometryKey {
 }
 
 /// `textured`: primitives tile the grid texture; models use their own UVs.
-fn object_uniform(
-    color: Vec3,
-    transform: &Transform,
-    highlighted: bool,
-    textured: bool,
-) -> ObjectUniform {
-    let model = transform.matrix();
+fn object_uniform(r: &Renderable, highlighted: bool, textured: bool) -> ObjectUniform {
+    let model = r.transform.matrix();
     ObjectUniform {
         model,
         normal_matrix: model.inverse().transpose(),
-        color: color.extend(1.0),
+        color: r.color.extend(1.0),
         highlight: Vec4::new(highlighted as u32 as f32, textured as u32 as f32, 0.0, 0.0),
+        emissive: r.emissive.extend(0.0),
     }
 }
 
@@ -116,6 +119,7 @@ struct GpuMesh {
     sphere: (Vec3, f32),
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
+    index_count: u32,
     /// Index ranges and the texture each is drawn with.
     parts: Vec<(Range<u32>, wgpu::BindGroup)>,
 }
@@ -124,7 +128,24 @@ struct GpuMesh {
 struct Targets {
     color: wgpu::TextureView,
     depth: wgpu::TextureView,
-    upscale_bind_group: wgpu::BindGroup,
+}
+
+/// A scene light as the renderer keeps it between frames.
+struct SceneLight {
+    object: usize,
+    light: LightSource,
+    position: Vec3,
+}
+
+fn scene_lights(scene: &Scene) -> Vec<SceneLight> {
+    scene
+        .lights()
+        .map(|(object, light, position)| SceneLight {
+            object,
+            light: light.clone(),
+            position,
+        })
+        .collect()
 }
 
 pub struct Renderer {
@@ -166,9 +187,14 @@ pub struct Renderer {
     /// Last frame: draws in view, and all draws.
     drawn: [usize; 2],
 
-    upscale_pipeline: wgpu::RenderPipeline,
-    upscale_layout: wgpu::BindGroupLayout,
-    upscale_params: wgpu::Buffer,
+    lights: Vec<SceneLight>,
+    light_buffer: wgpu::Buffer,
+    shadows: Shadows,
+    post: Post,
+    /// The camera's zone (index into `Scene::zones`), for its grade.
+    zone: Option<usize>,
+    started: Instant,
+    last_frame: Instant,
 }
 
 impl Renderer {
@@ -200,7 +226,7 @@ impl Renderer {
             })
             .await?;
 
-        // egui and our upscale shader both write display-encoded values, so
+        // egui and our post shader both write display-encoded values, so
         // prefer a non-sRGB surface; fall back to converting in the shader.
         let caps = surface.get_capabilities(&adapter);
         let format = caps
@@ -225,18 +251,50 @@ impl Renderer {
         surface.configure(&device, &config);
 
         // Scene pass resources.
+        let storage = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let depth_texture = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Depth,
+                view_dimension,
+                multisampled: false,
+            },
+            count: None,
+        };
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("frame"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                storage(1),
+                storage(2),
+                depth_texture(3, wgpu::TextureViewDimension::D2),
+                depth_texture(4, wgpu::TextureViewDimension::D2Array),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+            ],
         });
         let material_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("material"),
@@ -279,6 +337,53 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let light_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lights"),
+            size: (size_of::<GpuLight>() * MAX_LIGHTS) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let shadows = Shadows::new(&device, &object_layout);
+        // Linear filtering on a comparison sampler compares four texels
+        // and blends the results: soft shadow edges for free.
+        let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("shadow"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+        let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("frame"),
+            layout: &frame_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: frame_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: light_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: shadows.face_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shadows.sun_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&shadows.point_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+            ],
+        });
+
         let grid = texture::upload(&device, &queue, &texture::grid_image());
         // Point sampling up close; blend between mips in the distance so the
         // grid doesn't shimmer.
@@ -290,14 +395,6 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
-        });
-        let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("frame"),
-            layout: &frame_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: frame_buffer.as_entire_binding(),
-            }],
         });
         let grid_material = material_bind_group(&device, &material_layout, &grid, &sampler);
 
@@ -352,75 +449,15 @@ impl Renderer {
             cache: None,
         });
 
-        // Upscale pass resources.
-        let upscale_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("upscale"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
-        let upscale_params = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("upscale params"),
-            size: size_of::<UpscaleParams>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let upscale_shader =
-            device.create_shader_module(wgpu::include_wgsl!("shaders/upscale.wgsl"));
-        let upscale_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("upscale"),
-                bind_group_layouts: &[Some(&upscale_layout)],
-                immediate_size: 0,
-            });
-        let upscale_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("upscale"),
-            layout: Some(&upscale_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &upscale_shader,
-                entry_point: Some("vs_main"),
-                buffers: &[],
-                compilation_options: Default::default(),
-            },
-            primitive: Default::default(),
-            depth_stencil: None,
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &upscale_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(format.into())],
-                compilation_options: Default::default(),
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
-
         let layout = ScaleLayout::new(
             [config.width, config.height],
             scale::default_factor(config.height),
         );
-        let targets = create_targets(&device, &upscale_layout, &upscale_params, layout);
+        let targets = create_targets(&device, layout);
+        let mut post = Post::new(&device, format);
+        post.set_scene_view(&device, &targets.color, layout.internal);
 
-        let renderer = Self {
+        Ok(Self {
             instance,
             window,
             surface,
@@ -448,17 +485,24 @@ impl Renderer {
             drawn: [0, 0],
             highlighted: None,
             environment: Environment::default(),
-            upscale_pipeline,
-            upscale_layout,
-            upscale_params,
-        };
-        renderer.write_upscale_params();
-        Ok(renderer)
+            lights: Vec::new(),
+            light_buffer,
+            shadows,
+            post,
+            zone: None,
+            started: Instant::now(),
+            last_frame: Instant::now(),
+        })
     }
 
-    /// Uploads every object's mesh and transform.
+    /// Uploads every object's mesh and transform, the lights and the
+    /// zones' color grades.
     pub fn set_scene(&mut self, scene: &Scene, assets: &mut Assets) {
         self.environment = scene.environment.clone();
+        self.lights = scene_lights(scene);
+        self.shadows.invalidate();
+        self.post
+            .set_grades(&self.device, &self.queue, scene, assets.root());
         let renderables: Vec<_> = scene.renderables().collect();
         let (buffer, bind_group) = create_object_buffer(
             &self.device,
@@ -470,15 +514,15 @@ impl Renderer {
         self.object_bind_group = bind_group;
         self.meshes.clear();
         self.draws.clear();
-        for (object, geometry, color, transform) in renderables {
-            let (mesh, textured) = self.create_mesh(assets.resolve(geometry));
+        for r in renderables {
+            let (mesh, textured) = self.create_mesh(assets.resolve(r.geometry));
             self.meshes.push(mesh);
-            let highlighted = Some(object) == self.highlighted;
+            let highlighted = Some(r.object) == self.highlighted;
             self.draws.push(Draw {
-                object,
-                geometry: geometry.into(),
+                object: r.object,
+                geometry: r.geometry.into(),
                 textured,
-                uniform: object_uniform(color, transform, highlighted, textured),
+                uniform: object_uniform(&r, highlighted, textured),
             });
         }
         for i in 0..self.draws.len() {
@@ -486,13 +530,30 @@ impl Renderer {
         }
     }
 
-    /// Re-uploads one object after it was edited: its transform and color,
-    /// and its mesh if the geometry changed.
+    /// Re-uploads one object after it was edited or moved: its transform,
+    /// color and lights, and its mesh if the geometry changed.
     pub fn update_object(&mut self, scene: &Scene, index: usize, assets: &mut Assets) {
-        let renderables: Vec<_> = scene
-            .renderables()
-            .filter(|(object, ..)| *object == index)
+        let object = &scene.objects[index];
+        let lights: Vec<&LightSource> = object
+            .components
+            .iter()
+            .filter_map(|c| match c {
+                Component::LightSource(l) => Some(l),
+                _ => None,
+            })
             .collect();
+        if lights.len() != self.lights.iter().filter(|l| l.object == index).count() {
+            // A light was added or removed.
+            self.lights = scene_lights(scene);
+        } else {
+            let kept = self.lights.iter_mut().filter(|l| l.object == index);
+            for (kept, &light) in kept.zip(&lights) {
+                kept.light = light.clone();
+                kept.position = object.transform.position;
+            }
+        }
+
+        let renderables: Vec<_> = scene.renderables().filter(|r| r.object == index).collect();
         let slots: Vec<usize> = (0..self.draws.len())
             .filter(|&i| self.draws[i].object == index)
             .collect();
@@ -502,16 +563,17 @@ impl Renderer {
             return;
         }
         let highlighted = Some(index) == self.highlighted;
-        for (&slot, (_, geometry, color, transform)) in slots.iter().zip(renderables) {
-            let key = GeometryKey::from(geometry);
+        for (&slot, r) in slots.iter().zip(renderables) {
+            let key = GeometryKey::from(r.geometry);
             if self.draws[slot].geometry != key {
-                let (mesh, textured) = self.create_mesh(assets.resolve(geometry));
+                let (mesh, textured) = self.create_mesh(assets.resolve(r.geometry));
                 self.meshes[slot] = mesh;
                 self.draws[slot].geometry = key;
                 self.draws[slot].textured = textured;
+                self.shadows.invalidate();
             }
             let textured = self.draws[slot].textured;
-            self.draws[slot].uniform = object_uniform(color, transform, highlighted, textured);
+            self.draws[slot].uniform = object_uniform(&r, highlighted, textured);
             self.write_draw(slot);
         }
     }
@@ -526,6 +588,12 @@ impl Renderer {
                 self.write_draw(i);
             }
         }
+    }
+
+    /// The zone the camera is in (index into `Scene::zones`), for its
+    /// color grade.
+    pub fn set_zone(&mut self, zone: Option<usize>) {
+        self.zone = zone;
     }
 
     /// Uploads a mesh; also says whether it gets the grid texture.
@@ -588,6 +656,7 @@ impl Renderer {
                 bytemuck::cast_slice(&data.indices),
                 wgpu::BufferUsages::INDEX,
             ),
+            index_count: data.indices.len() as u32,
             parts,
         };
         (mesh, textured)
@@ -703,28 +772,11 @@ impl Renderer {
             .unwrap_or_else(|| scale::default_factor(size[1]));
         let layout = ScaleLayout::new(size, factor);
         if layout.internal != self.layout.internal {
-            self.targets = create_targets(
-                &self.device,
-                &self.upscale_layout,
-                &self.upscale_params,
-                layout,
-            );
+            self.targets = create_targets(&self.device, layout);
+            self.post
+                .set_scene_view(&self.device, &self.targets.color, layout.internal);
         }
         self.layout = layout;
-        self.write_upscale_params();
-    }
-
-    fn write_upscale_params(&self) {
-        let params = UpscaleParams {
-            origin: [
-                (self.view_origin[0] + self.layout.origin[0]) as f32,
-                (self.view_origin[1] + self.layout.origin[1]) as f32,
-            ],
-            factor: self.layout.factor as f32,
-            linear_output: self.config.format.is_srgb() as u32,
-        };
-        self.queue
-            .write_buffer(&self.upscale_params, 0, bytemuck::bytes_of(&params));
     }
 
     /// Draws one frame. `overlay` records extra passes (the UI) onto the
@@ -752,19 +804,54 @@ impl Renderer {
         };
         let output = frame.texture.create_view(&Default::default());
 
+        let now = Instant::now();
+        let dt = (now - self.last_frame).as_secs_f32().min(0.25);
+        self.last_frame = now;
+        let time = (now - self.started).as_secs_f32();
+        self.post.update(&self.device, self.zone, dt);
+
         let env = &self.environment;
         let [w, h] = self.layout.internal;
         let view_proj = camera.view_projection(w as f32 / h as f32);
         let frustum = Frustum::new(view_proj);
+
+        let frame_lights = lights::select(
+            self.lights.iter().map(|l| (l.object, &l.light, l.position)),
+            camera.position,
+            time,
+        );
+        let gpu_lights: Vec<GpuLight> = frame_lights.iter().map(|l| l.gpu()).collect();
+        if !gpu_lights.is_empty() {
+            self.queue
+                .write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&gpu_lights));
+        }
+        let sun_on = env.sun_color.max_element() > 0.0 && env.shadow_distance > 0.0;
+        let radius = env.shadow_distance.max(1.0);
+        let sun_view_proj = lights::sun_matrix(
+            camera.position,
+            env.sun_direction,
+            radius,
+            shadows::SUN_SIZE,
+        );
         let uniform = FrameUniform {
             view_proj,
+            sun_view_proj,
             camera_pos: camera.position.extend(1.0),
-            sun_dir: env.sun_direction.normalize().extend(0.0),
+            sun_dir: env
+                .sun_direction
+                .normalize_or(Vec3::NEG_Y)
+                .extend(sun_on as u32 as f32),
             sun_color: env.sun_color.extend(0.0),
             ambient_sky: env.ambient_sky.extend(0.0),
             ambient_ground: env.ambient_ground.extend(0.0),
             fog: env.fog_color.extend(env.fog_density),
-            params: Vec4::new(1.0 / texture::GRID_METERS as f32, 0.0, 0.0, 0.0),
+            params: Vec4::new(
+                1.0 / texture::GRID_METERS as f32,
+                gpu_lights.len() as f32,
+                time,
+                2.0 * radius / shadows::SUN_SIZE as f32,
+            ),
+            shadow: Vec4::new(radius, 0.0, 0.0, 0.0),
         };
         self.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -774,6 +861,31 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
+
+        let casters: Vec<Caster> = self
+            .meshes
+            .iter()
+            .zip(&self.draws)
+            .enumerate()
+            .map(|(i, (mesh, draw))| Caster {
+                object: draw.object,
+                model: draw.uniform.model,
+                sphere: frustum::world_sphere(&draw.uniform.model, mesh.sphere),
+                vertices: &mesh.vertices,
+                indices: &mesh.indices,
+                index_count: mesh.index_count,
+                offset: (i as u64 * self.object_stride) as u32,
+            })
+            .collect();
+        self.shadows.render(
+            &self.queue,
+            &mut encoder,
+            &self.object_bind_group,
+            &casters,
+            sun_on.then_some(sun_view_proj),
+            &frame_lights,
+        );
+        drop(casters);
 
         {
             let fog = env.fog_color.as_dvec3();
@@ -827,31 +939,20 @@ impl Renderer {
             self.drawn = [drawn, self.meshes.len()];
         }
 
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("upscale"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &output,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Store,
-                    },
-                    depth_slice: None,
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            let x = (self.view_origin[0] + self.layout.origin[0]) as f32;
-            let y = (self.view_origin[1] + self.layout.origin[1]) as f32;
-            let [sw, sh] = self.layout.scaled().map(|v| v as f32);
-            pass.set_viewport(x, y, sw, sh, 0.0, 1.0);
-            pass.set_pipeline(&self.upscale_pipeline);
-            pass.set_bind_group(0, &self.targets.upscale_bind_group, &[]);
-            pass.draw(0..3, 0..1);
-        }
+        let x = (self.view_origin[0] + self.layout.origin[0]) as f32;
+        let y = (self.view_origin[1] + self.layout.origin[1]) as f32;
+        let [sw, sh] = self.layout.scaled().map(|v| v as f32);
+        self.post.render(
+            &self.queue,
+            &mut encoder,
+            &output,
+            post::Output {
+                origin: [x, y],
+                factor: self.layout.factor as f32,
+                linear: self.config.format.is_srgb(),
+            },
+            [x, y, sw, sh],
+        );
 
         overlay(&self.device, &self.queue, &mut encoder, &output);
 
@@ -911,12 +1012,7 @@ fn create_object_buffer(
     (buffer, bind_group)
 }
 
-fn create_targets(
-    device: &wgpu::Device,
-    upscale_layout: &wgpu::BindGroupLayout,
-    upscale_params: &wgpu::Buffer,
-    layout: ScaleLayout,
-) -> Targets {
+fn create_targets(device: &wgpu::Device, layout: ScaleLayout) -> Targets {
     let size = wgpu::Extent3d {
         width: layout.internal[0],
         height: layout.internal[1],
@@ -946,23 +1042,5 @@ fn create_targets(
         DEPTH_FORMAT,
         wgpu::TextureUsages::RENDER_ATTACHMENT,
     );
-    let upscale_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("upscale"),
-        layout: upscale_layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&color),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: upscale_params.as_entire_binding(),
-            },
-        ],
-    });
-    Targets {
-        color,
-        depth,
-        upscale_bind_group,
-    }
+    Targets { color, depth }
 }

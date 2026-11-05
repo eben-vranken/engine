@@ -5,6 +5,8 @@
 //!   cargo run -p app -- --editor --game ../my-game  -> edit another game project
 //!
 //! `--game <path>` picks the game project folder (default: `sandbox`).
+//! `--scene <path>` opens another scene than the project's start scene
+//! (relative to the project folder, e.g. `scenes/hall.ron`).
 //! Game projects are content-only folders; they never contain engine code.
 
 use engine::project::Project;
@@ -19,11 +21,13 @@ enum Mode {
 struct Args {
     mode: Mode,
     game: PathBuf,
+    scene: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
     let mut mode = Mode::Play;
     let mut game = PathBuf::from("sandbox");
+    let mut scene = None;
     let mut args = std::env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -34,11 +38,12 @@ fn parse_args() -> Args {
                     game = PathBuf::from(path);
                 }
             }
+            "--scene" => scene = args.next().map(PathBuf::from),
             other => eprintln!("ignoring unknown argument: {other}"),
         }
     }
 
-    Args { mode, game }
+    Args { mode, game, scene }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -54,7 +59,10 @@ fn main() -> anyhow::Result<()> {
         args.mode,
         args.game.display()
     );
-    let project = Project::open(&args.game)?;
+    let mut project = Project::open(&args.game)?;
+    if let Some(scene) = args.scene {
+        project.settings.start_scene = scene;
+    }
     let scene = project.load_start_scene()?;
     log::info!(
         "{}: {} objects in {} zones",

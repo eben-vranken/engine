@@ -61,6 +61,11 @@ impl Assets {
         }
     }
 
+    /// The game project folder.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// The model at `path` (relative to the project), loading it on first use.
     /// Returns `None` if it can't be loaded; the error is logged once.
     pub fn model(&mut self, path: &str) -> Option<Arc<ModelData>> {

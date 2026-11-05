@@ -174,7 +174,7 @@ mod tests {
     use crate::scene::{Object, Portal, Transform, Zone, ZoneRef, ZoneVolume};
 
     fn zone(name: &str) -> Zone {
-        Zone { name: name.into() }
+        Zone::new(name)
     }
 
     fn volume(zone: &str, position: Vec3, size: Vec3) -> Object {
