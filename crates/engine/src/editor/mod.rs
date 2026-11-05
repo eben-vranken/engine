@@ -44,6 +44,9 @@ pub struct Editor {
     history: History,
     /// An edit in progress: the object's index and how it was before.
     pending: Option<(usize, Object)>,
+    /// Whether the scene panel (left) and the inspector (right) are open.
+    pub show_scene: bool,
+    pub show_inspector: bool,
     /// Settings shown in the inspector instead of an object.
     pub settings: Option<SettingsTarget>,
     /// A zone or environment edit in progress: the scene before it.
@@ -121,6 +124,8 @@ impl Editor {
             confirm: None,
             history: History::default(),
             pending: None,
+            show_scene: true,
+            show_inspector: true,
             settings: None,
             zone_pending: None,
             gizmo: TransformGizmo::default(),
@@ -156,21 +161,25 @@ impl Editor {
         egui::Panel::top("editor_top").show(ui, |ui| {
             self.top_bar(ui, scene, stats, blink, view, &mut output)
         });
-        egui::Panel::left("editor_scene")
-            .resizable(true)
-            .default_size(260.0)
-            .min_size(220.0)
-            .show(ui, |ui| {
-                ui.add_enabled_ui(!self.playing, |ui| self.hierarchy(ui, scene, &mut output));
-            });
-        egui::Panel::right("editor_inspector")
-            .resizable(true)
-            .default_size(340.0)
-            // Wide enough for its content, so selecting doesn't resize the viewport.
-            .min_size(340.0)
-            .show(ui, |ui| {
-                ui.add_enabled_ui(!self.playing, |ui| self.inspector(ui, scene, &mut output));
-            });
+        if self.show_scene {
+            egui::Panel::left("editor_scene")
+                .resizable(true)
+                .default_size(260.0)
+                .min_size(220.0)
+                .show(ui, |ui| {
+                    ui.add_enabled_ui(!self.playing, |ui| self.hierarchy(ui, scene, &mut output));
+                });
+        }
+        if self.show_inspector {
+            egui::Panel::right("editor_inspector")
+                .resizable(true)
+                .default_size(340.0)
+                // Wide enough for its content, so selecting doesn't resize the viewport.
+                .min_size(340.0)
+                .show(ui, |ui| {
+                    ui.add_enabled_ui(!self.playing, |ui| self.inspector(ui, scene, &mut output));
+                });
+        }
 
         if let Some(index) = self
             .selected
@@ -630,6 +639,13 @@ impl Editor {
         output: &mut EditorOutput,
     ) {
         ui.horizontal(|ui| {
+            if ui
+                .small_button(if self.show_scene { "[≡]" } else { " ≡ " })
+                .on_hover_text("SHOW / HIDE THE SCENE PANEL")
+                .clicked()
+            {
+                self.show_scene = !self.show_scene;
+            }
             let cursor = if blink { "_" } else { " " };
             ui.label(RichText::new(format!("ENGINE // EDITOR{cursor}")).strong());
             ui.add_space(12.0);
@@ -798,6 +814,18 @@ impl Editor {
             // Stats on the right, as many as fit: the rest are dropped
             // rather than drawn over the buttons.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .small_button(if self.show_inspector {
+                        "[≡]"
+                    } else {
+                        " ≡ "
+                    })
+                    .on_hover_text("SHOW / HIDE THE INSPECTOR")
+                    .clicked()
+                {
+                    self.show_inspector = !self.show_inspector;
+                }
+                ui.add_space(8.0);
                 let room = ui.available_width();
                 let zone = stats.zone.as_deref().unwrap_or("-").to_uppercase();
                 let fps = format!("{:.0}  {:.2} MS", stats.fps, stats.frame_ms);
@@ -855,7 +883,10 @@ impl Editor {
         let mut zone_clicked = None;
         let mut zone_action = None;
         let environment = self.settings == Some(SettingsTarget::Environment);
-        if ui.selectable_label(environment, "ENVIRONMENT").clicked() {
+        if ui
+            .selectable_label(environment, picked("ENVIRONMENT", environment))
+            .clicked()
+        {
             zone_clicked = Some(SettingsTarget::Environment);
         }
         egui::ScrollArea::vertical()
@@ -889,13 +920,15 @@ impl Editor {
                         continue;
                     }
                     let empty = members.is_empty();
-                    let response = egui::CollapsingHeader::new(header)
+                    let chosen = self.settings == Some(SettingsTarget::Zone(zone.name.clone()));
+                    let response = egui::CollapsingHeader::new(picked(&header, chosen))
                         .id_salt(&zone.name)
                         .open(reveal.then_some(true))
                         .show(ui, |ui| {
                             for (index, object) in members {
                                 let selected = self.selected == Some(index);
-                                let response = ui.selectable_label(selected, &object.name);
+                                let response =
+                                    ui.selectable_label(selected, picked(&object.name, selected));
                                 if response.clicked() {
                                     clicked = Some(index);
                                 }
@@ -1278,6 +1311,17 @@ fn new_components() -> [(&'static str, Component); 11] {
         ("fog volume", Component::FogVolume(FogVolume::default())),
         ("material", Component::Material(Material::default())),
     ]
+}
+
+/// A row's text in the hierarchy: inverted (amber background, text in the
+/// background color) when it's the one being inspected.
+fn picked(text: &str, selected: bool) -> RichText {
+    let text = RichText::new(text);
+    if selected {
+        text.color(theme::BACKGROUND).background_color(theme::AMBER)
+    } else {
+        text
+    }
 }
 
 /// What the inspector shows when it isn't showing an object.
