@@ -1,21 +1,30 @@
-//! Window, event loop and per-frame update. `run` opens a window and draws
-//! a scene with a free-fly camera and the debug HUD.
+//! Window, event loop and per-frame update. `run` opens a window and plays a
+//! scene in first person, with a free-fly debug camera, the debug HUD and the
+//! player tuning panel.
 
 use crate::camera::FlyCamera;
 use crate::input::Input;
+use crate::physics::PhysicsWorld;
+use crate::player::settings::{PlayerSettings, SettingsFile};
+use crate::player::tuning::{self, TuningAction};
+use crate::player::{Player, Spawn};
 use crate::render::{RenderError, Renderer, scale};
 use crate::scene::Scene;
 use crate::ui::{Overlay, theme};
 use egui::{Align2, RichText};
-use glam::Vec2;
+use glam::{Vec2, Vec3};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{DeviceEvent, DeviceId, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowId};
+
+/// How often `player.ron` is checked for changes.
+const RELOAD_INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, thiserror::Error)]
 pub enum RunError {
@@ -29,8 +38,10 @@ pub enum RunError {
 
 pub struct RunConfig {
     pub title: String,
+    /// The game project folder; `player.ron` lives here.
+    pub game_dir: PathBuf,
     pub scene: Scene,
-    pub camera: FlyCamera,
+    pub spawn: Spawn,
 }
 
 pub fn run(config: RunConfig) -> Result<(), RunError> {
@@ -51,12 +62,32 @@ struct App {
     error: Option<RunError>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CameraMode {
+    Player,
+    Fly,
+}
+
 struct Running {
     window: Arc<Window>,
     renderer: Renderer,
     overlay: Overlay,
-    camera: FlyCamera,
+    physics: PhysicsWorld,
+    player: Player,
+    settings: PlayerSettings,
+    settings_file: SettingsFile,
+    settings_status: String,
+    settings_error: Option<String>,
+    last_reload_check: Instant,
+    fly: FlyCamera,
+    mode: CameraMode,
+    tuning_open: bool,
     input: Input,
+    focused: bool,
+    /// Player mode: Esc gave the mouse back; a click takes it again.
+    mouse_released: bool,
+    /// Fly mode: right mouse button held (and pressed outside the UI).
+    rmb_look: bool,
     last_frame: Instant,
     fps: FpsCounter,
 }
@@ -83,9 +114,13 @@ impl ApplicationHandler for App {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => app.renderer.resize(size.width, size.height),
-            WindowEvent::Focused(false) => {
-                app.input.release_all();
-                app.set_looking(false);
+            WindowEvent::Focused(focused) => {
+                app.focused = focused;
+                if !focused {
+                    app.input.release_all();
+                    app.rmb_look = false;
+                    app.mouse_released = true;
+                }
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(code) = event.physical_key {
@@ -96,13 +131,15 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::MouseInput {
-                button: MouseButton::Right,
-                state,
-                ..
-            } => {
-                let look = state.is_pressed() && !app.overlay.wants_pointer();
-                app.set_looking(look);
+            WindowEvent::MouseInput { button, state, .. } => {
+                let over_ui = app.overlay.wants_pointer();
+                match button {
+                    MouseButton::Left if state.is_pressed() && !over_ui => {
+                        app.mouse_released = false;
+                    }
+                    MouseButton::Right => app.rmb_look = state.is_pressed() && !over_ui,
+                    _ => {}
+                }
             }
             WindowEvent::MouseWheel { delta, .. } if !ui_consumed => {
                 app.input.scroll += match delta {
@@ -142,12 +179,38 @@ impl Running {
         let mut renderer = Renderer::new(window.clone())?;
         renderer.set_scene(&config.scene);
         let overlay = Overlay::new(&window, renderer.device(), renderer.surface_format());
+
+        let settings_file = SettingsFile::new(config.game_dir.join("player.ron"));
+        let (settings, settings_error) = match settings_file.load() {
+            Ok(settings) => (settings, None),
+            Err(err) => {
+                log::error!("{err}; using defaults");
+                (PlayerSettings::default(), Some(err.to_string()))
+            }
+        };
+        let player = Player::new(config.spawn, &settings);
+        let start = player.camera(&settings);
+        let mut fly = FlyCamera::new(start.position, start.yaw, start.pitch);
+        fly.camera.fov_y = start.fov_y;
+
         Ok(Self {
             window,
             renderer,
             overlay,
-            camera: config.camera.clone(),
+            physics: PhysicsWorld::from_scene(&config.scene),
+            player,
+            settings,
+            settings_file,
+            settings_status: String::new(),
+            settings_error,
+            last_reload_check: Instant::now(),
+            fly,
+            mode: CameraMode::Player,
+            tuning_open: false,
             input: Input::default(),
+            focused: true,
+            mouse_released: false,
+            rmb_look: false,
             last_frame: Instant::now(),
             fps: FpsCounter::default(),
         })
@@ -171,6 +234,91 @@ impl Running {
         self.window.set_cursor_visible(!looking);
     }
 
+    fn update_mouse_capture(&mut self) {
+        let wanted = self.focused
+            && match self.mode {
+                CameraMode::Player => !self.tuning_open && !self.mouse_released,
+                CameraMode::Fly => self.rmb_look,
+            };
+        self.set_looking(wanted);
+    }
+
+    fn handle_keys(&mut self, actions: &mut HudActions) {
+        let input = &self.input;
+        let factor = self.renderer.layout().factor;
+        if input.pressed(KeyCode::BracketLeft) {
+            actions.scale = Some(Some(factor.saturating_sub(1).max(1)));
+        }
+        if input.pressed(KeyCode::BracketRight) {
+            actions.scale = Some(Some(factor + 1));
+        }
+        if input.pressed(KeyCode::Digit0) {
+            actions.scale = Some(None);
+        }
+        if input.pressed(KeyCode::KeyV) {
+            actions.vsync = Some(!self.renderer.vsync());
+        }
+        if input.pressed(KeyCode::Escape) {
+            self.mouse_released = true;
+        }
+        if input.pressed(KeyCode::F1) {
+            self.tuning_open = !self.tuning_open;
+        }
+        if input.pressed(KeyCode::F2) {
+            self.mode = match self.mode {
+                CameraMode::Player => {
+                    // Start flying from where the player is looking.
+                    let view = self.player.camera(&self.settings);
+                    self.fly.camera = view;
+                    CameraMode::Fly
+                }
+                CameraMode::Fly => CameraMode::Player,
+            };
+        }
+        if input.pressed(KeyCode::KeyR) {
+            self.player.respawn(&self.settings);
+        }
+    }
+
+    fn poll_settings_file(&mut self) {
+        if self.last_reload_check.elapsed() < RELOAD_INTERVAL {
+            return;
+        }
+        self.last_reload_check = Instant::now();
+        match self.settings_file.poll() {
+            Some(Ok(settings)) => {
+                self.settings = settings;
+                self.settings_error = None;
+                self.settings_status = "RELOADED FROM DISK".into();
+                log::info!("reloaded {}", self.settings_file.path.display());
+            }
+            Some(Err(err)) => {
+                log::error!("{err}");
+                self.settings_error = Some(err.to_string());
+            }
+            None => {}
+        }
+    }
+
+    fn apply_tuning(&mut self, action: TuningAction) {
+        match action {
+            TuningAction::Save => match self.settings_file.save(&self.settings) {
+                Ok(()) => {
+                    self.settings_error = None;
+                    self.settings_status = format!(
+                        "SAVED TO {}",
+                        self.settings_file.path.display().to_string().to_uppercase()
+                    );
+                }
+                Err(err) => self.settings_error = Some(err.to_string()),
+            },
+            TuningAction::ResetToDefaults => {
+                self.settings = PlayerSettings::default();
+                self.settings_status = "DEFAULTS RESTORED (NOT SAVED)".into();
+            }
+        }
+    }
+
     fn frame(&mut self) {
         let now = Instant::now();
         let dt = (now - self.last_frame).as_secs_f32().min(0.1);
@@ -178,21 +326,21 @@ impl Running {
         self.fps.tick(dt);
 
         let mut actions = HudActions::default();
-        let factor = self.renderer.layout().factor;
-        if self.input.pressed(KeyCode::BracketLeft) {
-            actions.scale = Some(Some(factor.saturating_sub(1).max(1)));
-        }
-        if self.input.pressed(KeyCode::BracketRight) {
-            actions.scale = Some(Some(factor + 1));
-        }
-        if self.input.pressed(KeyCode::Digit0) {
-            actions.scale = Some(None);
-        }
-        if self.input.pressed(KeyCode::KeyV) {
-            actions.vsync = Some(!self.renderer.vsync());
-        }
+        self.handle_keys(&mut actions);
+        self.poll_settings_file();
+        self.update_mouse_capture();
 
-        self.camera.update(&self.input, dt);
+        let camera = match self.mode {
+            CameraMode::Player => {
+                self.player
+                    .update(&self.input, &self.settings, &self.physics, dt);
+                self.player.camera(&self.settings)
+            }
+            CameraMode::Fly => {
+                self.fly.update(&self.input, dt);
+                self.fly.camera.clone()
+            }
+        };
 
         let hud = HudInfo {
             fps: self.fps.fps,
@@ -200,18 +348,45 @@ impl Running {
             gpu: self.renderer.adapter_name().to_uppercase(),
             output: self.renderer.output_size(),
             internal: self.renderer.layout().internal,
-            factor,
+            factor: self.renderer.layout().factor,
             auto: self.renderer.render_scale_override().is_none(),
             vsync: self.renderer.vsync(),
-            speed: self.camera.speed,
+            mode: self.mode,
+            fly_speed: self.fly.speed,
+            player: PlayerReadout {
+                speed: self.player.horizontal_speed(),
+                velocity: self.player.velocity,
+                grounded: self.player.grounded,
+                air_time: self.player.time_since_grounded,
+                crouching: self.player.crouching,
+            },
+            mouse_free: !self.input.looking && self.mode == CameraMode::Player && !self.tuning_open,
             cursor_on: self.overlay.time().fract() < 0.5,
         };
+        let file_name = self
+            .settings_file
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let tuning_open = self.tuning_open;
+        let settings = &mut self.settings;
+        let (status, error) = (&self.settings_status, self.settings_error.as_deref());
+        let mut tuning_action = None;
         let ui_frame = self.overlay.run(
             &self.window,
             self.renderer.device(),
             self.renderer.queue(),
-            |ui| draw_hud(ui, &hud, &mut actions),
+            |ui| {
+                draw_hud(ui, &hud, &mut actions);
+                if tuning_open {
+                    tuning_action = tuning::panel(ui, settings, &file_name, status, error);
+                }
+            },
         );
+        if let Some(action) = tuning_action {
+            self.apply_tuning(action);
+        }
 
         if let Some(scale) = actions.scale {
             self.renderer.set_render_scale(scale);
@@ -223,7 +398,7 @@ impl Running {
         let size = self.renderer.output_size();
         let overlay = &mut self.overlay;
         self.renderer
-            .render(&self.camera.camera, |device, queue, encoder, target| {
+            .render(&camera, |device, queue, encoder, target| {
                 overlay.paint(ui_frame, size, device, queue, encoder, target);
             });
         self.input.end_frame();
@@ -252,6 +427,14 @@ impl FpsCounter {
     }
 }
 
+struct PlayerReadout {
+    speed: f32,
+    velocity: Vec3,
+    grounded: bool,
+    air_time: f32,
+    crouching: bool,
+}
+
 struct HudInfo {
     fps: f32,
     frame_ms: f32,
@@ -261,7 +444,10 @@ struct HudInfo {
     factor: u32,
     auto: bool,
     vsync: bool,
-    speed: f32,
+    mode: CameraMode,
+    fly_speed: f32,
+    player: PlayerReadout,
+    mouse_free: bool,
     cursor_on: bool,
 }
 
@@ -326,19 +512,74 @@ fn draw_hud(ui: &mut egui::Ui, hud: &HudInfo, actions: &mut HudActions) {
                                 actions.vsync = Some(!hud.vsync);
                             }
                             ui.end_row();
-
-                            ui.label(dim("CAMERA"));
-                            ui.label(format!("{:.1} M/S", hud.speed));
-                            ui.end_row();
                         });
 
                     ui.add_space(6.0);
-                    for line in [
-                        "RMB LOOK  WASD MOVE  Q/E DOWN/UP",
-                        "SHIFT FAST  WHEEL SPEED",
-                        "[ ] SCALE  0 AUTO  V VSYNC",
-                    ] {
-                        ui.label(RichText::new(line).small().color(theme::AMBER_DIM));
+                    egui::Grid::new("hud_player")
+                        .num_columns(2)
+                        .spacing([16.0, 4.0])
+                        .show(ui, |ui| match hud.mode {
+                            CameraMode::Player => {
+                                let p = &hud.player;
+                                ui.label(dim("MODE"));
+                                ui.label(if p.crouching {
+                                    "PLAYER [CROUCH]"
+                                } else {
+                                    "PLAYER"
+                                });
+                                ui.end_row();
+
+                                ui.label(dim("SPEED"));
+                                ui.label(format!("{:>5.2} M/S", p.speed));
+                                ui.end_row();
+
+                                ui.label(dim("VELOCITY"));
+                                ui.label(format!(
+                                    "{:>6.2} {:>6.2} {:>6.2}",
+                                    p.velocity.x, p.velocity.y, p.velocity.z
+                                ));
+                                ui.end_row();
+
+                                ui.label(dim("GROUNDED"));
+                                ui.label(if p.grounded { "[YES]" } else { "[NO] " });
+                                ui.end_row();
+
+                                ui.label(dim("AIR TIME"));
+                                ui.label(format!("{:>5.2} S", p.air_time));
+                                ui.end_row();
+                            }
+                            CameraMode::Fly => {
+                                ui.label(dim("MODE"));
+                                ui.label("FLY");
+                                ui.end_row();
+
+                                ui.label(dim("CAMERA"));
+                                ui.label(format!("{:.1} M/S", hud.fly_speed));
+                                ui.end_row();
+                            }
+                        });
+
+                    ui.add_space(6.0);
+                    let hints: &[&str] = match hud.mode {
+                        CameraMode::Player => &[
+                            "WASD MOVE  SPACE JUMP  SHIFT SPRINT",
+                            "CTRL/C CROUCH  R RESPAWN",
+                            "F1 TUNING  F2 FLY  ESC FREE MOUSE",
+                        ],
+                        CameraMode::Fly => &[
+                            "RMB LOOK  WASD MOVE  Q/E DOWN/UP",
+                            "SHIFT FAST  WHEEL SPEED  F2 PLAYER",
+                        ],
+                    };
+                    for line in hints.iter().chain(&["[ ] SCALE  0 AUTO  V VSYNC"]) {
+                        ui.label(RichText::new(*line).small().color(theme::AMBER_DIM));
+                    }
+                    if hud.mouse_free {
+                        ui.label(
+                            RichText::new("CLICK TO CAPTURE MOUSE")
+                                .small()
+                                .color(theme::AMBER),
+                        );
                     }
                 });
         });

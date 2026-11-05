@@ -7,10 +7,8 @@
 //! `--game <path>` picks the game project folder (default: `sandbox`).
 //! Game projects are content-only folders; they never contain engine code.
 
-mod demo;
+mod test_level;
 
-use engine::camera::FlyCamera;
-use engine::glam::Vec3;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,8 +61,9 @@ fn main() -> anyhow::Result<()> {
 
     engine::run(engine::RunConfig {
         title: format!("{} — {}", engine::NAME, args.game.display()),
-        scene: demo::scene(),
-        camera: FlyCamera::new(Vec3::new(0.0, 1.7, 6.0), 0.0, -0.08),
+        game_dir: args.game.clone(),
+        scene: test_level::scene(),
+        spawn: test_level::spawn(),
     })?;
     Ok(())
 }

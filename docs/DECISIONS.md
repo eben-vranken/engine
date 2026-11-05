@@ -30,3 +30,10 @@ Append new decisions at the bottom. Don't rewrite old entries; supersede them wi
 | 2026-11-05 | Scene renders to an Rgba16Float target; the window surface is non-sRGB and the upscale shader writes display-encoded values | Keeps HDR until tone mapping; egui also prefers a non-sRGB surface, so both share one target |
 | 2026-11-05 | Point-sampled textures still get mipmaps, blended linearly between levels | Crisp texels up close without distant grid lines shimmering |
 | 2026-11-05 | Milestone 1's test scene is hard-coded in `crates/app/src/demo.rs` | No scene format until milestone 3; it moves into `sandbox/scenes/` then |
+| 2026-11-05 | Engine pins `glam` to the version rapier3d uses (0.33) | rapier 0.36 is glam-based; one `Vec3` type across rendering and physics, no conversions |
+| 2026-11-05 | `serde` for (de)serializing RON files | Standard companion to `ron` |
+| 2026-11-05 | `player.ron` hot reload polls the file's modified time (every 250 ms) instead of using a file-watcher crate | One file, no new dependency; switch to `notify` when many files need watching |
+| 2026-11-05 | Player settings have neutral fallback defaults in engine code; the game's `player.ron` holds the real tuning | A missing or partial file still works and "Reset to defaults" has something to reset to; games never depend on engine constants |
+| 2026-11-05 | rapier's `KinematicCharacterController` does collision (slide, autostep, slopes, ground snap); the engine computes the desired motion | Reuses well-tested collide-and-slide; acceleration, jump and camera feel stay ours and data-driven |
+| 2026-11-05 | Vertical motion integrates with v·dt + ½·a·dt² per frame, no fixed timestep yet | Exact for constant gravity, so jump height is frame-rate independent (tested at 30–500 fps); add a fixed step when dynamic physics arrives |
+| 2026-11-05 | Milestone 2's test level is built in code in `crates/app/src/test_level.rs` | Allowed by the roadmap; moves to a scene file in milestone 3 |
