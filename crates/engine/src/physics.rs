@@ -5,6 +5,7 @@
 use crate::assets::{Assets, Resolved};
 use crate::render::mesh::{MeshData, Shape};
 use crate::scene::{Component, PhysicsBody, Scene, Transform};
+use crate::zones::Active;
 use glam::{Quat, Vec3};
 use rapier3d::prelude::*;
 use std::collections::HashMap;
@@ -139,11 +140,25 @@ impl PhysicsWorld {
         }
     }
 
+    /// Dynamic bodies outside the simulation radius are disabled: frozen
+    /// where they are (with their velocity) and out of collisions, until
+    /// their zone is active again.
+    pub fn set_active(&mut self, active: &Active) {
+        for &(handle, object) in &self.dynamic {
+            if let Some(body) = self.bodies.get_mut(handle)
+                && body.is_enabled() != active.object(object)
+            {
+                body.set_enabled(active.object(object));
+            }
+        }
+    }
+
     /// Where each awake dynamic body is now: its object, position and rotation.
     pub fn body_poses(&self) -> impl Iterator<Item = (usize, Vec3, Quat)> + '_ {
         self.dynamic.iter().filter_map(|&(handle, object)| {
             let body = self.bodies.get(handle)?;
-            (!body.is_sleeping()).then(|| (object, body.translation(), *body.rotation()))
+            (body.is_enabled() && !body.is_sleeping())
+                .then(|| (object, body.translation(), *body.rotation()))
         })
     }
 
@@ -343,6 +358,7 @@ fn mesh_collider(mesh: &MeshData, transform: &Transform, convex: bool) -> Option
 mod tests {
     use super::*;
     use crate::scene::{Component, test_scene};
+    use crate::zones::ZoneMap;
     use glam::{Vec2, Vec3};
 
     #[test]
@@ -473,6 +489,29 @@ mod tests {
         );
         let beside = position + Vec3::new(2.0, 0.0, 0.0);
         assert_eq!(game.object_below(beside, 2.0), Some(0), "the floor");
+    }
+
+    #[test]
+    fn bodies_outside_the_simulation_radius_wait_in_the_air() {
+        let mut scene = falling_box();
+        scene.zones.push(crate::scene::Zone { name: "far".into() });
+        scene.objects[1].zone = "far".into();
+        let map = ZoneMap::new(&scene);
+        let mut game = PhysicsWorld::for_game(&scene, &mut Assets::default());
+        let height = |game: &PhysicsWorld| game.bodies[game.dynamic[0].0].translation().y;
+        game.set_active(&Active::new(&scene, &map, Some(0)));
+        let start = height(&game);
+        for _ in 0..60 {
+            game.advance(1.0 / 60.0);
+        }
+        assert_eq!(height(&game), start, "waiting in the air");
+        assert_eq!(game.body_poses().count(), 0);
+
+        game.set_active(&Active::new(&scene, &map, Some(1)));
+        for _ in 0..60 {
+            game.advance(1.0 / 60.0);
+        }
+        assert!(height(&game) < 3.0, "falling once its zone is active");
     }
 
     #[test]

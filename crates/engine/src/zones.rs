@@ -84,6 +84,65 @@ impl ZoneMap {
     }
 }
 
+/// The simulation radius: objects in the current zone and its neighbours
+/// are active (behaviors, physics and sounds run); the rest wait. Without a
+/// current zone (no volumes, or none entered yet) everything is active.
+#[derive(Debug, Default, Clone)]
+pub struct Active {
+    /// Per zone (index into `Scene::zones`); `None` = all.
+    zones: Option<Vec<bool>>,
+    /// Per object, cached from `zones`.
+    objects: Vec<bool>,
+}
+
+impl Active {
+    pub fn new(scene: &Scene, map: &ZoneMap, current: Option<usize>) -> Self {
+        let Some(current) = current else {
+            return Self::default();
+        };
+        let mut zones = vec![false; scene.zones.len()];
+        zones[current] = true;
+        for &n in map.neighbours(current) {
+            zones[n] = true;
+        }
+        let objects = scene
+            .objects
+            .iter()
+            .map(|o| {
+                scene
+                    .zones
+                    .iter()
+                    .position(|z| z.name == o.zone)
+                    .is_none_or(|z| zones[z])
+            })
+            .collect();
+        Self {
+            zones: Some(zones),
+            objects,
+        }
+    }
+
+    /// Whether the object at this index runs. Objects added since this was
+    /// computed count as active until the next frame.
+    pub fn object(&self, index: usize) -> bool {
+        self.zones.is_none() || self.objects.get(index).copied().unwrap_or(true)
+    }
+
+    /// Names of the active zones; empty when everything is active.
+    pub fn zone_names(&self, scene: &Scene) -> Vec<String> {
+        let Some(zones) = &self.zones else {
+            return Vec::new();
+        };
+        scene
+            .zones
+            .iter()
+            .zip(zones)
+            .filter(|(_, active)| **active)
+            .map(|(z, _)| z.name.clone())
+            .collect()
+    }
+}
+
 /// Which zone someone (the player, the camera) is in. Outside every volume
 /// it keeps the last zone, so a gap between volumes or a jump above one
 /// doesn't drop it.
@@ -184,6 +243,25 @@ mod tests {
         assert_eq!(map.neighbours(0), &[2, 1]);
         assert_eq!(map.neighbours(1), &[0]);
         assert_eq!(map.neighbours(2), &[0]);
+    }
+
+    #[test]
+    fn the_current_zone_and_its_neighbours_are_active() {
+        let mut scene = scene();
+        // Point the room's portal at the corridor instead: room and hall are
+        // no longer neighbours.
+        scene.objects[4].components = vec![Component::Portal(Portal {
+            to: ZoneRef("corridor".into()),
+        })];
+        let map = ZoneMap::new(&scene);
+        let in_room = Active::new(&scene, &map, Some(1));
+        assert_eq!(in_room.zone_names(&scene), ["room", "corridor"]);
+        assert!(!in_room.object(0), "the hall's volume waits");
+        assert!(in_room.object(1));
+        assert!(in_room.object(99), "objects added since count as active");
+
+        let nowhere = Active::new(&scene, &map, None);
+        assert!(nowhere.object(0) && nowhere.zone_names(&scene).is_empty());
     }
 
     #[test]

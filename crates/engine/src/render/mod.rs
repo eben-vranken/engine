@@ -6,6 +6,7 @@
 //!
 //! See `scale` for how the internal resolution is chosen.
 
+mod frustum;
 pub mod mesh;
 pub mod scale;
 pub mod texture;
@@ -14,6 +15,7 @@ use crate::assets::{Assets, Resolved};
 use crate::camera::Camera;
 use crate::scene::{Environment, Geometry, Scene, Transform};
 use bytemuck::{Pod, Zeroable};
+use frustum::Frustum;
 use glam::{Mat4, Vec3, Vec4};
 use mesh::{MeshData, Shape};
 use scale::ScaleLayout;
@@ -110,6 +112,8 @@ fn object_uniform(
 }
 
 struct GpuMesh {
+    /// Bounding sphere in the mesh's own space, for culling.
+    sphere: (Vec3, f32),
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     /// Index ranges and the texture each is drawn with.
@@ -159,6 +163,8 @@ pub struct Renderer {
     /// Scene object shown as selected.
     highlighted: Option<usize>,
     environment: Environment,
+    /// Last frame: draws in view, and all draws.
+    drawn: [usize; 2],
 
     upscale_pipeline: wgpu::RenderPipeline,
     upscale_layout: wgpu::BindGroupLayout,
@@ -439,6 +445,7 @@ impl Renderer {
             object_bind_group,
             meshes: Vec::new(),
             draws: Vec::new(),
+            drawn: [0, 0],
             highlighted: None,
             environment: Environment::default(),
             upscale_pipeline,
@@ -570,6 +577,7 @@ impl Renderer {
                 })
         };
         let mesh = GpuMesh {
+            sphere: frustum::bounding_sphere(data.bounds()),
             vertices: buffer(
                 "vertices",
                 bytemuck::cast_slice(&data.vertices),
@@ -636,6 +644,11 @@ impl Renderer {
             w as f32,
             h as f32,
         ]
+    }
+
+    /// Last frame: how many draws were in view, out of how many.
+    pub fn drawn(&self) -> [usize; 2] {
+        self.drawn
     }
 
     pub fn output_size(&self) -> [u32; 2] {
@@ -741,8 +754,10 @@ impl Renderer {
 
         let env = &self.environment;
         let [w, h] = self.layout.internal;
+        let view_proj = camera.view_projection(w as f32 / h as f32);
+        let frustum = Frustum::new(view_proj);
         let uniform = FrameUniform {
-            view_proj: camera.view_projection(w as f32 / h as f32),
+            view_proj,
             camera_pos: camera.position.extend(1.0),
             sun_dir: env.sun_direction.normalize().extend(0.0),
             sun_color: env.sun_color.extend(0.0),
@@ -792,7 +807,14 @@ impl Renderer {
             });
             pass.set_pipeline(&self.scene_pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
+            let mut drawn = 0;
             for (i, mesh) in self.meshes.iter().enumerate() {
+                let (center, radius) =
+                    frustum::world_sphere(&self.draws[i].uniform.model, mesh.sphere);
+                if !frustum.sees_sphere(center, radius) {
+                    continue;
+                }
+                drawn += 1;
                 let offset = (i as u64 * self.object_stride) as u32;
                 pass.set_bind_group(1, &self.object_bind_group, &[offset]);
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
@@ -802,6 +824,7 @@ impl Renderer {
                     pass.draw_indexed(indices.clone(), 0, 0..1);
                 }
             }
+            self.drawn = [drawn, self.meshes.len()];
         }
 
         {

@@ -77,15 +77,15 @@ pub fn player_starts(
 pub const PORTAL_SIZE: Vec2 = Vec2::new(1.0, 2.0);
 
 /// Draws every zone volume as a wire box labelled with its zone, and every
-/// portal as a doorway frame labelled with the zone it leads to. Volumes of
-/// `current_zone` are bright. Clicking a label selects the object. Returns
+/// portal as a doorway frame labelled with the zone it leads to. Markers in
+/// `active_zones` (the simulation radius) are bright. Clicking a label selects the object. Returns
 /// the object clicked, if any, and whether the pointer is over a label.
 pub fn zones(
     ui: &Ui,
     view: &View,
     scene: &Scene,
     selected: Option<usize>,
-    current_zone: Option<&str>,
+    active_zones: &[String],
 ) -> (Option<usize>, bool) {
     let painter = ui.painter().with_clip_rect(view.image);
     let (mut clicked, mut hovered) = (None, false);
@@ -131,7 +131,7 @@ pub fn zones(
                     _ => continue,
                 };
             let is_selected = selected == Some(index);
-            let bright = is_selected || current_zone == Some(object.zone.as_str());
+            let bright = is_selected || active_zones.contains(&object.zone);
             let color = if bright {
                 theme::AMBER
             } else {

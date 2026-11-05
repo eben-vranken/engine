@@ -17,7 +17,7 @@ use crate::player::{Player, Spawn};
 use crate::render::{RenderError, Renderer, scale};
 use crate::scene::{Component, Scene};
 use crate::ui::{Overlay, theme};
-use crate::zones::{ZoneMap, ZoneTracker};
+use crate::zones::{Active, ZoneMap, ZoneTracker};
 use egui::{Align2, RichText};
 use glam::{Vec2, Vec3};
 use std::path::PathBuf;
@@ -148,6 +148,8 @@ struct Running {
     audio: Option<Audio>,
     /// The zone the active camera is in.
     zone: ZoneTracker,
+    /// The simulation radius: what runs (updated every frame from `zone`).
+    active: Active,
 }
 
 /// The editor's state when Play was pressed.
@@ -349,6 +351,7 @@ impl Running {
                 .inspect_err(|err| log::error!("{err}; running without sound"))
                 .ok(),
             zone: ZoneTracker::default(),
+            active: Active::default(),
         })
     }
 
@@ -501,7 +504,7 @@ impl Running {
         let Some(behaviors) = &mut self.behaviors else {
             return;
         };
-        let moved = behaviors.update(&mut self.scene, dt, &interaction);
+        let moved = behaviors.update(&mut self.scene, dt, &interaction, &self.active);
         for &index in &moved {
             self.renderer
                 .update_object(&self.scene, index, &mut self.assets);
@@ -525,6 +528,7 @@ impl Running {
                 self.player.velocity,
             );
         }
+        self.physics.set_active(&self.active);
         self.physics.advance(dt);
         let poses: Vec<_> = self.physics.body_poses().collect();
         for (index, position, rotation) in poses {
@@ -831,14 +835,14 @@ impl Running {
                 self.fly.camera.clone()
             }
         };
-        if let Some(audio) = &mut self.audio {
-            audio.update(&self.scene, &mut self.assets, &camera);
-        }
         let zones = ZoneMap::new(&self.scene);
-        let zone = self
-            .zone
-            .update(&self.scene, &zones, camera.position)
-            .map(|z| self.scene.zones[z].name.clone());
+        let current = self.zone.update(&self.scene, &zones, camera.position);
+        self.active = Active::new(&self.scene, &zones, current);
+        let zone = current.map(|z| self.scene.zones[z].name.clone());
+        let active_zones = self.active.zone_names(&self.scene);
+        if let Some(audio) = &mut self.audio {
+            audio.update(&self.scene, &mut self.assets, &camera, &self.active);
+        }
 
         let hud = HudInfo {
             fps: self.fps.fps,
@@ -861,6 +865,8 @@ impl Running {
             mouse_free: !self.input.looking && self.mode == CameraMode::Player && !self.tuning_open,
             cursor_on: self.overlay.time().fract() < 0.5,
             zone: zone.clone(),
+            active_zones: active_zones.clone(),
+            drawn: self.renderer.drawn(),
         };
         let file_name = self
             .settings_file
@@ -874,6 +880,8 @@ impl Running {
             internal: hud.internal,
             factor: hud.factor,
             zone,
+            active_zones,
+            drawn: hud.drawn,
         };
         let blink = hud.cursor_on;
         let tuning_open = self.tuning_open;
@@ -1074,6 +1082,15 @@ fn draw_prompt(ui: &egui::Ui, image: egui::Rect, text: &str) {
         });
 }
 
+/// The simulation radius for the HUD: the active zones, or ALL.
+pub(crate) fn active_text(zones: &[String]) -> String {
+    if zones.is_empty() {
+        "ALL".into()
+    } else {
+        zones.join(", ").to_uppercase()
+    }
+}
+
 /// Editor: new objects go on surfaces up to this far ahead (meters).
 const AIM_DISTANCE: f32 = 20.0;
 
@@ -1122,6 +1139,10 @@ struct HudInfo {
     mouse_free: bool,
     cursor_on: bool,
     zone: Option<String>,
+    /// Current zone and neighbours; empty = everything runs.
+    active_zones: Vec<String>,
+    /// Draws in view, out of all draws.
+    drawn: [usize; 2],
 }
 
 #[derive(Default)]
@@ -1194,6 +1215,12 @@ fn draw_hud(ui: &mut egui::Ui, hud: &HudInfo, actions: &mut HudActions) {
                         .show(ui, |ui| {
                             ui.label(dim("ZONE"));
                             ui.label(hud.zone.as_deref().unwrap_or("-").to_uppercase());
+                            ui.end_row();
+                            ui.label(dim("ACTIVE"));
+                            ui.label(active_text(&hud.active_zones));
+                            ui.end_row();
+                            ui.label(dim("DRAWN"));
+                            ui.label(format!("{} / {}", hud.drawn[0], hud.drawn[1]));
                             ui.end_row();
                             match hud.mode {
                                 CameraMode::Player => {

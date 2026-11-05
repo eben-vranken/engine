@@ -20,6 +20,7 @@ mod mixer;
 use crate::assets::Assets;
 use crate::camera::Camera;
 use crate::scene::{AcousticPreset, Component, Scene, SoundSource};
+use crate::zones::Active;
 use audionimbus::wiring::{ReflectionsFrame, ReflectionsSimulation, Simulation, SourceWithInputs};
 use audionimbus::{
     AirAbsorptionModel, AmbisonicsDecodeEffect, AmbisonicsDecodeEffectSettings, AudioSettings,
@@ -58,6 +59,9 @@ const OCCLUSION_SAMPLES: u32 = 32;
 const OCCLUSION_SMOOTHING: f32 = 0.1;
 /// Longest reverb tail simulated (seconds); enough for a large stone hall.
 const MAX_REVERB: f32 = 3.0;
+/// Seconds for a sound leaving (or re-entering) the simulation radius to
+/// fade out (or in).
+const RADIUS_FADE: f32 = 1.0;
 /// Voices kept ready for one-shot sounds (claps, footsteps); enough for
 /// sprinting footsteps that each ring out for the full reverb tail.
 const ONE_SHOT_VOICES: usize = 10;
@@ -140,6 +144,11 @@ struct Entry {
     /// Smoothed occlusion and transmission, so changes fade.
     occlusion: f32,
     transmission: [f32; 3],
+    /// 1 inside the simulation radius, fading to 0 outside it.
+    presence: f32,
+    /// In the simulators. A scene sound outside the radius leaves them
+    /// once it has faded out (and keeps its place in the clip, silently).
+    simulated: bool,
 }
 
 impl Entry {
@@ -275,13 +284,21 @@ impl Audio {
     }
 
     /// Call every frame: follows the scene's geometry and sound sources and
-    /// the listener, and runs the direct simulation.
-    pub fn update(&mut self, scene: &Scene, assets: &mut Assets, listener: &Camera) {
+    /// the listener, and runs the direct simulation. Scene sounds outside
+    /// the `active` zones fade out and aren't simulated.
+    pub fn update(
+        &mut self,
+        scene: &Scene,
+        assets: &mut Assets,
+        listener: &Camera,
+        active: &Active,
+    ) {
         let now = Instant::now();
         let dt = (now - self.last_update).as_secs_f32().min(0.1);
         self.last_update = now;
         self.update_geometry(scene, assets);
         self.sync_scene_voices(scene);
+        self.follow_radius(active, dt);
 
         // Which voices are simulated: scene sources, and one-shots still
         // ringing out.
@@ -292,7 +309,7 @@ impl Audio {
                 *until = None;
             }
         }
-        let active = |e: &&Entry| !matches!(e.kind, Kind::OneShot { until: None });
+        let active = |e: &&Entry| e.simulated && !matches!(e.kind, Kind::OneShot { until: None });
 
         let right = listener.right();
         let ahead = listener.forward();
@@ -363,12 +380,17 @@ impl Audio {
         let fade = 1.0 - (-dt / OCCLUSION_SMOOTHING).exp();
         let mut voices = Vec::new();
         for entry in self.voices.iter_mut() {
+            if !entry.simulated {
+                // Silent, but the mixer keeps reading so the loop stays in time.
+                voices.push((entry.id, VoiceParams::default()));
+                continue;
+            }
             if !active(&&*entry) {
                 continue;
             }
             let toward = (entry.position - listener.position).normalize_or(ahead);
             let mut params = VoiceParams {
-                volume: entry.volume,
+                volume: entry.volume * entry.presence,
                 looping: entry.looping,
                 direction: [toward.dot(right), toward.dot(up), -toward.dot(ahead)],
                 ..Default::default()
@@ -406,6 +428,40 @@ impl Audio {
             shared.voices = voices;
             shared.listener = listener_frame;
             shared.toggles = self.toggles;
+        }
+    }
+
+    /// Fades scene sounds in and out of the simulation radius; one that has
+    /// faded out leaves the simulators, and rejoins when its zone is active.
+    fn follow_radius(&mut self, active: &Active, dt: f32) {
+        let step = dt / RADIUS_FADE;
+        let mut changed = false;
+        for entry in &mut self.voices {
+            let Kind::Scene { object, .. } = entry.kind else {
+                continue;
+            };
+            let inside = active.object(object);
+            entry.presence = if inside {
+                (entry.presence + step).min(1.0)
+            } else {
+                (entry.presence - step).max(0.0)
+            };
+            let simulated = inside || entry.presence > 0.0;
+            if simulated != entry.simulated {
+                entry.simulated = simulated;
+                if simulated {
+                    self.direct.add_source(&entry.direct);
+                    self.reflection.add_source(&entry.reflection);
+                } else {
+                    self.direct.remove_source(&entry.direct);
+                    self.reflection.remove_source(&entry.reflection);
+                }
+                changed = true;
+            }
+        }
+        if changed {
+            self.direct.commit();
+            self.simulation.request_simulator_commit();
         }
     }
 
@@ -480,8 +536,10 @@ impl Audio {
         for id in gone {
             if let Some(i) = self.voices.iter().position(|e| e.id == id) {
                 let entry = self.voices.remove(i);
-                self.direct.remove_source(&entry.direct);
-                self.reflection.remove_source(&entry.reflection);
+                if entry.simulated {
+                    self.direct.remove_source(&entry.direct);
+                    self.reflection.remove_source(&entry.reflection);
+                }
                 let _ = self.commands.send(Command::Remove(id));
                 changed = true;
             }
@@ -547,6 +605,8 @@ impl Audio {
             radius: 1.0,
             occlusion: 1.0,
             transmission: [1.0; 3],
+            presence: 1.0,
+            simulated: true,
         });
         self.next_id += 1;
         true

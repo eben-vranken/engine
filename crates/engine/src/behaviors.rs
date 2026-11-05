@@ -3,6 +3,7 @@
 //! puts its snapshot back.
 
 use crate::scene::{Component, Door, Floating, Scene, Switch, Transform};
+use crate::zones::Active;
 use std::collections::HashMap;
 use std::f32::consts::TAU;
 
@@ -16,14 +17,21 @@ pub struct Interaction {
 }
 
 pub struct Behaviors {
-    /// Seconds since the game started.
-    time: f32,
-    /// Each moving object's transform when the game started.
-    rest: Vec<(usize, Transform)>,
+    /// Every object that moves.
+    moving: Vec<Moving>,
     /// Per door: whether it's open (or opening), and how far, 0–1.
     doors: HashMap<usize, DoorState>,
     /// The pressure plate the player is standing on.
     plate: Option<usize>,
+}
+
+struct Moving {
+    index: usize,
+    /// Its transform when the game started.
+    rest: Transform,
+    /// Seconds it has run: its clock stops while it's outside the
+    /// simulation radius, so it picks up where it left off.
+    time: f32,
 }
 
 struct DoorState {
@@ -33,7 +41,7 @@ struct DoorState {
 
 impl Behaviors {
     pub fn start(scene: &Scene) -> Self {
-        let mut rest = Vec::new();
+        let mut moving = Vec::new();
         let mut doors = HashMap::new();
         for (index, object) in scene.objects.iter().enumerate() {
             let mut moves = false;
@@ -50,30 +58,45 @@ impl Behaviors {
                 }
             }
             if moves {
-                rest.push((index, object.transform));
+                moving.push(Moving {
+                    index,
+                    rest: object.transform,
+                    time: 0.0,
+                });
             }
         }
         Self {
-            time: 0.0,
-            rest,
+            moving,
             doors,
             plate: None,
         }
     }
 
-    /// Advances every behavior by `dt` seconds; returns the objects that moved.
-    pub fn update(&mut self, scene: &mut Scene, dt: f32, interaction: &Interaction) -> Vec<usize> {
-        self.time += dt;
+    /// Advances the active objects' behaviors by `dt` seconds; returns the
+    /// objects that moved. Switches can still flip doors that wait outside
+    /// the radius; those move once they're active.
+    pub fn update(
+        &mut self,
+        scene: &mut Scene,
+        dt: f32,
+        interaction: &Interaction,
+        active: &Active,
+    ) -> Vec<usize> {
         self.flip_switches(scene, interaction);
 
         let mut moved = Vec::new();
-        for &(index, rest) in &self.rest {
+        for moving in &mut self.moving {
+            let (index, rest) = (moving.index, moving.rest);
+            if !active.object(index) {
+                continue;
+            }
+            moving.time += dt;
             let object = &mut scene.objects[index];
             let mut transform = rest;
             for component in &object.components {
                 match component {
                     Component::Floating(floating) => {
-                        transform.position.y += bob(floating, self.time);
+                        transform.position.y += bob(floating, moving.time);
                     }
                     Component::Door(door) => {
                         if let Some(state) = self.doors.get_mut(&index) {
@@ -187,10 +210,13 @@ mod tests {
         let nothing = Interaction::default();
 
         // A quarter cycle: at the top.
-        assert_eq!(behaviors.update(&mut scene, 0.25, &nothing), vec![0]);
+        assert_eq!(
+            behaviors.update(&mut scene, 0.25, &nothing, &Active::default()),
+            vec![0]
+        );
         assert!((scene.objects[0].transform.position.y - 2.5).abs() < 1e-5);
         // Three quarters: at the bottom. The other box never moves.
-        behaviors.update(&mut scene, 0.5, &nothing);
+        behaviors.update(&mut scene, 0.5, &nothing, &Active::default());
         assert!((scene.objects[0].transform.position.y - 1.5).abs() < 1e-5);
         assert_eq!(
             scene.objects[1].transform.position,
@@ -249,17 +275,17 @@ mod tests {
             used: Some(1),
             standing_on: None,
         };
-        behaviors.update(&mut scene, 0.5, &press);
+        behaviors.update(&mut scene, 0.5, &press, &Active::default());
         // Halfway through its one-second swing; the hinge edge hasn't moved.
         let door = scene.objects[0].transform;
         assert!((door.rotation.y - 45.0).abs() < 1e-3);
         let hinge = door.position + door.quat() * Vec3::new(-1.0, 0.0, 0.0);
         assert!((hinge - Vec3::new(-1.0, 1.0, 0.0)).length() < 1e-5);
 
-        behaviors.update(&mut scene, 1.0, &Interaction::default());
+        behaviors.update(&mut scene, 1.0, &Interaction::default(), &Active::default());
         assert!((scene.objects[0].transform.rotation.y - 90.0).abs() < 1e-3);
         // Pressing again closes it.
-        behaviors.update(&mut scene, 1.0, &press);
+        behaviors.update(&mut scene, 1.0, &press, &Active::default());
         assert!(scene.objects[0].transform.rotation.y.abs() < 1e-3);
     }
 
@@ -271,10 +297,10 @@ mod tests {
             used: None,
             standing_on: Some(2),
         };
-        behaviors.update(&mut scene, 2.0, &on_plate);
-        behaviors.update(&mut scene, 2.0, &on_plate);
+        behaviors.update(&mut scene, 2.0, &on_plate, &Active::default());
+        behaviors.update(&mut scene, 2.0, &on_plate, &Active::default());
         assert!((scene.objects[0].transform.rotation.y - 90.0).abs() < 1e-3);
-        behaviors.update(&mut scene, 2.0, &Interaction::default());
+        behaviors.update(&mut scene, 2.0, &Interaction::default(), &Active::default());
         assert!(scene.objects[0].transform.rotation.y.abs() < 1e-3);
     }
 
@@ -287,6 +313,10 @@ mod tests {
             used: Some(1),
             standing_on: None,
         };
-        assert!(behaviors.update(&mut scene, 1.0, &press).is_empty());
+        assert!(
+            behaviors
+                .update(&mut scene, 1.0, &press, &Active::default())
+                .is_empty()
+        );
     }
 }

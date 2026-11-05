@@ -67,6 +67,10 @@ pub struct EditorStats {
     pub factor: u32,
     /// The zone the camera is in.
     pub zone: Option<String>,
+    /// The simulation radius: current zone and neighbours; empty = all.
+    pub active_zones: Vec<String>,
+    /// Draws in view, out of all draws.
+    pub drawn: [usize; 2],
 }
 
 /// What the editor did this frame, for the runtime to act on.
@@ -162,7 +166,7 @@ impl Editor {
 
         if !self.playing {
             let starts = markers::player_starts(ui, view, scene, self.selected);
-            let zones = markers::zones(ui, view, scene, self.selected, stats.zone.as_deref());
+            let zones = markers::zones(ui, view, scene, self.selected, &stats.active_zones);
             for (clicked, hovered) in [starts, zones] {
                 output.gizmo_hovered |= hovered;
                 if let Some(index) = clicked {
@@ -707,8 +711,14 @@ impl Editor {
             });
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(format!("{} / {}", stats.drawn[0], stats.drawn[1]));
+                ui.label(dim("DRAWN"));
+                ui.add_space(12.0);
                 let zone = stats.zone.as_deref().unwrap_or("-");
-                ui.label(zone.to_uppercase());
+                ui.label(zone.to_uppercase()).on_hover_text(format!(
+                    "ACTIVE: {}",
+                    crate::runtime::active_text(&stats.active_zones)
+                ));
                 ui.label(dim("ZONE"));
                 ui.add_space(12.0);
                 ui.label(format!(
