@@ -109,8 +109,8 @@ Steam Audio in the engine, tested by walking through spaces in first person.
 - The four spaces clearly sound different, sound is muffled behind walls and opens up through doorways, each toggle makes an audible difference, no clicks or clipping.
 
 ## 8. Zones ← current
-- [ ] Zone data + connections in scenes
-- [ ] Frustum culling, simulation radius
+- [x] Zone data + connections in scenes
+- [x] Frustum culling, simulation radius
 - [ ] Per-zone reverb probes
 
 ## 9. Lighting
