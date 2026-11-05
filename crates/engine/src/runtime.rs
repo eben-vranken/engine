@@ -17,6 +17,7 @@ use crate::player::{Player, Spawn};
 use crate::render::{RenderError, Renderer, scale};
 use crate::scene::{Component, Scene};
 use crate::ui::{Overlay, theme};
+use crate::zones::{ZoneMap, ZoneTracker};
 use egui::{Align2, RichText};
 use glam::{Vec2, Vec3};
 use std::path::PathBuf;
@@ -145,6 +146,8 @@ struct Running {
     was_grounded: bool,
     /// `None` without an output device (the game runs silent).
     audio: Option<Audio>,
+    /// The zone the active camera is in.
+    zone: ZoneTracker,
 }
 
 /// The editor's state when Play was pressed.
@@ -345,6 +348,7 @@ impl Running {
             audio: Audio::new(config.game_dir.clone())
                 .inspect_err(|err| log::error!("{err}; running without sound"))
                 .ok(),
+            zone: ZoneTracker::default(),
         })
     }
 
@@ -642,6 +646,7 @@ impl Running {
         self.behaviors = Some(Behaviors::start(&self.scene));
         self.rebuild_physics();
         self.player = Player::new(spawn_point(&self.scene), &self.settings);
+        self.zone.reset();
         self.mode = CameraMode::Player;
         self.mouse_released = false;
         self.tuning_open = false;
@@ -658,6 +663,7 @@ impl Running {
         self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
         self.mode = CameraMode::Fly;
         self.tuning_open = false;
+        self.zone.reset();
         if let Some(editor) = &mut self.editor {
             editor.playing = false;
         }
@@ -671,7 +677,7 @@ impl Running {
                 self.renderer
                     .update_object(&self.scene, index, &mut self.assets);
             }
-            Change::Added(_) | Change::Removed(_) => {
+            Change::Added(_) | Change::Removed(_) | Change::All => {
                 let selected = self.editor.as_ref().and_then(|e| e.selected);
                 self.renderer.set_highlight(selected);
                 self.highlighted = selected;
@@ -733,6 +739,7 @@ impl Running {
                 self.scene = scene;
                 self.renderer.set_scene(&self.scene, &mut self.assets);
                 self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
+                self.zone.reset();
                 editor.scene_loaded(path);
             }
             Err(err) => {
@@ -827,6 +834,11 @@ impl Running {
         if let Some(audio) = &mut self.audio {
             audio.update(&self.scene, &mut self.assets, &camera);
         }
+        let zones = ZoneMap::new(&self.scene);
+        let zone = self
+            .zone
+            .update(&self.scene, &zones, camera.position)
+            .map(|z| self.scene.zones[z].name.clone());
 
         let hud = HudInfo {
             fps: self.fps.fps,
@@ -848,6 +860,7 @@ impl Running {
             },
             mouse_free: !self.input.looking && self.mode == CameraMode::Player && !self.tuning_open,
             cursor_on: self.overlay.time().fract() < 0.5,
+            zone: zone.clone(),
         };
         let file_name = self
             .settings_file
@@ -860,6 +873,7 @@ impl Running {
             frame_ms: hud.frame_ms,
             internal: hud.internal,
             factor: hud.factor,
+            zone,
         };
         let blink = hud.cursor_on;
         let tuning_open = self.tuning_open;
@@ -1107,6 +1121,7 @@ struct HudInfo {
     player: PlayerReadout,
     mouse_free: bool,
     cursor_on: bool,
+    zone: Option<String>,
 }
 
 #[derive(Default)]
@@ -1176,44 +1191,49 @@ fn draw_hud(ui: &mut egui::Ui, hud: &HudInfo, actions: &mut HudActions) {
                     egui::Grid::new("hud_player")
                         .num_columns(2)
                         .spacing([16.0, 4.0])
-                        .show(ui, |ui| match hud.mode {
-                            CameraMode::Player => {
-                                let p = &hud.player;
-                                ui.label(dim("MODE"));
-                                ui.label(if p.crouching {
-                                    "PLAYER [CROUCH]"
-                                } else {
-                                    "PLAYER"
-                                });
-                                ui.end_row();
+                        .show(ui, |ui| {
+                            ui.label(dim("ZONE"));
+                            ui.label(hud.zone.as_deref().unwrap_or("-").to_uppercase());
+                            ui.end_row();
+                            match hud.mode {
+                                CameraMode::Player => {
+                                    let p = &hud.player;
+                                    ui.label(dim("MODE"));
+                                    ui.label(if p.crouching {
+                                        "PLAYER [CROUCH]"
+                                    } else {
+                                        "PLAYER"
+                                    });
+                                    ui.end_row();
 
-                                ui.label(dim("SPEED"));
-                                ui.label(format!("{:>5.2} M/S", p.speed));
-                                ui.end_row();
+                                    ui.label(dim("SPEED"));
+                                    ui.label(format!("{:>5.2} M/S", p.speed));
+                                    ui.end_row();
 
-                                ui.label(dim("VELOCITY"));
-                                ui.label(format!(
-                                    "{:>6.2} {:>6.2} {:>6.2}",
-                                    p.velocity.x, p.velocity.y, p.velocity.z
-                                ));
-                                ui.end_row();
+                                    ui.label(dim("VELOCITY"));
+                                    ui.label(format!(
+                                        "{:>6.2} {:>6.2} {:>6.2}",
+                                        p.velocity.x, p.velocity.y, p.velocity.z
+                                    ));
+                                    ui.end_row();
 
-                                ui.label(dim("GROUNDED"));
-                                ui.label(if p.grounded { "[YES]" } else { "[NO] " });
-                                ui.end_row();
+                                    ui.label(dim("GROUNDED"));
+                                    ui.label(if p.grounded { "[YES]" } else { "[NO] " });
+                                    ui.end_row();
 
-                                ui.label(dim("AIR TIME"));
-                                ui.label(format!("{:>5.2} S", p.air_time));
-                                ui.end_row();
-                            }
-                            CameraMode::Fly => {
-                                ui.label(dim("MODE"));
-                                ui.label("FLY");
-                                ui.end_row();
+                                    ui.label(dim("AIR TIME"));
+                                    ui.label(format!("{:>5.2} S", p.air_time));
+                                    ui.end_row();
+                                }
+                                CameraMode::Fly => {
+                                    ui.label(dim("MODE"));
+                                    ui.label("FLY");
+                                    ui.end_row();
 
-                                ui.label(dim("CAMERA"));
-                                ui.label(format!("{:.1} M/S", hud.fly_speed));
-                                ui.end_row();
+                                    ui.label(dim("CAMERA"));
+                                    ui.label(format!("{:.1} M/S", hud.fly_speed));
+                                    ui.end_row();
+                                }
                             }
                         });
 

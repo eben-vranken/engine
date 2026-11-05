@@ -27,6 +27,7 @@ pub mod render;
 pub mod runtime;
 pub mod scene;
 pub mod ui;
+pub mod zones;
 
 /// Re-exported so games and the app use the same math types as the engine.
 pub use glam;

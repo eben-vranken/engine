@@ -15,6 +15,12 @@ pub enum Edit {
     Add { index: usize, object: Box<Object> },
     /// Remove the object at `index`; `object` is kept to put it back.
     Remove { index: usize, object: Box<Object> },
+    /// Replace the whole scene: zone edits (add, rename, delete), which can
+    /// touch every object in the zone.
+    SetScene {
+        before: Box<Scene>,
+        after: Box<Scene>,
+    },
 }
 
 /// What applying or reverting an edit did to the scene's object list.
@@ -28,6 +34,8 @@ pub enum Change {
     Added(usize),
     /// The object here was removed; later objects moved down by one.
     Removed(usize),
+    /// Anything may have changed, but no objects were added or removed.
+    All,
 }
 
 impl Edit {
@@ -39,6 +47,10 @@ impl Edit {
             }
             Edit::Add { index, object } => insert(scene, *index, object),
             Edit::Remove { index, .. } => remove(scene, *index),
+            Edit::SetScene { after, .. } => {
+                *scene = (**after).clone();
+                Change::All
+            }
         }
     }
 
@@ -50,6 +62,10 @@ impl Edit {
             }
             Edit::Add { index, .. } => remove(scene, *index),
             Edit::Remove { index, object } => insert(scene, *index, object),
+            Edit::SetScene { before, .. } => {
+                *scene = (**before).clone();
+                Change::All
+            }
         }
     }
 }

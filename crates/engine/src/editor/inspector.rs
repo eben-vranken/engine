@@ -3,7 +3,7 @@
 //! drag fields, vectors three fields in a row, booleans toggles, text a text
 //! box; nested structs and enum fields are indented underneath.
 
-use crate::scene::ObjectRef;
+use crate::scene::{ObjectRef, ZoneRef};
 use crate::ui::theme;
 use bevy_reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo};
 use bevy_reflect::{PartialReflect, ReflectMut, TypeInfo};
@@ -12,10 +12,15 @@ use glam::{Vec2, Vec3};
 
 const LABEL_WIDTH: f32 = 96.0;
 
-/// Draws one row per field of a struct or enum value. `names` are the
-/// scene's objects, offered for object references. Returns true if
+/// What reference pickers offer: the scene's object and zone names.
+pub struct Names {
+    pub objects: Vec<String>,
+    pub zones: Vec<String>,
+}
+
+/// Draws one row per field of a struct or enum value. Returns true if
 /// anything changed.
-pub fn fields(ui: &mut Ui, value: &mut dyn PartialReflect, names: &[String]) -> bool {
+pub fn fields(ui: &mut Ui, value: &mut dyn PartialReflect, names: &Names) -> bool {
     let mut changed = false;
     match value.reflect_mut() {
         ReflectMut::Struct(s) => {
@@ -55,7 +60,7 @@ pub fn title(value: &dyn PartialReflect) -> String {
     }
 }
 
-fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect, names: &[String]) -> bool {
+fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect, names: &Names) -> bool {
     let speed = drag_speed(name);
     let step = snap_step(name);
     let label = |ui: &mut Ui| field_label(ui, &label_text(name));
@@ -117,7 +122,15 @@ fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect, names: &[String]
         return ui
             .horizontal(|ui| {
                 label(ui);
-                object_picker(ui, name, v, names)
+                reference_picker(ui, name, &mut v.0, &names.objects)
+            })
+            .inner;
+    }
+    if let Some(v) = field.try_downcast_mut::<ZoneRef>() {
+        return ui
+            .horizontal(|ui| {
+                label(ui);
+                reference_picker(ui, name, &mut v.0, &names.zones)
             })
             .inner;
     }
@@ -196,10 +209,10 @@ fn variant_picker(
         .is_ok()
 }
 
-/// A dropdown of the scene's objects; a name that no longer exists shows
-/// as missing.
-fn object_picker(ui: &mut Ui, name: &str, value: &mut ObjectRef, names: &[String]) -> bool {
-    let current = &value.0;
+/// A dropdown of names (objects or zones); a name that no longer exists
+/// shows as missing.
+fn reference_picker(ui: &mut Ui, name: &str, value: &mut String, names: &[String]) -> bool {
+    let current = &*value;
     let text = if current.is_empty() {
         "NONE".to_owned()
     } else if names.contains(current) {
@@ -208,7 +221,7 @@ fn object_picker(ui: &mut Ui, name: &str, value: &mut ObjectRef, names: &[String
         format!("{current} (MISSING)")
     };
     let mut picked = None;
-    egui::ComboBox::from_id_salt(("object_ref", name))
+    egui::ComboBox::from_id_salt(("reference", name))
         .selected_text(text)
         .height(320.0)
         .show_ui(ui, |ui| {
@@ -222,8 +235,8 @@ fn object_picker(ui: &mut Ui, name: &str, value: &mut ObjectRef, names: &[String
             }
         });
     match picked {
-        Some(name) if name != value.0 => {
-            value.0 = name;
+        Some(name) if name != *value => {
+            *value = name;
             true
         }
         _ => false,

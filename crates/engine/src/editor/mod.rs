@@ -14,8 +14,8 @@ pub mod markers;
 
 use crate::render::mesh::Shape;
 use crate::scene::{
-    AcousticMaterial, Component, Door, Floating, Model, Object, PhysicsBody, Primitive, Scene,
-    SoundSource, Switch, Transform,
+    AcousticMaterial, Component, Door, Floating, Model, Object, PhysicsBody, Portal, Primitive,
+    Scene, SoundSource, Switch, Transform, Zone, ZoneVolume,
 };
 use crate::ui::theme;
 use egui::{Align, Layout, Rect, RichText, Ui};
@@ -47,6 +47,9 @@ pub struct Editor {
     pub gizmo: TransformGizmo,
     /// The scene is running in the viewport; editing is locked until Stop.
     pub playing: bool,
+    /// A zone being renamed in the hierarchy: its name, and the new name
+    /// typed so far.
+    renaming: Option<(String, String)>,
 }
 
 /// What to do once unsaved changes are dealt with.
@@ -62,6 +65,8 @@ pub struct EditorStats {
     pub frame_ms: f32,
     pub internal: [u32; 2],
     pub factor: u32,
+    /// The zone the camera is in.
+    pub zone: Option<String>,
 }
 
 /// What the editor did this frame, for the runtime to act on.
@@ -98,6 +103,7 @@ impl Editor {
             pending: None,
             gizmo: TransformGizmo::default(),
             playing: false,
+            renaming: None,
         }
     }
 
@@ -128,7 +134,7 @@ impl Editor {
             .default_size(260.0)
             .min_size(220.0)
             .show(ui, |ui| {
-                ui.add_enabled_ui(!self.playing, |ui| self.hierarchy(ui, scene));
+                ui.add_enabled_ui(!self.playing, |ui| self.hierarchy(ui, scene, &mut output));
             });
         egui::Panel::right("editor_inspector")
             .resizable(true)
@@ -155,11 +161,14 @@ impl Editor {
         }
 
         if !self.playing {
-            let (clicked, hovered) = markers::player_starts(ui, view, scene, self.selected);
-            output.gizmo_hovered |= hovered;
-            if let Some(index) = clicked {
-                output.settled |= self.select(scene, Some(index));
-                self.reveal_selection = true;
+            let starts = markers::player_starts(ui, view, scene, self.selected);
+            let zones = markers::zones(ui, view, scene, self.selected, stats.zone.as_deref());
+            for (clicked, hovered) in [starts, zones] {
+                output.gizmo_hovered |= hovered;
+                if let Some(index) = clicked {
+                    output.settled |= self.select(scene, Some(index));
+                    self.reveal_selection = true;
+                }
             }
         }
 
@@ -333,7 +342,7 @@ impl Editor {
     /// added (or restored) object becomes the selection.
     fn follow(&mut self, change: Change) {
         match change {
-            Change::Modified(_) => {}
+            Change::Modified(_) | Change::All => {}
             Change::Added(index) => {
                 self.selected = Some(index);
                 self.reveal_selection = true;
@@ -393,6 +402,108 @@ impl Editor {
             components: vec![Component::PlayerStart],
         };
         Some(self.append(scene, object))
+    }
+
+    /// Adds a zone volume (in the selection's zone) standing on the surface
+    /// the camera looks at.
+    fn add_zone_volume(&mut self, scene: &mut Scene, view: &View) -> Option<Change> {
+        let volume = ZoneVolume::default();
+        let half = volume.size / 2.0;
+        let ahead = view.camera.position + view.camera.forward() * NEW_OBJECT_DISTANCE;
+        let zone = self.new_object_zone(scene)?;
+        let object = Object {
+            name: unique_name(scene, &format!("{zone} volume")),
+            zone,
+            transform: Transform::at(placement((-half, half), view.aim, ahead)),
+            components: vec![Component::ZoneVolume(volume)],
+        };
+        Some(self.append(scene, object))
+    }
+
+    /// Adds a portal (from the selection's zone, to be pointed at another)
+    /// on the surface the camera looks at, facing the camera.
+    fn add_portal(&mut self, scene: &mut Scene, view: &View) -> Option<Change> {
+        let half = markers::PORTAL_SIZE.x / 2.0;
+        let bounds = (
+            Vec3::new(-half, 0.0, -0.05),
+            Vec3::new(half, markers::PORTAL_SIZE.y, 0.05),
+        );
+        let ahead = view.camera.position + view.camera.forward() * NEW_OBJECT_DISTANCE;
+        let yaw = (-view.camera.yaw.to_degrees() / 15.0).round() * 15.0 + 0.0;
+        let zone = self.new_object_zone(scene)?;
+        let object = Object {
+            name: unique_name(scene, &format!("{zone} portal")),
+            zone,
+            transform: Transform {
+                position: placement(bounds, view.aim, ahead),
+                rotation: Vec3::new(0.0, yaw, 0.0),
+                ..Default::default()
+            },
+            components: vec![Component::Portal(Portal::default())],
+        };
+        Some(self.append(scene, object))
+    }
+
+    /// Adds an empty zone named `zone`, `zone 2`... and starts renaming it.
+    fn add_zone(&mut self, scene: &mut Scene) -> Change {
+        let taken = |name: &str| scene.zones.iter().any(|z| z.name == name);
+        let name = std::iter::once("zone".to_owned())
+            .chain((2..).map(|n| format!("zone {n}")))
+            .find(|name| !taken(name))
+            .expect("some number is free");
+        let mut after = scene.clone();
+        after.zones.push(Zone { name: name.clone() });
+        self.renaming = Some((name.clone(), name));
+        self.push_scene(scene, after)
+    }
+
+    /// Renames a zone, and every object and portal that refers to it.
+    /// `None` if the new name is empty, taken or unchanged.
+    fn rename_zone(&mut self, scene: &mut Scene, old: &str, new: &str) -> Option<Change> {
+        let new = new.trim();
+        if new.is_empty() || scene.zones.iter().any(|z| z.name == new) {
+            return None;
+        }
+        let mut after = scene.clone();
+        for zone in after.zones.iter_mut().filter(|z| z.name == old) {
+            zone.name = new.to_owned();
+        }
+        for object in &mut after.objects {
+            if object.zone == old {
+                object.zone = new.to_owned();
+            }
+            for component in &mut object.components {
+                if let Component::Portal(portal) = component
+                    && portal.to.0 == old
+                {
+                    portal.to.0 = new.to_owned();
+                }
+            }
+        }
+        Some(self.push_scene(scene, after))
+    }
+
+    /// Removes a zone with no objects in it.
+    fn delete_zone(&mut self, scene: &mut Scene, name: &str) -> Option<Change> {
+        if scene.objects.iter().any(|o| o.zone == name) {
+            return None;
+        }
+        let mut after = scene.clone();
+        after.zones.retain(|z| z.name != name);
+        Some(self.push_scene(scene, after))
+    }
+
+    /// Replaces the whole scene as one undo step.
+    fn push_scene(&mut self, scene: &mut Scene, after: Scene) -> Change {
+        self.commit_pending(scene);
+        let before = Box::new(scene.clone());
+        self.push(
+            scene,
+            Edit::SetScene {
+                before,
+                after: Box::new(after),
+            },
+        )
     }
 
     /// Adds a model (path relative to the project) at `position`, in the
@@ -561,6 +672,19 @@ impl Editor {
                             output.changed.push(change);
                             output.settled = true;
                         }
+                        ui.separator();
+                        if ui.button("ZONE VOLUME").clicked()
+                            && let Some(change) = self.add_zone_volume(scene, view)
+                        {
+                            output.changed.push(change);
+                            output.settled = true;
+                        }
+                        if ui.button("PORTAL").clicked()
+                            && let Some(change) = self.add_portal(scene, view)
+                        {
+                            output.changed.push(change);
+                            output.settled = true;
+                        }
                     });
                 });
 
@@ -583,6 +707,10 @@ impl Editor {
             });
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let zone = stats.zone.as_deref().unwrap_or("-");
+                ui.label(zone.to_uppercase());
+                ui.label(dim("ZONE"));
+                ui.add_space(12.0);
                 ui.label(format!(
                     "{}×{} ×{}",
                     stats.internal[0], stats.internal[1], stats.factor
@@ -595,16 +723,24 @@ impl Editor {
         });
     }
 
-    fn hierarchy(&mut self, ui: &mut Ui, scene: &Scene) {
+    fn hierarchy(&mut self, ui: &mut Ui, scene: &mut Scene, output: &mut EditorOutput) {
         ui.add_space(4.0);
-        ui.label(RichText::new("SCENE").strong());
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("SCENE").strong());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.small_button("+ ZONE").clicked() {
+                    output.changed.push(self.add_zone(scene));
+                }
+            });
+        });
         ui.label(dim(&format!(
-            "{} OBJECTS IN {} ZONES",
+            "{} OBJECTS IN {} ZONES  (RIGHT-CLICK A ZONE)",
             scene.objects.len(),
             scene.zones.len()
         )));
         ui.add_space(4.0);
         let mut clicked = None;
+        let mut zone_action = None;
         egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| {
@@ -618,7 +754,25 @@ impl Editor {
                     let header = format!("{} [{}]", zone.name.to_uppercase(), members.len());
                     let reveal = self.reveal_selection
                         && members.iter().any(|(i, _)| Some(*i) == self.selected);
-                    egui::CollapsingHeader::new(header)
+                    if let Some((old, typed)) = &mut self.renaming
+                        && *old == zone.name
+                    {
+                        let response = ui.text_edit_singleline(typed);
+                        if !response.has_focus() && !response.lost_focus() {
+                            response.request_focus();
+                        }
+                        if response.lost_focus() {
+                            let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            zone_action = Some(if enter {
+                                ZoneAction::Rename(old.clone(), typed.clone())
+                            } else {
+                                ZoneAction::CancelRename
+                            });
+                        }
+                        continue;
+                    }
+                    let empty = members.is_empty();
+                    let response = egui::CollapsingHeader::new(header)
                         .id_salt(&zone.name)
                         .open(reveal.then_some(true))
                         .show(ui, |ui| {
@@ -633,11 +787,53 @@ impl Editor {
                                 }
                             }
                         });
+                    response.header_response.context_menu(|ui| {
+                        if ui.button("RENAME").clicked() {
+                            zone_action = Some(ZoneAction::StartRename(zone.name.clone()));
+                            ui.close();
+                        }
+                        if ui
+                            .add_enabled(empty, egui::Button::new("DELETE"))
+                            .on_disabled_hover_text("ONLY EMPTY ZONES")
+                            .clicked()
+                        {
+                            zone_action = Some(ZoneAction::Delete(zone.name.clone()));
+                            ui.close();
+                        }
+                    });
                 }
             });
         self.reveal_selection = false;
         if let Some(index) = clicked {
             self.select(scene, Some(index));
+        }
+        let change = match zone_action {
+            Some(ZoneAction::StartRename(name)) => {
+                self.renaming = Some((name.clone(), name));
+                None
+            }
+            Some(ZoneAction::CancelRename) => {
+                self.renaming = None;
+                None
+            }
+            Some(ZoneAction::Rename(old, new)) => {
+                self.renaming = None;
+                if new.trim() != old {
+                    let change = self.rename_zone(scene, &old, &new);
+                    if change.is_none() {
+                        self.show_error(format!("CAN'T RENAME TO \"{}\"", new.trim()));
+                    }
+                    change
+                } else {
+                    None
+                }
+            }
+            Some(ZoneAction::Delete(name)) => self.delete_zone(scene, &name),
+            None => None,
+        };
+        if let Some(change) = change {
+            output.changed.push(change);
+            output.settled = true;
         }
     }
 
@@ -666,9 +862,13 @@ impl Editor {
         }
         ui.add_space(4.0);
 
-        // For object reference pickers.
-        let mut names: Vec<String> = scene.objects.iter().map(|o| o.name.clone()).collect();
-        names.sort();
+        // For reference pickers.
+        let mut objects: Vec<String> = scene.objects.iter().map(|o| o.name.clone()).collect();
+        objects.sort();
+        let names = inspector::Names {
+            objects,
+            zones: scene.zones.iter().map(|z| z.name.clone()).collect(),
+        };
         let zones = &scene.zones;
         let object = &mut scene.objects[index];
         let before = object.clone();
@@ -846,8 +1046,17 @@ fn shape_kind(ui: &mut Ui, id: usize, shape: &mut Shape) {
     });
 }
 
+/// A zone edit picked in the hierarchy, applied after drawing it.
+enum ZoneAction {
+    StartRename(String),
+    CancelRename,
+    /// Old name, new name.
+    Rename(String, String),
+    Delete(String),
+}
+
 /// Components the inspector can add (one of each per object).
-fn new_components() -> [(&'static str, Component); 6] {
+fn new_components() -> [(&'static str, Component); 8] {
     [
         ("floating", Component::Floating(Floating::default())),
         ("door", Component::Door(Door::default())),
@@ -864,6 +1073,8 @@ fn new_components() -> [(&'static str, Component); 6] {
             "acoustic material",
             Component::AcousticMaterial(AcousticMaterial::default()),
         ),
+        ("zone volume", Component::ZoneVolume(ZoneVolume::default())),
+        ("portal", Component::Portal(Portal::default())),
     ]
 }
 
@@ -975,6 +1186,48 @@ mod tests {
         editor.undo(&mut scene);
         assert_eq!(scene, original);
         assert_eq!(editor.selected, None);
+    }
+
+    #[test]
+    fn renaming_a_zone_moves_its_objects_and_portals_and_undoes() {
+        let mut scene = boxes(2);
+        scene.zones.push(crate::scene::Zone {
+            name: "hall".into(),
+        });
+        scene.objects[1].components = vec![Component::Portal(Portal {
+            to: crate::scene::ZoneRef("test".into()),
+        })];
+        scene.objects[1].zone = "hall".into();
+        let original = scene.clone();
+        let mut editor = editor();
+
+        assert!(
+            editor.rename_zone(&mut scene, "test", "hall").is_none(),
+            "taken"
+        );
+        assert_eq!(
+            editor.rename_zone(&mut scene, "test", " cellar "),
+            Some(Change::All)
+        );
+        assert_eq!(scene.zones[0].name, "cellar");
+        assert_eq!(scene.objects[0].zone, "cellar");
+        assert_eq!(
+            scene.objects[1].components[0],
+            Component::Portal(Portal {
+                to: crate::scene::ZoneRef("cellar".into())
+            })
+        );
+        assert!(
+            editor.delete_zone(&mut scene, "cellar").is_none(),
+            "not empty"
+        );
+        editor.undo(&mut scene);
+        assert_eq!(scene, original);
+
+        editor.add_zone(&mut scene);
+        assert_eq!(scene.zones.last().unwrap().name, "zone");
+        assert!(editor.delete_zone(&mut scene, "zone").is_some());
+        assert_eq!(scene, original);
     }
 
     #[test]

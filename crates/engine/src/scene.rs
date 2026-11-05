@@ -20,7 +20,8 @@ pub struct Scene {
 }
 
 /// A region of the world: a room, an island, a building. Every object
-/// belongs to exactly one. Connections between zones come later.
+/// belongs to exactly one. Where a zone is comes from its `ZoneVolume`
+/// objects; how zones connect, from `Portal` objects.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Zone {
     pub name: String,
@@ -94,12 +95,46 @@ pub enum Component {
     PhysicsBody(PhysicsBody),
     SoundSource(SoundSource),
     AcousticMaterial(AcousticMaterial),
+    ZoneVolume(ZoneVolume),
+    Portal(Portal),
 }
 
 /// Another object in the scene, by name. The inspector shows a picker.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
 #[serde(transparent)]
 pub struct ObjectRef(pub String);
+
+/// A zone in the scene, by name. The inspector shows a picker.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
+#[serde(transparent)]
+pub struct ZoneRef(pub String);
+
+/// A box of space that belongs to the object's zone, centered on the
+/// object (rotated and scaled with it). Whoever is inside it is in that
+/// zone; a zone can have several. Where volumes overlap, the smallest wins,
+/// so a room can sit inside a larger outdoor volume.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct ZoneVolume {
+    /// Meters, before the object's scale.
+    pub size: Vec3,
+}
+
+impl Default for ZoneVolume {
+    fn default() -> Self {
+        Self {
+            size: Vec3::new(4.0, 3.0, 4.0),
+        }
+    }
+}
+
+/// A doorway or passage: connects the object's zone with another. Zones
+/// that share a portal are neighbours.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Portal {
+    pub to: ZoneRef,
+}
 
 /// A shape generated in code, drawn with the grid texture and a collider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
