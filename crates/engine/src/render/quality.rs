@@ -1,7 +1,7 @@
 //! Quality presets: how much GPU time goes into shadows and fog, and how
 //! many lines the scene is rendered at. HIGH is the look as designed; LOW
-//! keeps it on integrated graphics at the cost of softer shadows, coarser
-//! fog and chunkier pixels.
+//! keeps it smooth on integrated graphics at the cost of softer shadows and
+//! coarser fog.
 
 /// A preset, picked at startup (`--quality low`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -42,7 +42,9 @@ impl Quality {
                 point_shadow: 256,
                 fog_grid: [128, 72, 64],
                 fog_samples: 2,
-                max_lines: 480,
+                // Measured on integrated graphics: the scene itself is
+                // cheap, so LOW keeps the resolution and saves on fog.
+                max_lines: 720,
             },
         }
     }
@@ -76,7 +78,7 @@ mod tests {
         let (h, l) = (Quality::High.settings(), Quality::Low.settings());
         assert!(l.sun_shadow < h.sun_shadow && l.point_shadow < h.point_shadow);
         assert!(l.fog_grid.iter().product::<u32>() < h.fog_grid.iter().product::<u32>());
-        assert!(l.max_lines < h.max_lines);
+        assert!(l.max_lines <= h.max_lines);
         assert_eq!("LOW".parse::<Quality>(), Ok(Quality::Low));
         assert!("ultra".parse::<Quality>().is_err());
     }
