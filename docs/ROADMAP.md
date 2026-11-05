@@ -108,12 +108,12 @@ Steam Audio in the engine, tested by walking through spaces in first person.
 **Acceptance (user walks through it with headphones):**
 - The four spaces clearly sound different, sound is muffled behind walls and opens up through doorways, each toggle makes an audible difference, no clicks or clipping.
 
-## 8. Zones ← current
+## 8. Zones
 - [x] Zone data + connections in scenes
 - [x] Frustum culling, simulation radius
-- [ ] Per-zone reverb probes
+- [x] Per-zone reverb probes
 
-## 9. Lighting
+## 9. Lighting ← current
 - [ ] Baked path-traced global illumination into lightmaps per zone ("bake lighting" button)
 - [ ] Volumetric fog at reduced resolution: light shafts, lantern halos, per-zone density/color/height; FogVolume behavior
 - [ ] Real-time shadows for dynamic lights and moving objects
