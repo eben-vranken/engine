@@ -12,6 +12,9 @@ use std::path::PathBuf;
 pub struct Editor {
     /// Index into `Scene::objects`.
     pub selected: Option<usize>,
+    /// Open the selection's zone and scroll to it in the hierarchy (set when
+    /// it was picked in the viewport).
+    pub reveal_selection: bool,
     /// The scene file being edited, for display.
     pub scene_path: PathBuf,
     pub game_name: String,
@@ -29,6 +32,7 @@ impl Editor {
     pub fn new(game_name: String, scene_path: PathBuf) -> Self {
         Self {
             selected: None,
+            reveal_selection: false,
             scene_path,
             game_name,
         }
@@ -40,10 +44,13 @@ impl Editor {
         egui::Panel::left("editor_scene")
             .resizable(true)
             .default_size(260.0)
+            .min_size(220.0)
             .show(ui, |ui| self.hierarchy(ui, scene));
         egui::Panel::right("editor_inspector")
             .resizable(true)
             .default_size(320.0)
+            // Wide enough for its content, so selecting doesn't resize the viewport.
+            .min_size(300.0)
             .show(ui, |ui| self.inspector(ui, scene));
 
         let viewport = ui.available_rect_before_wrap();
@@ -91,18 +98,26 @@ impl Editor {
                         .filter(|(_, o)| o.zone == zone.name)
                         .collect();
                     let header = format!("{} [{}]", zone.name.to_uppercase(), members.len());
+                    let reveal = self.reveal_selection
+                        && members.iter().any(|(i, _)| Some(*i) == self.selected);
                     egui::CollapsingHeader::new(header)
                         .id_salt(&zone.name)
+                        .open(reveal.then_some(true))
                         .show(ui, |ui| {
                             for (index, object) in members {
                                 let selected = self.selected == Some(index);
-                                if ui.selectable_label(selected, &object.name).clicked() {
+                                let response = ui.selectable_label(selected, &object.name);
+                                if response.clicked() {
                                     self.selected = Some(index);
+                                }
+                                if selected && reveal {
+                                    response.scroll_to_me(Some(Align::Center));
                                 }
                             }
                         });
                 }
             });
+        self.reveal_selection = false;
     }
 
     fn inspector(&self, ui: &mut Ui, scene: &Scene) {
@@ -228,7 +243,7 @@ fn hints(ui: &Ui, viewport: Rect) {
         .interactable(false)
         .show(ui.ctx(), |ui| {
             ui.label(
-                RichText::new("RMB + WASD/QE FLY  WHEEL SPEED  ESC DESELECT")
+                RichText::new("CLICK SELECT  RMB + WASD/QE FLY  WHEEL SPEED  ESC DESELECT")
                     .small()
                     .color(theme::AMBER_DIM),
             );

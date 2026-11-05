@@ -504,6 +504,18 @@ impl Renderer {
         self.layout
     }
 
+    /// Where the upscaled scene image sits in the window: x, y, width,
+    /// height in pixels (inside the viewport, minus any letterbox).
+    pub fn image_rect(&self) -> [f32; 4] {
+        let [w, h] = self.layout.scaled();
+        [
+            (self.view_origin[0] + self.layout.origin[0]) as f32,
+            (self.view_origin[1] + self.layout.origin[1]) as f32,
+            w as f32,
+            h as f32,
+        ]
+    }
+
     pub fn output_size(&self) -> [u32; 2] {
         [self.config.width, self.config.height]
     }

@@ -2,7 +2,7 @@
 
 use crate::input::Input;
 use glam::camera::rh;
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec2, Vec3};
 use winit::keyboard::KeyCode;
 
 #[derive(Debug, Clone)]
@@ -35,6 +35,15 @@ impl Camera {
         let projection =
             rh::proj::directx::perspective(self.fov_y.to_radians(), aspect, self.near, self.far);
         projection * rh::view::look_to_mat4(self.position, self.forward(), Vec3::Y)
+    }
+
+    /// The world-space ray through a point on screen, given in normalized
+    /// device coordinates (-1..1, Y up). Returns origin and unit direction.
+    pub fn ray(&self, ndc: Vec2, aspect: f32) -> (Vec3, Vec3) {
+        let inverse = self.view_projection(aspect).inverse();
+        let near = inverse.project_point3(ndc.extend(0.0));
+        let far = inverse.project_point3(ndc.extend(1.0));
+        (near, (far - near).normalize())
     }
 }
 
@@ -117,6 +126,20 @@ mod tests {
             // right × up should point backwards (right-handed, looking down -Z).
             assert!(cam.right().cross(Vec3::Y).dot(cam.forward()) < 0.0);
         }
+    }
+
+    #[test]
+    fn center_ray_is_forward_and_corners_spread() {
+        let cam = FlyCamera::new(Vec3::new(1.0, 2.0, 3.0), 0.6, -0.2).camera;
+        let (origin, dir) = cam.ray(Vec2::ZERO, 16.0 / 9.0);
+        assert!((dir - cam.forward()).length() < 1e-4);
+        assert!((origin - cam.position).length() < 0.1);
+        // The right edge of the screen is to the right of forward.
+        let (_, right_edge) = cam.ray(Vec2::new(1.0, 0.0), 16.0 / 9.0);
+        assert!(right_edge.dot(cam.right()) > 0.5);
+        // The top edge is above forward.
+        let (_, top) = cam.ray(Vec2::new(0.0, 1.0), 16.0 / 9.0);
+        assert!(top.y > dir.y);
     }
 
     #[test]

@@ -105,6 +105,8 @@ struct Running {
     cursor: Vec2,
     /// Where the scene is drawn, in window pixels (the editor's viewport).
     viewport: Option<egui::Rect>,
+    /// Editor: a left click in the viewport to resolve this frame, in window pixels.
+    pending_pick: Option<Vec2>,
 }
 
 impl ApplicationHandler for App {
@@ -150,12 +152,16 @@ impl ApplicationHandler for App {
                 app.cursor = Vec2::new(position.x as f32, position.y as f32);
             }
             WindowEvent::MouseInput { button, state, .. } if app.editor.is_some() => {
-                if button == MouseButton::Right {
-                    let in_viewport = app
-                        .viewport
-                        .is_some_and(|v| v.contains(egui::pos2(app.cursor.x, app.cursor.y)));
-                    app.rmb_look =
-                        state.is_pressed() && in_viewport && !app.overlay.wants_pointer();
+                let in_viewport = app
+                    .viewport
+                    .is_some_and(|v| v.contains(egui::pos2(app.cursor.x, app.cursor.y)))
+                    && !app.overlay.wants_pointer();
+                match button {
+                    MouseButton::Right => app.rmb_look = state.is_pressed() && in_viewport,
+                    MouseButton::Left if state.is_pressed() && in_viewport && !app.rmb_look => {
+                        app.pending_pick = Some(app.cursor);
+                    }
+                    _ => {}
                 }
             }
             WindowEvent::MouseInput { button, state, .. } => {
@@ -265,6 +271,7 @@ impl Running {
             highlighted: None,
             cursor: Vec2::ZERO,
             viewport: None,
+            pending_pick: None,
         })
     }
 
@@ -399,6 +406,22 @@ impl Running {
                 self.fly.camera.clone()
             }
         };
+
+        if let (Some(editor), Some(cursor)) = (&mut self.editor, self.pending_pick.take()) {
+            let [x, y, w, h] = self.renderer.image_rect();
+            let ndc = Vec2::new(
+                (cursor.x - x) / w * 2.0 - 1.0,
+                1.0 - (cursor.y - y) / h * 2.0,
+            );
+            if ndc.abs().max_element() <= 1.0 {
+                let (origin, direction) = camera.ray(ndc, w / h);
+                editor.selected = self
+                    .physics
+                    .pick(origin, direction, camera.far)
+                    .map(|(object, _)| object);
+                editor.reveal_selection = true;
+            }
+        }
 
         let hud = HudInfo {
             fps: self.fps.fps,

@@ -48,3 +48,4 @@ Append new decisions at the bottom. Don't rewrite old entries; supersede them wi
 | 2026-11-05 | The editor is a module of the `engine` crate, not the `app` crate | It needs the runtime's internals (renderer viewport, input, scene); the app stays a thin binary. Split into its own crate if it grows large |
 | 2026-11-05 | Editor viewport = the space between the panels; the scene renders (and render-scales) into just that rect | The 3D view is never covered by UI, and the pixel grid stays exact |
 | 2026-11-05 | Editor camera moves only while the right mouse button is held | Keeps letter keys free for editor shortcuts (gizmo modes etc.) |
+| 2026-11-05 | Click-to-select raycasts rapier's collider BVH (collider `user_data` = object index) instead of a separate render-side BVH | Reuses the acceleration structure we already have; objects without a collider (e.g. PlayerStart) get picked via icons later |

@@ -3,6 +3,7 @@
 
 use crate::render::mesh::{MeshData, Shape};
 use crate::scene::{Primitive, Scene, Transform};
+use glam::Vec3;
 use rapier3d::prelude::*;
 
 pub struct PhysicsWorld {
@@ -34,8 +35,9 @@ impl PhysicsWorld {
             soft_bodies: SoftBodySet::new(),
             ccd: CCDSolver::new(),
         };
-        for (_, primitive, transform) in scene.primitives() {
-            if let Some(collider) = collider_for(primitive, transform) {
+        for (object, primitive, transform) in scene.primitives() {
+            if let Some(mut collider) = collider_for(primitive, transform) {
+                collider.user_data = object as u128;
                 world.colliders.insert(collider);
             }
         }
@@ -61,6 +63,15 @@ impl PhysicsWorld {
             &(),
             &(),
         );
+    }
+
+    /// The scene object (index into `Scene::objects`) the ray hits first,
+    /// and the distance to it.
+    pub fn pick(&self, origin: Vec3, direction: Vec3, max_distance: f32) -> Option<(usize, f32)> {
+        let ray = Ray::new(origin, direction);
+        let (handle, distance) = self.queries().cast_ray(&ray, max_distance, true)?;
+        let object = self.colliders.get(handle)?.user_data as usize;
+        Some((object, distance))
     }
 
     /// Scene queries (ray and shape casts) against everything in the world.
@@ -133,6 +144,20 @@ mod tests {
             .cast_ray(&ray, 100.0, true)
             .expect("ray should hit the floor");
         assert!((toi - 5.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn pick_returns_the_nearest_object() {
+        let scene = test_scene(vec![
+            (Shape::Box { size: Vec3::ONE }, Vec3::new(0.0, 0.0, -10.0)),
+            (Shape::Box { size: Vec3::ONE }, Vec3::new(0.0, 0.0, -5.0)),
+            (Shape::Box { size: Vec3::ONE }, Vec3::new(3.0, 0.0, -2.0)),
+        ]);
+        let world = PhysicsWorld::from_scene(&scene);
+        let (object, distance) = world.pick(Vec3::ZERO, Vec3::NEG_Z, 100.0).unwrap();
+        assert_eq!(object, 1);
+        assert!((distance - 4.5).abs() < 1e-3);
+        assert!(world.pick(Vec3::ZERO, Vec3::Y, 100.0).is_none());
     }
 
     #[test]
