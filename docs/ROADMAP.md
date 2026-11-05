@@ -23,18 +23,18 @@ A window that draws simple 3D shapes the way the engine will look.
 
 **Acceptance:** boxes on a grid floor, crisp at any window size, render-scale changes live, 60+ fps.
 
-## 2. First-person controller + test level ← current
+## 2. First-person controller + test level
 A first-person character in a 3D test level, with every movement property tunable live in-game.
 
-- [ ] Physics with `rapier3d`; static colliders for the level geometry
-- [ ] Test level built from boxes (defined in code or a simple RON file; it does not need to be the final scene format). It contains:
+- [x] Physics with `rapier3d`; static colliders for the level geometry
+- [x] Test level built from boxes (defined in code or a simple RON file; it does not need to be the final scene format). It contains:
     - a large flat floor with the grid texture
     - ramps at 15°, 30°, 45° and 60°
     - stairs with different step heights (10, 20, 30, 40 cm)
     - gap jumps of increasing width and platforms of increasing height, color-coded so distances are recognizable
     - a narrow beam, a low-ceiling tunnel, a tall tower to fall from
     - walls and corners to run into and slide along
-- [ ] First-person controller (kinematic character controller):
+- [x] First-person controller (kinematic character controller):
     - walk, sprint, crouch
     - ground acceleration/deceleration, air acceleration and air control
     - jump defined by height and time-to-apex (gravity derived from them), separate fall gravity, max fall speed
@@ -42,18 +42,18 @@ A first-person character in a 3D test level, with every movement property tunabl
     - coyote time and jump buffering
     - step climbing, max walkable slope, snap to ground
     - mouse look with sensitivity, FOV, optional head bob, landing dip, sprint FOV kick
-- [ ] All properties in one RON file in the game project: `sandbox/player.ron` (units: meters, seconds, degrees)
-- [ ] Tuning panel (F1): every property editable live while playing, with Save (writes `player.ron`) and Reset to defaults
-- [ ] Hot reload: editing `player.ron` by hand applies immediately
-- [ ] Debug readout: speed, grounded state, velocity, time since grounded
-- [ ] F2 switches between player and free-fly camera; R respawns at the start
+- [x] All properties in one RON file in the game project: `sandbox/player.ron` (units: meters, seconds, degrees)
+- [x] Tuning panel (F1): every property editable live while playing, with Save (writes `player.ron`) and Reset to defaults
+- [x] Hot reload: editing `player.ron` by hand applies immediately
+- [x] Debug readout: speed, grounded state, velocity, time since grounded
+- [x] F2 switches between player and free-fly camera; R respawns at the start
 
 **Acceptance (user plays it):**
 - Walking, jumping and landing feel responsive; no snagging on steps or wall edges, no jitter.
 - Changing a value in the panel is felt immediately, and saved values load on the next start.
 - The user can tune the movement until it feels good.
 
-## 3. Editor loop
+## 3. Editor loop ← current
 - [ ] `--editor` mode with egui, themed per the UI style in BRIEF.md
 - [ ] glTF loading
 - [ ] Scene format (RON, in the game project's `scenes/`); the test level becomes a scene

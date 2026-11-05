@@ -27,7 +27,7 @@
         ground_snap: 0.3,
     ),
     camera: (
-        fov: 75.0,
+        fov: 90.0,
         sensitivity: 0.08,
         head_bob: true,
         bob_amplitude: 0.035,
