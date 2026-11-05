@@ -17,6 +17,7 @@ use audionimbus::{
     DirectEffectParams, Direction, Equalizer, Hrtf, HrtfInterpolation, PanningEffect,
     PanningEffectParams, ReflectionEffect, Transmission,
 };
+use std::ops::Deref;
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 
@@ -28,6 +29,13 @@ const RELEASE: f32 = 0.25;
 pub const AMBISONIC_CHANNELS: usize = 4;
 /// The reflection result for a source at the listener: the listener's room.
 pub const LISTENER_REVERB: u32 = u32::MAX;
+/// Seconds over which a new reflection result replaces the previous one.
+/// Each pass traces random rays, so results differ a little; switching
+/// instantly made the reverb jump.
+const BLEND: f32 = 0.2;
+
+/// A reflection result, kept alive while it's still being faded out.
+type Room = Arc<dyn Deref<Target = ReflectionsOutput<u32, Convolution>> + Send + Sync>;
 
 /// One sound the mixer can play, with its effects' state.
 pub struct Voice {
@@ -38,9 +46,12 @@ pub struct Voice {
     pub direct: DirectEffect,
     pub binaural: BinauralEffect,
     pub panning: PanningEffect,
-    pub reflection: ReflectionEffect<Convolution>,
-    /// The listener's room, for sound that reaches it through walls.
-    pub room: ReflectionEffect<Convolution>,
+    /// The sound's own room (scene sounds only). Two effects each, so a new
+    /// room response can fade in while the previous one fades out.
+    pub reflection: Option<[ReflectionEffect<Convolution>; 2]>,
+    /// The listener's room, for sound that reaches it through walls and the
+    /// player's own sounds.
+    pub room: [ReflectionEffect<Convolution>; 2],
 }
 
 pub enum Command {
@@ -122,6 +133,13 @@ pub struct Mixer {
     reflected: Vec<f32>,
     reverb_bus: Vec<f32>,
     through: Vec<f32>,
+    /// The latest reflection result and the one fading out; which of each
+    /// voice's two effects plays the latest; how far the fade is (0–1).
+    current: Option<Room>,
+    previous: Option<Room>,
+    slot: usize,
+    blend: f32,
+    blend_step: f32,
     limiter: Limiter,
 }
 
@@ -152,6 +170,11 @@ impl Mixer {
             reflected: vec![0.0; frame_size * AMBISONIC_CHANNELS],
             reverb_bus: vec![0.0; frame_size * AMBISONIC_CHANNELS],
             through: vec![0.0; frame_size],
+            current: None,
+            previous: None,
+            slot: 0,
+            blend: 1.0,
+            blend_step: frame_size as f32 / (BLEND * rate as f32),
             limiter: Limiter::new(rate),
         }
     }
@@ -195,7 +218,33 @@ impl Mixer {
             self.shared.clone_from(&shared);
         }
         let toggles = self.shared.toggles;
-        let reflections = self.reflections.load();
+        // A new reflection result fades in over `BLEND`; the next one waits
+        // until that's done.
+        let latest: Room = (*self.reflections.load()).clone();
+        let is_new = self
+            .current
+            .as_ref()
+            .is_none_or(|c| !std::ptr::addr_eq(Arc::as_ptr(c), Arc::as_ptr(&latest)));
+        if is_new && self.blend >= 1.0 {
+            self.previous = self.current.replace(latest);
+            self.slot = 1 - self.slot;
+            self.blend = 0.0;
+        }
+        let fade_start = self.blend;
+        self.blend = (self.blend + self.blend_step).min(1.0);
+        let fade = if self.previous.is_some() {
+            (fade_start, self.blend)
+        } else {
+            (1.0, 1.0)
+        };
+        if fade_start >= 1.0 {
+            self.previous = None;
+        }
+        let (current, previous, slot) = (self.current.clone(), self.previous.clone(), self.slot);
+        let rooms = [
+            current.as_deref().map(|r| &**r),
+            previous.as_deref().map(|r| &**r),
+        ];
         self.mix.fill(0.0);
         self.reverb_bus.fill(0.0);
         let mut reverb = false;
@@ -269,37 +318,38 @@ impl Mixer {
             // player's own sounds) with that room's response.
             if toggles.reflections {
                 if params.own_reverb
-                    && let Some(room) = reflections.sources.get(&voice.id)
-                    && let Ok(mut reflected) =
-                        AudioBufferMut::try_new(&mut self.reflected, AMBISONIC_CHANNELS)
-                    && voice.reflection.apply(room, &input, &mut reflected).is_ok()
+                    && let Some(effects) = voice.reflection.as_mut()
                 {
-                    for (bus, sample) in self.reverb_bus.iter_mut().zip(&self.reflected) {
-                        *bus += sample;
-                    }
-                    reverb = true;
+                    reverb |= convolve(
+                        effects,
+                        slot,
+                        rooms,
+                        voice.id,
+                        &self.input,
+                        fade,
+                        &mut self.reflected,
+                        &mut self.reverb_bus,
+                    );
                 }
                 let through = if params.own_reverb && !toggles.occlusion {
                     0.0
                 } else {
                     params.through
                 };
-                if through > 0.001
-                    && let Some(room) = reflections.sources.get(&LISTENER_REVERB)
-                {
+                if through > 0.001 {
                     for (out, sample) in self.through.iter_mut().zip(&self.input) {
                         *out = sample * through;
                     }
-                    if let (Ok(input), Ok(mut reflected)) = (
-                        AudioBufferRef::try_from(&self.through[..]),
-                        AudioBufferMut::try_new(&mut self.reflected, AMBISONIC_CHANNELS),
-                    ) && voice.room.apply(room, &input, &mut reflected).is_ok()
-                    {
-                        for (bus, sample) in self.reverb_bus.iter_mut().zip(&self.reflected) {
-                            *bus += sample;
-                        }
-                        reverb = true;
-                    }
+                    reverb |= convolve(
+                        &mut voice.room,
+                        slot,
+                        rooms,
+                        LISTENER_REVERB,
+                        &self.through,
+                        fade,
+                        &mut self.reflected,
+                        &mut self.reverb_bus,
+                    );
                 }
             }
         }
@@ -330,6 +380,48 @@ impl Mixer {
         let (left, right) = self.mix.split_at_mut(self.frame_size);
         self.limiter.process(left, right);
     }
+}
+
+/// Adds `input` convolved with source `id`'s room response to the ambisonic
+/// `bus`: the latest result (`rooms[0]`, on effect `slot`) with a gain going
+/// from `fade.0` to `fade.1` over the frame, and the previous one (on the
+/// other effect) fading out correspondingly. False if neither had a response.
+#[allow(clippy::too_many_arguments)]
+fn convolve(
+    effects: &mut [ReflectionEffect<Convolution>; 2],
+    slot: usize,
+    rooms: [Option<&ReflectionsOutput<u32, Convolution>>; 2],
+    id: u32,
+    input: &[f32],
+    fade: (f32, f32),
+    scratch: &mut [f32],
+    bus: &mut [f32],
+) -> bool {
+    let n = input.len();
+    let mut any = false;
+    for (k, room) in rooms.into_iter().enumerate() {
+        let Some(response) = room.and_then(|r| r.sources.get(&id)) else {
+            continue;
+        };
+        let effect = &mut effects[if k == 0 { slot } else { 1 - slot }];
+        let applied = match (
+            AudioBufferRef::try_from(input),
+            AudioBufferMut::try_new(scratch, AMBISONIC_CHANNELS),
+        ) {
+            (Ok(input), Ok(mut out)) => effect.apply(response, &input, &mut out).is_ok(),
+            _ => false,
+        };
+        if !applied {
+            continue;
+        }
+        for (i, (bus, sample)) in bus.iter_mut().zip(scratch.iter()).enumerate() {
+            let t = (i % n) as f32 / n as f32;
+            let gain = fade.0 + (fade.1 - fade.0) * t;
+            *bus += sample * if k == 0 { gain } else { 1.0 - gain };
+        }
+        any = true;
+    }
+    any
 }
 
 /// The voice's next frame of samples into `out`, scaled by its volume.

@@ -525,7 +525,8 @@ impl Audio {
                 return false;
             }
         };
-        let voice = match self.effects(self.next_id, clip) {
+        let own_reverb = matches!(kind, Kind::Scene { .. });
+        let voice = match self.effects(self.next_id, clip, own_reverb) {
             Ok(voice) => voice,
             Err(err) => {
                 log::error!("audio: {err}");
@@ -551,7 +552,7 @@ impl Audio {
         true
     }
 
-    fn effects(&self, id: u32, clip: Option<Clip>) -> Result<Voice, AudioError> {
+    fn effects(&self, id: u32, clip: Option<Clip>, own_reverb: bool) -> Result<Voice, AudioError> {
         let (context, settings) = (&self.context, &self.settings);
         Ok(Voice {
             id,
@@ -579,8 +580,12 @@ impl Audio {
                 },
             )
             .map_err(steam)?,
-            reflection: self.reverb()?,
-            room: self.reverb()?,
+            reflection: if own_reverb {
+                Some([self.reverb()?, self.reverb()?])
+            } else {
+                None
+            },
+            room: [self.reverb()?, self.reverb()?],
         })
     }
 
