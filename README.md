@@ -74,7 +74,7 @@ crates/app/         the single binary: play mode, or the editor with --editor
 sandbox/            the test project
 ```
 
-Done so far: renderer, first-person controller, editor, behaviors, audio, zones, lighting (milestones 0–9). Next: a music system, then abilities, saving and a map. See the roadmap.
+Done so far: renderer, first-person controller, editor, behaviors, audio, zones, lighting (milestones 0–9). Next: abilities, saving and a map. See the roadmap.
 
 ## License
 

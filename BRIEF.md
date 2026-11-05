@@ -86,17 +86,6 @@ Sound propagation is simulated from scene geometry using Steam Audio through Aud
 - **Master limiter** to keep loud events from clipping.
 - **Editor preview:** hear the acoustics while flying the editor camera through a space.
 
-## Music system
-
-All musical sound shares one key, scale and tempo, so motifs, instruments and ambience always fit together.
-
-- **Global musical context:** key, scale and tempo set per game, optionally overridden per zone.
-- **Motifs:** short note sequences (`[E4, G4, B4]`) played by a voice or instrument, quantized to the beat.
-- **Voices:** recorded sustained vowels per voice type, pitch-shifted to any note; synthesized formant voices as an alternative.
-- **Instrument layers:** each zone can add or remove layers (harp, strings, organ) as the player moves.
-- **Spatial music:** every musical source is a positioned sound, so music is heard through the acoustic simulation, not over it.
-- **Listening hooks:** sources can react to the player, such as call and response or a player-made note matched against a target.
-
 ## World structure and performance
 
 Load the whole world at once, but organize it into zones from day one.
@@ -154,11 +143,10 @@ Reusable components written once in Rust and attached in the editor. This librar
 | Crumbling | delay, respawn | Platforms that fall when stepped on |
 | Door | opens_with, swing or slide, speed | Doors that also act as sound portals |
 | Switch / PressurePlate | target, mode | Triggers another object |
-| TriggerZone | on_enter, on_exit | Events, music changes, zone logic |
+| TriggerZone | on_enter, on_exit | Events and zone logic |
 | AbilityGate | requires | Gating by unlocked abilities |
 | AbilityPickup | grants | Unlocks an ability |
 | SavePoint | | Saving and respawn |
-| Singer | voice, motif, interval, reacts_to_player | Characters that sing short motifs |
 | SoundSource | clip, loop, volume | Bells, drips, organs, ambience |
 | LightSource | color, intensity, flicker, baked or live | Braziers, candles, lanterns |
 | AcousticMaterial | preset or absorption and scattering | How surfaces sound |
@@ -188,10 +176,10 @@ See `docs/ROADMAP.md` for the checklist and acceptance criteria.
 - Scripting language (Lua or Rhai).
 - Hardware ray tracing paths.
 - Heavy denoising.
+- A music system (shared key/scale/tempo, beat-quantized motifs, instrument layers per zone) and singing characters; games play their own recorded music through SoundSource.
 
 ## Open questions
 
-- Voices for the Singer behavior: recorded samples, synthesis, or both?
 - Final name for the engine (working name: `engine`).
 
 ## Sources

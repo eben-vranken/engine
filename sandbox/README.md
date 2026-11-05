@@ -5,7 +5,7 @@ A tiny open-source game project that lives inside the engine repo. It is the def
 Same layout as any game project:
 
 ```
-game.ron      game settings: name, musical key/scale/tempo, start scene
+game.ron      game settings: name, start scene
 scenes/       RON scenes saved by the editor
 models/       glTF models
 audio/        sound clips
