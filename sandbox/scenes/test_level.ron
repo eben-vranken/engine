@@ -874,14 +874,20 @@
         (
             name: "arch",
             zone: "ground",
-            transform: (position: (-1.0914673, 0.0, -0.57951033), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 12.570234)),
+            transform: (position: (-1.0914673, 0.0, -0.57951033), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 5.295394)),
             components: [Model((path: "models/arch.gltf", color: (0.3, 0.28, 0.25)))],
         ),
         (
             name: "box",
             zone: "ground",
-            transform: (position: (10.529398, 0.5, -2.2778687), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
-            components: [Primitive((shape: Box(size: (1.0, 1.0, 1.0)), color: (0.8, 0.8, 0.8)))],
+            transform: (position: (10.529398, 0.7676718, -2.2778687), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (1.0, 1.0, 1.0)), color: (0.8, 0.8, 0.8))), Floating((height: 0.25, speed: 0.5, phase: 1.0))],
+        ),
+        (
+            name: "box 2",
+            zone: "ground",
+            transform: (position: (12.040365, 0.7676718, -2.2778687), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (1.0, 1.0, 1.0)), color: (0.8, 0.8, 0.8))), Floating((height: 0.25, speed: 0.5, phase: 0.5))],
         ),
     ],
 )

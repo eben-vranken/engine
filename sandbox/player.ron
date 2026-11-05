@@ -31,7 +31,7 @@
         sensitivity: 0.08,
         head_bob: true,
         bob_amplitude: 0.035,
-        bob_stride: 1.9,
+        bob_stride: 2.5,
         landing_dip: 0.12,
         landing_dip_time: 0.09,
         sprint_fov_kick: 6.0,
