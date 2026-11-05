@@ -47,6 +47,8 @@ pub struct Editor {
     /// Whether the scene panel (left) and the inspector (right) are open.
     pub show_scene: bool,
     pub show_inspector: bool,
+    /// Zone volume and portal markers in the viewport (H).
+    pub show_zones: bool,
     /// Settings shown in the inspector instead of an object.
     pub settings: Option<SettingsTarget>,
     /// A zone or environment edit in progress: the scene before it.
@@ -126,6 +128,7 @@ impl Editor {
             pending: None,
             show_scene: true,
             show_inspector: true,
+            show_zones: true,
             settings: None,
             zone_pending: None,
             gizmo: TransformGizmo::default(),
@@ -158,6 +161,20 @@ impl Editor {
             bake: false,
             bake_lighting: false,
         };
+        // Tab: scene panel, Shift+Tab: inspector, H: zone markers (not
+        // while typing in a field).
+        if !ui.ctx().memory(|m| m.focused().is_some()) {
+            ui.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab) {
+                    self.show_inspector = !self.show_inspector;
+                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) {
+                    self.show_scene = !self.show_scene;
+                }
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::H) {
+                    self.show_zones = !self.show_zones;
+                }
+            });
+        }
         egui::Panel::top("editor_top").show(ui, |ui| {
             self.top_bar(ui, scene, stats, blink, view, &mut output)
         });
@@ -199,7 +216,11 @@ impl Editor {
         if !self.playing {
             markers::probes(ui, view, &self.probes);
             let starts = markers::player_starts(ui, view, scene, self.selected);
-            let zones = markers::zones(ui, view, scene, self.selected, &stats.active_zones);
+            let zones = if self.show_zones {
+                markers::zones(ui, view, scene, self.selected, &stats.active_zones)
+            } else {
+                (None, false)
+            };
             let lights = markers::lights(ui, view, scene, self.selected);
             for (clicked, hovered) in [starts, zones, lights] {
                 output.gizmo_hovered |= hovered;
@@ -1403,7 +1424,7 @@ fn hints(ui: &Ui, viewport: Rect, playing: bool) {
     let text = if playing {
         "F5 STOP  E USE  ESC FREE MOUSE  CLICK CAPTURE MOUSE  R RESPAWN  F1 TUNING  F2 FLY"
     } else {
-        "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+D DUPLICATE  DEL DELETE  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE  F5 PLAY"
+        "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+D DUPLICATE  DEL DELETE  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE  F5 PLAY  TAB/SHIFT+TAB PANELS  H ZONES"
     };
     egui::Area::new(egui::Id::unique("editor_hints"))
         // Anchored at the bottom, so wrapped lines grow upward.
