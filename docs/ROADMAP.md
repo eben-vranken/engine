@@ -90,11 +90,11 @@ A small step right after milestone 4, for background and walk-through objects.
 - [x] Play runs the scene inside the editor; Stop restores the edited state
 - [x] PlayerStart object; the player uses the game project's `player.ron`
 
-## 6. First behaviors ← current
-- [ ] Floating, Door, Switch, PhysicsBody
-- [ ] Object references in the inspector (switch → door)
+## 6. First behaviors
+- [x] Floating, Door, Switch, PhysicsBody
+- [x] Object references in the inspector (switch → door)
 
-## 7. Audio
+## 7. Audio ← current
 Steam Audio in the engine, tested by walking through spaces in first person.
 
 - [ ] Add `audionimbus` (with `auto-install`) and an audio output crate (e.g. `cpal`)
