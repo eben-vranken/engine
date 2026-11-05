@@ -248,7 +248,8 @@ impl MeshBuilder {
 }
 
 /// glam is column-major; Steam Audio wants rows.
-fn matrix(m: Mat4) -> Matrix<f32, 4, 4> {
+/// glam (column-major) to Steam Audio (row-major).
+pub(super) fn matrix(m: Mat4) -> Matrix<f32, 4, 4> {
     Matrix::new(m.transpose().to_cols_array_2d())
 }
 

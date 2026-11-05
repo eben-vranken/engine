@@ -50,6 +50,10 @@ pub struct Editor {
     /// A zone being renamed in the hierarchy: its name, and the new name
     /// typed so far.
     renaming: Option<(String, String)>,
+    /// The reverb bake's state for the top bar (set by the runtime).
+    pub bake_status: String,
+    /// Where the loaded bake's probes are (set by the runtime).
+    pub probes: Vec<Vec3>,
 }
 
 /// What to do once unsaved changes are dealt with.
@@ -90,6 +94,8 @@ pub struct EditorOutput {
     pub exit: bool,
     /// The Play/Stop button was clicked.
     pub toggle_play: bool,
+    /// BAKE ACOUSTICS was clicked.
+    pub bake: bool,
 }
 
 impl Editor {
@@ -108,6 +114,8 @@ impl Editor {
             gizmo: TransformGizmo::default(),
             playing: false,
             renaming: None,
+            bake_status: String::new(),
+            probes: Vec::new(),
         }
     }
 
@@ -129,6 +137,7 @@ impl Editor {
             open: None,
             exit: false,
             toggle_play: false,
+            bake: false,
         };
         egui::Panel::top("editor_top").show(ui, |ui| {
             self.top_bar(ui, scene, stats, blink, view, &mut output)
@@ -165,6 +174,7 @@ impl Editor {
         }
 
         if !self.playing {
+            markers::probes(ui, view, &self.probes);
             let starts = markers::player_starts(ui, view, scene, self.selected);
             let zones = markers::zones(ui, view, scene, self.selected, &stats.active_zones);
             for (clicked, hovered) in [starts, zones] {
@@ -691,6 +701,22 @@ impl Editor {
                         }
                     });
                 });
+
+                ui.add_space(12.0);
+                let baking = self.bake_status.starts_with("BAKING");
+                if ui
+                    .add_enabled(!baking, egui::Button::new("BAKE ACOUSTICS").small())
+                    .on_hover_text("REVERB PROBES IN EVERY ZONE VOLUME")
+                    .clicked()
+                {
+                    output.bake = true;
+                }
+                let color = if self.bake_status == "BAKED" {
+                    theme::AMBER_DIM
+                } else {
+                    theme::AMBER
+                };
+                ui.label(RichText::new(&self.bake_status).small().color(color));
 
                 ui.add_space(12.0);
                 for (kind, text) in [

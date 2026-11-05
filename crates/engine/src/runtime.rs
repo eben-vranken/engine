@@ -3,6 +3,7 @@
 //! player tuning panel.
 
 use crate::assets::Assets;
+use crate::audio::bake::{self, BakeJob};
 use crate::audio::{Audio, Toggles};
 use crate::behaviors::{Behaviors, Interaction, is_usable_switch};
 use crate::camera::{Camera, FlyCamera};
@@ -150,6 +151,14 @@ struct Running {
     zone: ZoneTracker,
     /// The simulation radius: what runs (updated every frame from `zone`).
     active: Active,
+    /// The scene file, relative to the project (play mode; the editor
+    /// tracks its own).
+    scene_path: PathBuf,
+    /// A reverb bake running in the background.
+    bake_job: Option<BakeJob>,
+    /// The loaded bake's signature, to tell when the scene has changed
+    /// since (`None` = no bake).
+    baked_signature: Option<u64>,
 }
 
 /// The editor's state when Play was pressed.
@@ -270,6 +279,12 @@ impl ApplicationHandler for App {
 
 impl Running {
     fn new(event_loop: &ActiveEventLoop, config: &RunConfig) -> Result<Self, RunError> {
+        let mut running = Self::open(event_loop, config)?;
+        running.load_bake();
+        Ok(running)
+    }
+
+    fn open(event_loop: &ActiveEventLoop, config: &RunConfig) -> Result<Self, RunError> {
         let window = Arc::new(
             event_loop.create_window(
                 Window::default_attributes()
@@ -352,6 +367,9 @@ impl Running {
                 .ok(),
             zone: ZoneTracker::default(),
             active: Active::default(),
+            scene_path: config.scene_path.clone(),
+            bake_job: None,
+            baked_signature: None,
         })
     }
 
@@ -394,6 +412,7 @@ impl Running {
                 (KeyCode::F7, &mut toggles.reflections),
                 (KeyCode::F8, &mut toggles.hrtf),
                 (KeyCode::F9, &mut toggles.air_absorption),
+                (KeyCode::F10, &mut toggles.baked),
             ] {
                 if self.input.pressed(key) {
                     *flag = !*flag;
@@ -745,6 +764,7 @@ impl Running {
                 self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
                 self.zone.reset();
                 editor.scene_loaded(path);
+                self.load_bake();
             }
             Err(err) => {
                 log::error!("{err}");
@@ -761,6 +781,119 @@ impl Running {
         self.last_reload_check = Instant::now();
         self.poll_settings_file();
         self.poll_model_files();
+        self.check_bake();
+    }
+
+    /// The current scene's file, in the project.
+    fn scene_file(&self) -> PathBuf {
+        let relative = self
+            .editor
+            .as_ref()
+            .map_or(&self.scene_path, |e| &e.scene_path);
+        self.game_dir.join(relative)
+    }
+
+    /// Loads the scene's reverb bake (if it has one) into the audio, and
+    /// its probes into the editor.
+    fn load_bake(&mut self) {
+        let file = bake::path_for(&self.scene_file());
+        let Some(audio) = &mut self.audio else {
+            return;
+        };
+        let (signature, probes) = match audio.load_bake(&file) {
+            Ok(Some((signature, probes))) => (Some(signature), probes),
+            Ok(None) => (None, Vec::new()),
+            Err(err) => {
+                log::error!("{err}");
+                if let Some(editor) = &mut self.editor {
+                    editor.show_error(err.to_string());
+                }
+                (None, Vec::new())
+            }
+        };
+        self.baked_signature = signature;
+        if let Some(editor) = &mut self.editor {
+            editor.probes = probes;
+        }
+        self.check_bake();
+    }
+
+    /// Editor: starts baking the scene's reverb.
+    fn start_bake(&mut self) {
+        if self.bake_job.is_some() {
+            return;
+        }
+        let file = bake::path_for(&self.scene_file());
+        let result = match &self.audio {
+            Some(audio) => audio
+                .start_bake(&self.scene, &mut self.assets, file)
+                .map_err(|e| e.to_string()),
+            None => Err("NO AUDIO DEVICE: CAN'T BAKE".into()),
+        };
+        match result {
+            Ok(job) => self.bake_job = Some(job),
+            Err(err) => {
+                log::error!("{err}");
+                if let Some(editor) = &mut self.editor {
+                    editor.show_error(err);
+                }
+            }
+        }
+    }
+
+    /// Editor: the bake's progress, or whether the loaded bake still
+    /// matches the scene; loads a bake that just finished.
+    fn check_bake(&mut self) {
+        if let Some(job) = &mut self.bake_job {
+            match job.finished() {
+                None => {
+                    let p = job.progress();
+                    if let Some(editor) = &mut self.editor {
+                        editor.bake_status = format!(
+                            "BAKING {} {}/{} {:.0}%",
+                            p.zone.to_uppercase(),
+                            p.index,
+                            p.count,
+                            p.fraction * 100.0
+                        );
+                    }
+                    return;
+                }
+                Some(result) => {
+                    self.bake_job = None;
+                    match result {
+                        Ok(file) => {
+                            log::info!("baked {}", file.display());
+                            self.load_bake();
+                            if let Some(editor) = &mut self.editor {
+                                editor.show_message("REVERB BAKED".into());
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("{err}");
+                            if let Some(editor) = &mut self.editor {
+                                editor.show_error(err.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        editor.bake_status = match self.baked_signature {
+            None => "NOT BAKED".into(),
+            // Compare against the scene as edited, not as played.
+            Some(baked) => {
+                let scene = self.play.as_ref().map_or(&self.scene, |p| &p.scene);
+                if bake::signature(scene) == baked {
+                    "BAKED".into()
+                } else {
+                    "BAKE OUTDATED".into()
+                }
+            }
+        };
     }
 
     /// Models re-exported over their file: redraw and re-collide everything.
@@ -841,7 +974,13 @@ impl Running {
         let zone = current.map(|z| self.scene.zones[z].name.clone());
         let active_zones = self.active.zone_names(&self.scene);
         if let Some(audio) = &mut self.audio {
-            audio.update(&self.scene, &mut self.assets, &camera, &self.active);
+            audio.update(
+                &self.scene,
+                &mut self.assets,
+                &camera,
+                &self.active,
+                zone.as_deref(),
+            );
         }
 
         let hud = HudInfo {
@@ -976,6 +1115,9 @@ impl Running {
             if let Some(path) = &output.open {
                 self.open_scene(path.clone());
             }
+            if output.bake {
+                self.start_bake();
+            }
             for &change in &output.changed {
                 self.show_change(change);
             }
@@ -1052,6 +1194,7 @@ fn draw_audio_panel(ui: &egui::Ui, image: egui::Rect, toggles: &Toggles, game_ru
         format!("F7 REFLECTIONS {}", state(toggles.reflections)),
         format!("F8 HRTF        {}", state(toggles.hrtf)),
         format!("F9 AIR         {}", state(toggles.air_absorption)),
+        format!("F10 BAKED      {}", state(toggles.baked)),
     ];
     if game_running {
         lines.push("Q CLAP   M MOVE SOUND HERE".into());

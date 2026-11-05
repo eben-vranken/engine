@@ -13,6 +13,7 @@
 //! `SoundSource` components, plus one-shots (claps, footsteps) played from a
 //! small pool of voices.
 
+pub mod bake;
 mod clip;
 mod geometry;
 mod mixer;
@@ -87,6 +88,9 @@ pub struct Toggles {
     pub reflections: bool,
     pub hrtf: bool,
     pub air_absorption: bool,
+    /// The listener's reverb from baked probes (where there are some)
+    /// instead of live ray tracing.
+    pub baked: bool,
 }
 
 impl Default for Toggles {
@@ -96,6 +100,7 @@ impl Default for Toggles {
             reflections: true,
             hrtf: true,
             air_absorption: true,
+            baked: true,
         }
     }
 }
@@ -129,6 +134,9 @@ pub struct Audio {
     project_dir: PathBuf,
     footstep_variant: u32,
     pub toggles: Toggles,
+    /// The scene's reverb bake, if it has one; its probe batches are in the
+    /// reflection simulator.
+    baked: Option<bake::Baked>,
 }
 
 struct Entry {
@@ -276,6 +284,7 @@ impl Audio {
             project_dir,
             footstep_variant: 0,
             toggles: Toggles::default(),
+            baked: None,
         };
         for _ in 0..ONE_SHOT_VOICES {
             audio.add_voice(Kind::OneShot { until: None }, None);
@@ -285,13 +294,15 @@ impl Audio {
 
     /// Call every frame: follows the scene's geometry and sound sources and
     /// the listener, and runs the direct simulation. Scene sounds outside
-    /// the `active` zones fade out and aren't simulated.
+    /// the `active` zones fade out and aren't simulated. In a zone with
+    /// baked probes, the listener's reverb comes from those.
     pub fn update(
         &mut self,
         scene: &Scene,
         assets: &mut Assets,
         listener: &Camera,
         active: &Active,
+        listener_zone: Option<&str>,
     ) {
         let now = Instant::now();
         let dt = (now - self.last_update).as_secs_f32().min(0.1);
@@ -336,12 +347,18 @@ impl Audio {
         self.direct.run_direct();
 
         // Reflections on their own thread, from the latest snapshot.
+        let baked = self.toggles.baked
+            && listener_zone.is_some_and(|zone| {
+                self.baked
+                    .as_ref()
+                    .is_some_and(|b| b.zones.iter().any(|z| z.zone == zone))
+            });
         self.simulation.update_sources(|sources| {
             sources.push((
                 LISTENER_REVERB,
                 SourceWithInputs {
                     source: self.listener_reverb.clone(),
-                    simulation_inputs: reflection_inputs(listener.position),
+                    simulation_inputs: reflection_inputs(listener.position, baked),
                 },
             ));
             // The player's own sounds use the listener's room.
@@ -350,7 +367,7 @@ impl Audio {
                     entry.id,
                     SourceWithInputs {
                         source: entry.reflection.clone(),
-                        simulation_inputs: reflection_inputs(entry.position),
+                        simulation_inputs: reflection_inputs(entry.position, false),
                     },
                 ));
             }
@@ -463,6 +480,42 @@ impl Audio {
             self.direct.commit();
             self.simulation.request_simulator_commit();
         }
+    }
+
+    /// Starts baking the scene's reverb into `file` in the background.
+    pub fn start_bake(
+        &self,
+        scene: &Scene,
+        assets: &mut Assets,
+        file: PathBuf,
+    ) -> Result<bake::BakeJob, bake::BakeError> {
+        bake::start(&self.context, scene, assets, file)
+    }
+
+    /// Replaces the reverb bake with the one in `file` (none if there's no
+    /// file). Returns its signature and probe positions.
+    pub fn load_bake(
+        &mut self,
+        file: &std::path::Path,
+    ) -> Result<Option<(u64, Vec<Vec3>)>, bake::BakeError> {
+        if let Some(old) = self.baked.take() {
+            for zone in &old.zones {
+                self.reflection.remove_probe_batch(&zone.batch);
+            }
+            self.simulation.request_simulator_commit();
+        }
+        let Some(baked) = bake::load(&self.context, file)? else {
+            return Ok(None);
+        };
+        for zone in &baked.zones {
+            self.reflection.add_probe_batch(&zone.batch);
+        }
+        self.simulation.request_simulator_commit();
+        let probes = baked.zones.iter().flat_map(|z| z.probes.clone()).collect();
+        let signature = baked.signature;
+        log::info!("loaded {} ({} zones)", file.display(), baked.zones.len());
+        self.baked = Some(baked);
+        Ok(Some((signature, probes)))
     }
 
     /// A hand clap at `position` (usually the listener).
@@ -787,11 +840,13 @@ fn direct_inputs(position: Vec3, occluded: bool, radius: f32) -> SimulationInput
     }
 }
 
-fn reflection_inputs(position: Vec3) -> SimulationInputs<(), Reflections> {
+/// Reflections for a source at `position`: ray traced live, or looked up
+/// in the baked reverb probes.
+fn reflection_inputs(position: Vec3, baked: bool) -> SimulationInputs<(), Reflections> {
     SimulationInputs {
         source: at(position),
         parameters: SimulationParameters::new().with_reflections(ConvolutionParameters {
-            baked_data_identifier: None,
+            baked_data_identifier: baked.then_some(bake::REVERB),
         }),
     }
 }

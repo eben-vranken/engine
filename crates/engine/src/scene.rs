@@ -118,12 +118,19 @@ pub struct ZoneRef(pub String);
 pub struct ZoneVolume {
     /// Meters, before the object's scale.
     pub size: Vec3,
+    /// Reverb probes (BAKE ACOUSTICS): meters between them across the
+    /// floors inside the volume.
+    pub probe_spacing: f32,
+    /// Meters above the floor: about ear height.
+    pub probe_height: f32,
 }
 
 impl Default for ZoneVolume {
     fn default() -> Self {
         Self {
             size: Vec3::new(4.0, 3.0, 4.0),
+            probe_spacing: 2.0,
+            probe_height: 1.5,
         }
     }
 }

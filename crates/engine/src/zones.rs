@@ -182,7 +182,10 @@ mod tests {
             name: format!("{zone} volume"),
             zone: zone.into(),
             transform: Transform::at(position),
-            components: vec![Component::ZoneVolume(ZoneVolume { size })],
+            components: vec![Component::ZoneVolume(ZoneVolume {
+                size,
+                ..Default::default()
+            })],
         }
     }
 

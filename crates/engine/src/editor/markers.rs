@@ -170,6 +170,16 @@ pub fn zones(
     (clicked, hovered)
 }
 
+/// Draws baked reverb probes as small dots.
+pub fn probes(ui: &Ui, view: &View, probes: &[Vec3]) {
+    let painter = ui.painter().with_clip_rect(view.image);
+    for &probe in probes {
+        if let Some(at) = project(view, probe) {
+            painter.circle_filled(at, 2.0, theme::AMBER_DIM);
+        }
+    }
+}
+
 /// The 12 edges of a box whose corners are numbered by bits (x, y, z).
 const BOX_EDGES: [(usize, usize); 12] = [
     (0, 1),
