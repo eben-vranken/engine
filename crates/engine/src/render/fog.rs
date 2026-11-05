@@ -63,7 +63,9 @@ pub struct GpuRegion {
     to_box: Mat4,
     fog: Vec4,
     shape: Vec4,
-    size: Vec4,
+    /// x: the box's height in meters (FogVolumes); yzw: the ambient light
+    /// inside (zones).
+    extra: Vec4,
 }
 
 /// The camera's ray basis: forward, and right/up scaled so that
@@ -77,9 +79,12 @@ pub fn ray_basis(camera: &Camera, aspect: f32) -> [Vec3; 3] {
 }
 
 /// The scene's fog regions: every zone volume with its zone's fog (or the
-/// environment's), smallest first, then every FogVolume.
-pub fn regions(scene: &Scene) -> Vec<GpuRegion> {
+/// environment's), smallest first, then every FogVolume. `zone_ambient`
+/// gives a zone's baked ambient light (so fog indoors isn't lit by the
+/// open sky); without it, the environment's.
+pub fn regions(scene: &Scene, zone_ambient: impl Fn(&str) -> Option<Vec3>) -> Vec<GpuRegion> {
     let env = &scene.environment;
+    let sky = (env.ambient_sky + env.ambient_ground) * 0.5;
     let mut zones: Vec<(f32, GpuRegion)> = Vec::new();
     let mut volumes = Vec::new();
     for object in &scene.objects {
@@ -98,7 +103,11 @@ pub fn regions(scene: &Scene) -> Vec<GpuRegion> {
                         .and_then(|z| z.fog.as_ref())
                         .unwrap_or(&env.fog);
                     let to_box = (t.matrix() * Mat4::from_scale(volume.size)).inverse();
-                    zones.push((size.abs().element_product(), zone_region(to_box, fog)));
+                    let ambient = zone_ambient(&object.zone).unwrap_or(sky);
+                    zones.push((
+                        size.abs().element_product(),
+                        zone_region(to_box, fog, ambient),
+                    ));
                 }
                 Component::FogVolume(volume) => {
                     let size = volume.size * t.scale;
@@ -109,7 +118,7 @@ pub fn regions(scene: &Scene) -> Vec<GpuRegion> {
                         to_box: (t.matrix() * Mat4::from_scale(volume.size)).inverse(),
                         fog: volume.color.extend(volume.density.max(0.0)),
                         shape: Vec4::new(0.0, volume.falloff, volume.softness.clamp(0.0, 1.0), 1.0),
-                        size: Vec4::new(size.y.abs(), 0.0, 0.0, 0.0),
+                        extra: Vec4::new(size.y.abs(), 0.0, 0.0, 0.0),
                     });
                 }
                 _ => {}
@@ -125,12 +134,12 @@ pub fn regions(scene: &Scene) -> Vec<GpuRegion> {
         .collect()
 }
 
-fn zone_region(to_box: Mat4, fog: &Fog) -> GpuRegion {
+fn zone_region(to_box: Mat4, fog: &Fog, ambient: Vec3) -> GpuRegion {
     GpuRegion {
         to_box,
         fog: fog.color.extend(fog.density.max(0.0)),
         shape: Vec4::new(fog.height, fog.falloff.max(0.0), 0.0, 0.0),
-        size: Vec4::ZERO,
+        extra: Vec4::new(0.0, ambient.x, ambient.y, ambient.z),
     }
 }
 
@@ -514,7 +523,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let regions = regions(&scene);
+        let regions = regions(&scene, |_| None);
         assert_eq!(regions.len(), 3);
         // The room: its own fog, and first because it's smaller.
         assert_eq!(regions[0].fog.w, 0.5);
@@ -538,10 +547,10 @@ mod tests {
             )],
             ..Default::default()
         };
-        let r = regions(&scene)[0];
+        let r = regions(&scene, |_| None)[0];
         let corner = r.to_box.transform_point3(Vec3::new(12.0, 1.0, 3.0));
         assert!((corner - Vec3::splat(0.5)).length() < 1e-5);
-        assert_eq!(r.size.x, 2.0);
+        assert_eq!(r.extra.x, 2.0);
     }
 
     #[test]

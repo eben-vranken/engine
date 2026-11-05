@@ -1,10 +1,13 @@
 //! wgpu renderer. Each frame:
 //!
 //! 1. shadow passes: depth from the sun and from shadowed lights
-//! 2. scene pass: objects → HDR color + depth at internal resolution
-//! 3. post: bloom, tone mapping, grading, grain, nearest-neighbor upscale
+//! 2. fog: froxel grid lit through the shadow maps (compute)
+//! 3. scene pass: objects → HDR color + depth at internal resolution; the
+//!    light that isn't direct comes from the lightmaps (static surfaces)
+//!    or the probes (moving ones), see `lightmap`
+//! 4. post: bloom, tone mapping, grading, grain, nearest-neighbor upscale
 //!    → window
-//! 4. overlay: egui at native resolution on top
+//! 5. overlay: egui at native resolution on top
 //!
 //! See `scale` for how the internal resolution is chosen.
 
@@ -20,6 +23,7 @@ pub mod texture;
 
 use crate::assets::{Assets, Resolved};
 use crate::camera::Camera;
+use crate::lightmap::{self, AmbientCube, Baked, BakedDraw};
 use crate::scene::{Component, Environment, Geometry, LightSource, Renderable, Scene};
 use bytemuck::{Pod, Zeroable};
 use fog::{FogFrame, VolumetricFog};
@@ -30,6 +34,7 @@ use mesh::{MeshData, Shape};
 use post::Post;
 use scale::ScaleLayout;
 use shadows::{Caster, Shadows};
+use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
@@ -78,6 +83,10 @@ struct ObjectUniform {
     color: Vec4,
     highlight: Vec4,
     emissive: Vec4,
+    /// x: 1 = lit from its lightmap, 0 = from `ambient`.
+    lighting: Vec4,
+    /// Light arriving from +X, -X, +Y, -Y, +Z, -Z (probes or the sky).
+    ambient: [Vec4; 6],
 }
 
 struct Draw {
@@ -87,6 +96,8 @@ struct Draw {
     geometry: GeometryKey,
     /// Primitives tile the grid texture in meters; models use their own UVs.
     textured: bool,
+    /// Index into `Renderer::lightmaps`, if drawn with a lightmap.
+    lightmap: Option<usize>,
     uniform: ObjectUniform,
 }
 
@@ -106,7 +117,13 @@ impl From<Geometry<'_>> for GeometryKey {
 }
 
 /// `textured`: primitives tile the grid texture; models use their own UVs.
-fn object_uniform(r: &Renderable, highlighted: bool, textured: bool) -> ObjectUniform {
+fn object_uniform(
+    r: &Renderable,
+    highlighted: bool,
+    textured: bool,
+    lightmapped: bool,
+    ambient: AmbientCube,
+) -> ObjectUniform {
     let model = r.transform.matrix();
     ObjectUniform {
         model,
@@ -114,7 +131,16 @@ fn object_uniform(r: &Renderable, highlighted: bool, textured: bool) -> ObjectUn
         color: r.color.extend(1.0),
         highlight: Vec4::new(highlighted as u32 as f32, textured as u32 as f32, 0.0, 0.0),
         emissive: r.emissive.extend(0.0),
+        lighting: Vec4::new(lightmapped as u32 as f32, 0.0, 0.0, 0.0),
+        ambient: ambient.map(|c| c.extend(0.0)),
     }
+}
+
+/// The environment's ambient light as a cube: sky above, ground below,
+/// halfway at the sides.
+fn sky_cube(env: &Environment) -> AmbientCube {
+    let side = (env.ambient_sky + env.ambient_ground) * 0.5;
+    [side, side, env.ambient_sky, env.ambient_ground, side, side]
 }
 
 struct GpuMesh {
@@ -122,6 +148,8 @@ struct GpuMesh {
     sphere: (Vec3, f32),
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
+    /// Lightmap UV per vertex (zeros without a lightmap).
+    lightmap_uvs: wgpu::Buffer,
     index_count: u32,
     /// Index ranges and the texture each is drawn with.
     parts: Vec<(Range<u32>, wgpu::BindGroup)>,
@@ -172,6 +200,14 @@ pub struct Renderer {
 
     scene_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
+    /// Group 3: a zone's lightmap and its sampler.
+    lightmap_layout: wgpu::BindGroupLayout,
+    lightmap_sampler: wgpu::Sampler,
+    /// For draws without a lightmap.
+    no_lightmap: wgpu::BindGroup,
+    /// One per baked zone (`None` if it has no texels).
+    lightmaps: Vec<Option<wgpu::BindGroup>>,
+    baked: Option<Arc<Baked>>,
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     object_layout: wgpu::BindGroupLayout,
@@ -338,6 +374,41 @@ impl Renderer {
                 },
             ],
         });
+        let lightmap_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("lightmap"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let lightmap_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("lightmap"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let no_lightmap = lightmap_bind_group(
+            &device,
+            &queue,
+            &lightmap_layout,
+            &lightmap_sampler,
+            [1, 1],
+            &[0],
+        );
         let object_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("object"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -454,6 +525,7 @@ impl Renderer {
                     Some(&frame_layout),
                     Some(&object_layout),
                     Some(&material_layout),
+                    Some(&lightmap_layout),
                 ],
                 immediate_size: 0,
             });
@@ -463,11 +535,18 @@ impl Renderer {
             vertex: wgpu::VertexState {
                 module: &scene_shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: size_of::<mesh::Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2],
-                })],
+                buffers: &[
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: size_of::<mesh::Vertex>() as u64,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2],
+                    }),
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: 8,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![3 => Float32x2],
+                    }),
+                ],
                 compilation_options: Default::default(),
             },
             primitive: wgpu::PrimitiveState {
@@ -494,9 +573,14 @@ impl Renderer {
 
         // The background: sky color seen through the fog, drawn only where
         // nothing else was (at the far plane, depth test LessEqual).
+        let sky_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("sky"),
+            bind_group_layouts: &[Some(&frame_layout)],
+            immediate_size: 0,
+        });
         let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("sky"),
-            layout: Some(&scene_pipeline_layout),
+            layout: Some(&sky_layout),
             vertex: wgpu::VertexState {
                 module: &scene_shader,
                 entry_point: Some("vs_sky"),
@@ -545,6 +629,11 @@ impl Renderer {
             targets,
             scene_pipeline,
             sky_pipeline,
+            lightmap_layout,
+            lightmap_sampler,
+            no_lightmap,
+            lightmaps: Vec::new(),
+            baked: None,
             frame_buffer,
             frame_bind_group,
             object_layout,
@@ -570,13 +659,61 @@ impl Renderer {
         })
     }
 
+    /// The scene's light bake (or none); takes effect at the next
+    /// `set_scene`.
+    pub fn set_lightmaps(&mut self, baked: Option<Arc<Baked>>) {
+        self.lightmaps = baked
+            .iter()
+            .flat_map(|b| &b.zones)
+            .map(|zone| {
+                (zone.size[0] > 0 && zone.size[1] > 0).then(|| {
+                    lightmap_bind_group(
+                        &self.device,
+                        &self.queue,
+                        &self.lightmap_layout,
+                        &self.lightmap_sampler,
+                        zone.size,
+                        &zone.texels,
+                    )
+                })
+            })
+            .collect();
+        self.baked = baked;
+    }
+
+    /// A zone's average baked ambient light (from its probes), if baked.
+    fn zone_light(&self, zone: &str) -> Option<Vec3> {
+        let grid = &self.baked.as_ref()?.zone(zone)?.probes;
+        let (sum, n) = grid
+            .probes
+            .iter()
+            .flatten()
+            .fold((Vec3::ZERO, 0), |(s, n), cube| {
+                (s + cube.iter().sum::<Vec3>() / 6.0, n + 1)
+            });
+        (n > 0).then(|| sum / n as f32)
+    }
+
+    /// Light for an object without a lightmap: from the probes of its
+    /// zone's bake around `center`, or else the environment's.
+    fn ambient_at(&self, scene: &Scene, object: usize, center: Vec3) -> AmbientCube {
+        self.baked
+            .as_ref()
+            .and_then(|b| b.zone(&scene.objects[object].zone))
+            .and_then(|z| z.probes.sample(center))
+            .unwrap_or_else(|| sky_cube(&scene.environment))
+    }
+
     /// Uploads every object's mesh and transform, the lights and the
     /// zones' color grades.
     pub fn set_scene(&mut self, scene: &Scene, assets: &mut Assets) {
         self.environment = scene.environment.clone();
         self.lights = scene_lights(scene);
         self.shadows.invalidate();
-        self.fog.set_regions(&self.queue, &fog::regions(scene));
+        self.fog.set_regions(
+            &self.queue,
+            &fog::regions(scene, |zone| self.zone_light(zone)),
+        );
         self.fog.reset();
         self.post
             .set_grades(&self.device, &self.queue, scene, assets.root());
@@ -591,15 +728,35 @@ impl Renderer {
         self.object_bind_group = bind_group;
         self.meshes.clear();
         self.draws.clear();
-        for r in renderables {
-            let (mesh, textured) = self.create_mesh(assets.resolve(r.geometry));
+        let baked = self.baked.clone();
+        let by_key: HashMap<&lightmap::DrawKey, &BakedDraw> = baked
+            .iter()
+            .flat_map(|b| &b.draws)
+            .map(|d| (&d.key, d))
+            .collect();
+        let keys = lightmap::draw_keys(scene);
+        for (r, key) in renderables.into_iter().zip(&keys) {
+            // Only objects that stay put use their lightmap.
+            let baked_draw = by_key
+                .get(key)
+                .copied()
+                .filter(|_| !lightmap::moves(&scene.objects[r.object]))
+                .filter(|d| matches!(self.lightmaps.get(d.zone as usize), Some(Some(_))));
+            let (mesh, textured, lightmapped) =
+                self.create_mesh(assets.resolve(r.geometry), baked_draw);
+            let lightmap = lightmapped
+                .then(|| baked_draw.map(|d| d.zone as usize))
+                .flatten();
+            let center = frustum::world_sphere(&r.transform.matrix(), mesh.sphere).0;
+            let ambient = self.ambient_at(scene, r.object, center);
             self.meshes.push(mesh);
             let highlighted = Some(r.object) == self.highlighted;
             self.draws.push(Draw {
                 object: r.object,
                 geometry: r.geometry.into(),
                 textured,
-                uniform: object_uniform(&r, highlighted, textured),
+                lightmap,
+                uniform: object_uniform(&r, highlighted, textured, lightmap.is_some(), ambient),
             });
         }
         for i in 0..self.draws.len() {
@@ -635,7 +792,10 @@ impl Renderer {
             .iter()
             .any(|c| matches!(c, Component::ZoneVolume(_) | Component::FogVolume(_)))
         {
-            self.fog.set_regions(&self.queue, &fog::regions(scene));
+            self.fog.set_regions(
+                &self.queue,
+                &fog::regions(scene, |zone| self.zone_light(zone)),
+            );
         }
         let renderables: Vec<_> = scene.renderables().filter(|r| r.object == index).collect();
         let slots: Vec<usize> = (0..self.draws.len())
@@ -650,14 +810,20 @@ impl Renderer {
         for (&slot, r) in slots.iter().zip(renderables) {
             let key = GeometryKey::from(r.geometry);
             if self.draws[slot].geometry != key {
-                let (mesh, textured) = self.create_mesh(assets.resolve(r.geometry));
+                // Reshaped: its lightmap no longer fits until the next bake.
+                let (mesh, textured, _) = self.create_mesh(assets.resolve(r.geometry), None);
                 self.meshes[slot] = mesh;
                 self.draws[slot].geometry = key;
                 self.draws[slot].textured = textured;
+                self.draws[slot].lightmap = None;
                 self.shadows.invalidate();
             }
             let textured = self.draws[slot].textured;
-            self.draws[slot].uniform = object_uniform(&r, highlighted, textured);
+            let lightmapped = self.draws[slot].lightmap.is_some();
+            let center = frustum::world_sphere(&r.transform.matrix(), self.meshes[slot].sphere).0;
+            let ambient = self.ambient_at(scene, index, center);
+            self.draws[slot].uniform =
+                object_uniform(&r, highlighted, textured, lightmapped, ambient);
             self.write_draw(slot);
         }
     }
@@ -680,8 +846,13 @@ impl Renderer {
         self.zone = zone;
     }
 
-    /// Uploads a mesh; also says whether it gets the grid texture.
-    fn create_mesh(&self, geometry: Resolved) -> (GpuMesh, bool) {
+    /// Uploads a mesh; also says whether it gets the grid texture and
+    /// whether `lightmap` fit it (then it's drawn with its lightmap UVs).
+    fn create_mesh(
+        &self,
+        geometry: Resolved,
+        lightmap: Option<&BakedDraw>,
+    ) -> (GpuMesh, bool, bool) {
         let shape_mesh;
         let (data, parts, textured) = match &geometry {
             Resolved::Shape(shape) => {
@@ -720,6 +891,11 @@ impl Renderer {
                 (&model.mesh, parts, false)
             }
         };
+        let remade = lightmap.and_then(|l| l.apply(data));
+        let (data, uvs) = match &remade {
+            Some((mesh, uvs)) => (mesh, uvs.clone()),
+            None => (data, vec![[0.0; 2]; data.vertices.len()]),
+        };
         let buffer = |label, contents: &[u8], usage| {
             self.device
                 .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -740,10 +916,15 @@ impl Renderer {
                 bytemuck::cast_slice(&data.indices),
                 wgpu::BufferUsages::INDEX,
             ),
+            lightmap_uvs: buffer(
+                "lightmap uvs",
+                bytemuck::cast_slice(&uvs),
+                wgpu::BufferUsages::VERTEX,
+            ),
             index_count: data.indices.len() as u32,
             parts,
         };
-        (mesh, textured)
+        (mesh, textured, remade.is_some())
     }
 
     fn write_draw(&self, i: usize) {
@@ -1056,6 +1237,12 @@ impl Renderer {
                 let offset = (i as u64 * self.object_stride) as u32;
                 pass.set_bind_group(1, &self.object_bind_group, &[offset]);
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_vertex_buffer(1, mesh.lightmap_uvs.slice(..));
+                let lightmap = self.draws[i]
+                    .lightmap
+                    .and_then(|z| self.lightmaps.get(z)?.as_ref())
+                    .unwrap_or(&self.no_lightmap);
+                pass.set_bind_group(3, lightmap, &[]);
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
                 for (indices, material) in &mesh.parts {
                     pass.set_bind_group(2, material, &[]);
@@ -1064,6 +1251,7 @@ impl Renderer {
             }
             self.drawn = [drawn, self.meshes.len()];
             pass.set_pipeline(&self.sky_pipeline);
+            pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
 
@@ -1097,6 +1285,63 @@ fn material_bind_group(
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("material"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(
+                    &texture.create_view(&Default::default()),
+                ),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
+}
+
+/// A zone's lightmap texture (RGB9E5 texels) with its sampler.
+fn lightmap_bind_group(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    size: [u32; 2],
+    texels: &[u32],
+) -> wgpu::BindGroup {
+    let extent = wgpu::Extent3d {
+        width: size[0],
+        height: size[1],
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("lightmap"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgb9e5Ufloat,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        bytemuck::cast_slice(texels),
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(size[0] * 4),
+            rows_per_image: Some(size[1]),
+        },
+        extent,
+    );
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("lightmap"),
         layout,
         entries: &[
             wgpu::BindGroupEntry {

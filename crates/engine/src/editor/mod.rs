@@ -52,6 +52,8 @@ pub struct Editor {
     renaming: Option<(String, String)>,
     /// The reverb bake's state for the top bar (set by the runtime).
     pub bake_status: String,
+    /// The light bake's state for the top bar (set by the runtime).
+    pub light_status: String,
     /// Where the loaded bake's probes are (set by the runtime).
     pub probes: Vec<Vec3>,
 }
@@ -96,6 +98,8 @@ pub struct EditorOutput {
     pub toggle_play: bool,
     /// BAKE ACOUSTICS was clicked.
     pub bake: bool,
+    /// BAKE LIGHTING was clicked.
+    pub bake_lighting: bool,
 }
 
 impl Editor {
@@ -115,6 +119,7 @@ impl Editor {
             playing: false,
             renaming: None,
             bake_status: String::new(),
+            light_status: String::new(),
             probes: Vec::new(),
         }
     }
@@ -138,6 +143,7 @@ impl Editor {
             exit: false,
             toggle_play: false,
             bake: false,
+            bake_lighting: false,
         };
         egui::Panel::top("editor_top").show(ui, |ui| {
             self.top_bar(ui, scene, stats, blink, view, &mut output)
@@ -719,6 +725,22 @@ impl Editor {
                     theme::AMBER
                 };
                 ui.label(RichText::new(&self.bake_status).small().color(color));
+
+                ui.add_space(12.0);
+                let baking = self.light_status.starts_with("BAKING");
+                if ui
+                    .add_enabled(!baking, egui::Button::new("BAKE LIGHTING").small())
+                    .on_hover_text("BOUNCE, SKY AND EMISSIVE LIGHT INTO LIGHTMAPS AND PROBES")
+                    .clicked()
+                {
+                    output.bake_lighting = true;
+                }
+                let color = if self.light_status == "BAKED" {
+                    theme::AMBER_DIM
+                } else {
+                    theme::AMBER
+                };
+                ui.label(RichText::new(&self.light_status).small().color(color));
 
                 ui.add_space(12.0);
                 for (kind, text) in [

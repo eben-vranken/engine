@@ -508,6 +508,11 @@ pub struct Environment {
     pub grain: f32,
     /// Grading for zones without their own.
     pub grade: Grade,
+    /// Lightmap texels per meter (BAKE LIGHTING); higher = finer bounce
+    /// light and contact shadows, but longer bakes and more memory.
+    pub lightmap_density: f32,
+    /// Rays per lightmap texel; more = less blotchy, slower bake.
+    pub bake_samples: u32,
 }
 
 impl Default for Environment {
@@ -524,6 +529,8 @@ impl Default for Environment {
             bloom: 0.05,
             grain: 0.03,
             grade: Grade::default(),
+            lightmap_density: 4.0,
+            bake_samples: 256,
         }
     }
 }

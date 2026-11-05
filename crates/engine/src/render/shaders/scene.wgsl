@@ -31,6 +31,10 @@ struct Object {
     highlight: vec4<f32>,
     // rgb: light the surface gives off.
     emissive: vec4<f32>,
+    // x: 1 = indirect light from the lightmap, 0 = from `ambient`.
+    lighting: vec4<f32>,
+    // Light arriving from +X, -X, +Y, -Y, +Z, -Z (probes or the sky).
+    ambient: array<vec4<f32>, 6>,
 };
 
 struct Light {
@@ -59,12 +63,16 @@ const POINT_SHADOW_SIZE: f32 = 512.0;
 // The grid for primitives; a model part's base color texture.
 @group(2) @binding(0) var albedo_texture: texture_2d<f32>;
 @group(2) @binding(1) var albedo_sampler: sampler;
+// The zone's baked bounce, sky and emissive light.
+@group(3) @binding(0) var lightmap: texture_2d<f32>;
+@group(3) @binding(1) var lightmap_sampler: sampler;
 
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) world: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) lightmap_uv: vec2<f32>,
 };
 
 @vertex
@@ -72,6 +80,7 @@ fn vs_main(
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
+    @location(3) lightmap_uv: vec2<f32>,
 ) -> VertexOut {
     let world = object.model * vec4<f32>(position, 1.0);
     var out: VertexOut;
@@ -79,6 +88,7 @@ fn vs_main(
     out.world = world.xyz;
     out.normal = (object.normal_matrix * vec4<f32>(normal, 0.0)).xyz;
     out.uv = uv;
+    out.lightmap_uv = lightmap_uv;
     return out;
 }
 
@@ -204,7 +214,17 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if facing_sun > 0.0 {
         sun = frame.sun_color.rgb * facing_sun * sun_visibility(in.world, n);
     }
-    let ambient = mix(frame.ambient_ground.rgb, frame.ambient_sky.rgb, n.y * 0.5 + 0.5);
+    var ambient: vec3<f32>;
+    if object.lighting.x > 0.5 {
+        ambient = textureSampleLevel(lightmap, lightmap_sampler, in.lightmap_uv, 0.0).rgb;
+    } else {
+        // Blend the six directions by how much the normal faces each.
+        let a = object.ambient;
+        let n2 = n * n;
+        ambient = n2.x * select(a[1], a[0], n.x >= 0.0).rgb
+            + n2.y * select(a[3], a[2], n.y >= 0.0).rgb
+            + n2.z * select(a[5], a[4], n.z >= 0.0).rgb;
+    }
     let light = sun + ambient + point_lights(in.world, n);
     var color = albedo * light + object.emissive.rgb;
 

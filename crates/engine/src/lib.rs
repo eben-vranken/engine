@@ -20,6 +20,7 @@ pub mod camera;
 mod cursor;
 pub mod editor;
 pub mod input;
+pub mod lightmap;
 pub mod physics;
 pub mod player;
 pub mod project;

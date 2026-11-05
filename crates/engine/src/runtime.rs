@@ -11,6 +11,7 @@ use crate::editor::history::Change;
 use crate::editor::import;
 use crate::editor::{Editor, EditorStats};
 use crate::input::Input;
+use crate::lightmap;
 use crate::physics::PhysicsWorld;
 use crate::player::settings::{PlayerSettings, SettingsFile};
 use crate::player::tuning::{self, TuningAction};
@@ -159,6 +160,10 @@ struct Running {
     /// The loaded bake's signature, to tell when the scene has changed
     /// since (`None` = no bake).
     baked_signature: Option<u64>,
+    /// A light bake running in the background.
+    light_job: Option<lightmap::BakeJob>,
+    /// The loaded light bake's signature (`None` = no bake).
+    light_signature: Option<u64>,
 }
 
 /// The editor's state when Play was pressed.
@@ -281,6 +286,7 @@ impl Running {
     fn new(event_loop: &ActiveEventLoop, config: &RunConfig) -> Result<Self, RunError> {
         let mut running = Self::open(event_loop, config)?;
         running.load_bake();
+        running.load_lightmaps();
         Ok(running)
     }
 
@@ -370,6 +376,8 @@ impl Running {
             scene_path: config.scene_path.clone(),
             bake_job: None,
             baked_signature: None,
+            light_job: None,
+            light_signature: None,
         })
     }
 
@@ -765,6 +773,7 @@ impl Running {
                 self.zone.reset();
                 editor.scene_loaded(path);
                 self.load_bake();
+                self.load_lightmaps();
             }
             Err(err) => {
                 log::error!("{err}");
@@ -782,6 +791,7 @@ impl Running {
         self.poll_settings_file();
         self.poll_model_files();
         self.check_bake();
+        self.check_light_bake();
     }
 
     /// The current scene's file, in the project.
@@ -888,6 +898,93 @@ impl Running {
             Some(baked) => {
                 let scene = self.play.as_ref().map_or(&self.scene, |p| &p.scene);
                 if bake::signature(scene) == baked {
+                    "BAKED".into()
+                } else {
+                    "BAKE OUTDATED".into()
+                }
+            }
+        };
+    }
+
+    /// Loads the scene's light bake (if any) into the renderer.
+    fn load_lightmaps(&mut self) {
+        let file = lightmap::path_for(&self.scene_file());
+        let baked = match lightmap::load(&file) {
+            Ok(baked) => baked,
+            Err(err) => {
+                log::error!("{err}");
+                if let Some(editor) = &mut self.editor {
+                    editor.show_error(err.to_string());
+                }
+                None
+            }
+        };
+        self.light_signature = baked.as_ref().map(|b| b.signature);
+        self.renderer.set_lightmaps(baked.map(std::sync::Arc::new));
+        self.renderer.set_scene(&self.scene, &mut self.assets);
+        self.check_light_bake();
+    }
+
+    /// Editor: starts baking the scene's lighting.
+    fn start_light_bake(&mut self) {
+        if self.light_job.is_some() {
+            return;
+        }
+        // Bake the scene as edited, not as played.
+        let scene = self.play.as_ref().map_or(&self.scene, |p| &p.scene);
+        let file = lightmap::path_for(&self.scene_file());
+        match lightmap::start(scene, &mut self.assets, file) {
+            Ok(job) => self.light_job = Some(job),
+            Err(err) => {
+                log::error!("{err}");
+                if let Some(editor) = &mut self.editor {
+                    editor.show_error(err.to_string().to_uppercase());
+                }
+            }
+        }
+    }
+
+    /// Editor: the light bake's progress or whether the loaded one still
+    /// matches the scene; loads a bake that just finished.
+    fn check_light_bake(&mut self) {
+        if let Some(job) = &mut self.light_job {
+            match job.finished() {
+                None => {
+                    let p = job.progress();
+                    if let Some(editor) = &mut self.editor {
+                        editor.light_status =
+                            format!("BAKING {} {:.0}%", p.stage, p.fraction * 100.0);
+                    }
+                    return;
+                }
+                Some(result) => {
+                    self.light_job = None;
+                    match result {
+                        Ok(file) => {
+                            log::info!("baked {}", file.display());
+                            self.load_lightmaps();
+                            if let Some(editor) = &mut self.editor {
+                                editor.show_message("LIGHTING BAKED".into());
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("{err}");
+                            if let Some(editor) = &mut self.editor {
+                                editor.show_error(err.to_string().to_uppercase());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        editor.light_status = match self.light_signature {
+            None => "NOT BAKED".into(),
+            Some(baked) => {
+                let scene = self.play.as_ref().map_or(&self.scene, |p| &p.scene);
+                if lightmap::signature(scene) == baked {
                     "BAKED".into()
                 } else {
                     "BAKE OUTDATED".into()
@@ -1118,6 +1215,9 @@ impl Running {
             }
             if output.bake {
                 self.start_bake();
+            }
+            if output.bake_lighting {
+                self.start_light_bake();
             }
             for &change in &output.changed {
                 self.show_change(change);

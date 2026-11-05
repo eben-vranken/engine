@@ -49,8 +49,8 @@ struct Region {
     // x: height (zones), y: falloff, z: edge softness (volumes),
     // w: 0 = zone, 1 = FogVolume.
     shape: vec4<f32>,
-    // x: the box's height in meters (volumes).
-    size: vec4<f32>,
+    // x: the box's height in meters (volumes). yzw: ambient light (zones).
+    extra: vec4<f32>,
 };
 
 const PI: f32 = 3.14159265;
@@ -128,8 +128,13 @@ fn point_visibility(light: Light, p: vec3<f32>) -> f32 {
     return textureSampleCompareLevel(point_shadows, shadow_sampler, c.xy, layer, c.z);
 }
 
+// Ambient light where `medium` was last called: the zone's (baked), or
+// the environment's outside every zone.
+var<private> local_ambient: vec3<f32>;
+
 // rgb: scattering (density × color), a: density, at a point.
 fn medium(p: vec3<f32>) -> vec4<f32> {
+    local_ambient = fog.ambient.rgb;
     var zone_fog = fog.default_fog;
     var height = fog.default_shape.x;
     var falloff = fog.default_shape.y;
@@ -150,12 +155,13 @@ fn medium(p: vec3<f32>) -> vec4<f32> {
                 zone_fog = r.fog;
                 height = r.shape.x;
                 falloff = r.shape.y;
+                local_ambient = r.extra.yzw;
             }
         } else {
             let soft = max(r.shape.z, 1e-3) * 0.5;
             let edge = saturate((vec3<f32>(0.5) - abs(local)) / soft);
             let fade = edge.x * edge.y * edge.z;
-            let above_bottom = (local.y + 0.5) * r.size.x;
+            let above_bottom = (local.y + 0.5) * r.extra.x;
             let d = r.fog.a * fade * exp(-r.shape.y * above_bottom);
             extra += vec4<f32>(r.fog.rgb * d, d);
         }
@@ -206,7 +212,7 @@ fn in_scatter(p: vec3<f32>, view: vec3<f32>) -> vec4<f32> {
         light += l.color.rgb * falloff * point_visibility(l, p) * phase(dot(travel, -view), g);
     }
     // Ambient light arrives from everywhere: the phase averages out.
-    light += fog.ambient.rgb / (4.0 * PI);
+    light += local_ambient / (4.0 * PI);
     return vec4<f32>(m.rgb * light, m.a);
 }
 
