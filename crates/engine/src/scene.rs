@@ -29,6 +29,35 @@ pub struct Zone {
     /// environment's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub grade: Option<Grade>,
+    /// Fog inside this zone's volumes; `None` = the environment's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fog: Option<Fog>,
+}
+
+/// Volumetric fog: a medium that light scatters through, so lit air glows
+/// (light shafts, halos around lanterns) and distant things fade.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Fog {
+    /// How thick the fog is (per meter); 0 = clear air.
+    pub density: f32,
+    /// Tints the light the fog scatters; (1, 1, 1) = neutral grey-white.
+    pub color: Vec3,
+    /// World height (meters) up to which the fog is at full density.
+    pub height: f32,
+    /// How quickly it thins above `height` (per meter); 0 = not at all.
+    pub falloff: f32,
+}
+
+impl Default for Fog {
+    fn default() -> Self {
+        Self {
+            density: 0.02,
+            color: Vec3::ONE,
+            height: 2.0,
+            falloff: 0.15,
+        }
+    }
 }
 
 impl Zone {
@@ -141,6 +170,35 @@ pub enum Component {
     ZoneVolume(ZoneVolume),
     Portal(Portal),
     LightSource(LightSource),
+    FogVolume(FogVolume),
+}
+
+/// Extra fog in a box centered on the object (turned and scaled with it),
+/// on top of the zone's: mist over water, smoke in a corner.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct FogVolume {
+    /// Meters, before the object's scale.
+    pub size: Vec3,
+    pub density: f32,
+    pub color: Vec3,
+    /// How quickly it thins from the bottom of the box upward (per meter).
+    pub falloff: f32,
+    /// 0 = hard box edges, 1 = fades in from the edges all the way to the
+    /// center.
+    pub softness: f32,
+}
+
+impl Default for FogVolume {
+    fn default() -> Self {
+        Self {
+            size: Vec3::new(4.0, 2.0, 4.0),
+            density: 0.3,
+            color: Vec3::ONE,
+            falloff: 0.5,
+            softness: 0.5,
+        }
+    }
 }
 
 /// A point light: lantern, candle, brazier. Lights the scene in real time
@@ -433,9 +491,15 @@ pub struct Environment {
     /// Ambient light from above and below; normals blend between them.
     pub ambient_sky: Vec3,
     pub ambient_ground: Vec3,
-    pub fog_color: Vec3,
-    /// Fog per meter; 0 turns fog off.
-    pub fog_density: f32,
+    /// Fog outside zones that have their own.
+    pub fog: Fog,
+    /// How much fog scatters light forward (toward a camera looking at the
+    /// light): 0 = evenly, 0.9 = strongly. Makes shafts brighter against
+    /// the light.
+    pub fog_anisotropy: f32,
+    /// Meters of fog simulated in front of the camera; beyond, nothing
+    /// changes any more.
+    pub fog_distance: f32,
     /// Meters around the camera where the sun casts real-time shadows.
     pub shadow_distance: f32,
     /// How much bright light glows past its edges; 0 = off.
@@ -453,8 +517,9 @@ impl Default for Environment {
             sun_color: Vec3::new(1.0, 0.9, 0.78) * 2.6,
             ambient_sky: Vec3::new(0.16, 0.18, 0.24),
             ambient_ground: Vec3::new(0.05, 0.045, 0.04),
-            fog_color: Vec3::new(0.045, 0.05, 0.065),
-            fog_density: 0.035,
+            fog: Fog::default(),
+            fog_anisotropy: 0.35,
+            fog_distance: 60.0,
             shadow_distance: 40.0,
             bloom: 0.05,
             grain: 0.03,

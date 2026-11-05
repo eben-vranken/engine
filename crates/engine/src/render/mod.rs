@@ -8,6 +8,7 @@
 //!
 //! See `scale` for how the internal resolution is chosen.
 
+mod fog;
 mod frustum;
 pub mod grade;
 pub mod lights;
@@ -21,9 +22,10 @@ use crate::assets::{Assets, Resolved};
 use crate::camera::Camera;
 use crate::scene::{Component, Environment, Geometry, LightSource, Renderable, Scene};
 use bytemuck::{Pod, Zeroable};
+use fog::{FogFrame, VolumetricFog};
 use frustum::Frustum;
 use glam::{Mat4, Vec3, Vec4};
-use lights::{GpuLight, MAX_LIGHTS};
+use lights::{GpuLight, MAX_FOG_LIGHTS, MAX_LIGHTS};
 use mesh::{MeshData, Shape};
 use post::Post;
 use scale::ScaleLayout;
@@ -61,9 +63,10 @@ struct FrameUniform {
     sun_color: Vec4,
     ambient_sky: Vec4,
     ambient_ground: Vec4,
-    fog: Vec4,
+    camera_forward: Vec4,
     params: Vec4,
     shadow: Vec4,
+    screen: Vec4,
 }
 
 /// Matches `Object` in `scene.wgsl`.
@@ -168,6 +171,7 @@ pub struct Renderer {
     targets: Targets,
 
     scene_pipeline: wgpu::RenderPipeline,
+    sky_pipeline: wgpu::RenderPipeline,
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     object_layout: wgpu::BindGroupLayout,
@@ -190,6 +194,7 @@ pub struct Renderer {
     lights: Vec<SceneLight>,
     light_buffer: wgpu::Buffer,
     shadows: Shadows,
+    fog: VolumetricFog,
     post: Post,
     /// The camera's zone (index into `Scene::zones`), for its grade.
     zone: Option<usize>,
@@ -294,6 +299,22 @@ impl Renderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let material_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -339,7 +360,7 @@ impl Renderer {
         });
         let light_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("lights"),
-            size: (size_of::<GpuLight>() * MAX_LIGHTS) as u64,
+            size: (size_of::<GpuLight>() * (MAX_LIGHTS + MAX_FOG_LIGHTS)) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -351,6 +372,20 @@ impl Renderer {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+        let fog = VolumetricFog::new(
+            &device,
+            &light_buffer,
+            &shadows.face_buffer,
+            &shadows.sun_view,
+            &shadows.point_view,
+            &shadow_sampler,
+        );
+        let fog_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("fog"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
         let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -380,6 +415,14 @@ impl Renderer {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&fog.integrated_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::Sampler(&fog_sampler),
                 },
             ],
         });
@@ -449,6 +492,36 @@ impl Renderer {
             cache: None,
         });
 
+        // The background: sky color seen through the fog, drawn only where
+        // nothing else was (at the far plane, depth test LessEqual).
+        let sky_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("sky"),
+            layout: Some(&scene_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &scene_shader,
+                entry_point: Some("vs_sky"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            primitive: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &scene_shader,
+                entry_point: Some("fs_sky"),
+                targets: &[Some(HDR_FORMAT.into())],
+                compilation_options: Default::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let layout = ScaleLayout::new(
             [config.width, config.height],
             scale::default_factor(config.height),
@@ -471,6 +544,7 @@ impl Renderer {
             layout,
             targets,
             scene_pipeline,
+            sky_pipeline,
             frame_buffer,
             frame_bind_group,
             object_layout,
@@ -488,6 +562,7 @@ impl Renderer {
             lights: Vec::new(),
             light_buffer,
             shadows,
+            fog,
             post,
             zone: None,
             started: Instant::now(),
@@ -501,6 +576,8 @@ impl Renderer {
         self.environment = scene.environment.clone();
         self.lights = scene_lights(scene);
         self.shadows.invalidate();
+        self.fog.set_regions(&self.queue, &fog::regions(scene));
+        self.fog.reset();
         self.post
             .set_grades(&self.device, &self.queue, scene, assets.root());
         let renderables: Vec<_> = scene.renderables().collect();
@@ -553,6 +630,13 @@ impl Renderer {
             }
         }
 
+        if object
+            .components
+            .iter()
+            .any(|c| matches!(c, Component::ZoneVolume(_) | Component::FogVolume(_)))
+        {
+            self.fog.set_regions(&self.queue, &fog::regions(scene));
+        }
         let renderables: Vec<_> = scene.renderables().filter(|r| r.object == index).collect();
         let slots: Vec<usize> = (0..self.draws.len())
             .filter(|&i| self.draws[i].object == index)
@@ -820,7 +904,23 @@ impl Renderer {
             camera.position,
             time,
         );
-        let gpu_lights: Vec<GpuLight> = frame_lights.iter().map(|l| l.gpu()).collect();
+        let mut gpu_lights: Vec<GpuLight> = frame_lights.iter().map(|l| l.gpu()).collect();
+        let surface_lights = gpu_lights.len();
+        // Emissive surfaces glow in the fog: the nearest become fog-only
+        // lights after the real ones.
+        let mut glowing: Vec<(f32, GpuLight)> = self
+            .meshes
+            .iter()
+            .zip(&self.draws)
+            .filter(|(_, d)| d.uniform.emissive.max_element() > 0.0)
+            .map(|(mesh, d)| {
+                let (center, radius) = frustum::world_sphere(&d.uniform.model, mesh.sphere);
+                let light = lights::emissive_light(d.uniform.emissive.truncate(), center, radius);
+                (center.distance(camera.position), light)
+            })
+            .collect();
+        glowing.sort_by(|a, b| a.0.total_cmp(&b.0));
+        gpu_lights.extend(glowing.into_iter().take(MAX_FOG_LIGHTS).map(|(_, l)| l));
         if !gpu_lights.is_empty() {
             self.queue
                 .write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&gpu_lights));
@@ -846,14 +946,22 @@ impl Renderer {
             sun_color: env.sun_color.extend(0.0),
             ambient_sky: env.ambient_sky.extend(0.0),
             ambient_ground: env.ambient_ground.extend(0.0),
-            fog: env.fog_color.extend(env.fog_density),
+            camera_forward: camera
+                .forward()
+                .extend((env.fog_distance > 0.0) as u32 as f32),
             params: Vec4::new(
                 1.0 / texture::GRID_METERS as f32,
-                gpu_lights.len() as f32,
+                surface_lights as f32,
                 time,
                 shadows::SUN_SIZE as f32,
             ),
             shadow: Vec4::new(radii[0], radii[1], radii[2], 0.0),
+            screen: Vec4::new(
+                1.0 / w as f32,
+                1.0 / h as f32,
+                fog::NEAR,
+                env.fog_distance.max(fog::NEAR * 2.0),
+            ),
         };
         self.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));
@@ -888,9 +996,25 @@ impl Renderer {
             &frame_lights,
         );
         drop(casters);
+        if env.fog_distance > 0.0 {
+            self.fog.render(
+                &self.queue,
+                &mut encoder,
+                FogFrame {
+                    camera,
+                    aspect: w as f32 / h as f32,
+                    view_proj,
+                    env,
+                    sun_view_proj,
+                    cascades: radii,
+                    sun_on,
+                    light_count: gpu_lights.len() as u32,
+                },
+            );
+        }
 
         {
-            let fog = env.fog_color.as_dvec3();
+            let sky = env.ambient_sky.as_dvec3();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -898,9 +1022,9 @@ impl Renderer {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: fog.x,
-                            g: fog.y,
-                            b: fog.z,
+                            r: sky.x,
+                            g: sky.y,
+                            b: sky.z,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -939,6 +1063,8 @@ impl Renderer {
                 }
             }
             self.drawn = [drawn, self.meshes.len()];
+            pass.set_pipeline(&self.sky_pipeline);
+            pass.draw(0..3, 0..1);
         }
 
         let x = (self.view_origin[0] + self.layout.origin[0]) as f32;

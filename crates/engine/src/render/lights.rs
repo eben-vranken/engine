@@ -16,6 +16,8 @@ use glam::{Mat4, Vec3, Vec4};
 pub const MAX_LIGHTS: usize = 32;
 /// Most lights with shadow maps at once (the nearest that want one).
 pub const MAX_SHADOWED: usize = 8;
+/// Most emissive surfaces glowing in the fog at once (the nearest).
+pub const MAX_FOG_LIGHTS: usize = 32;
 /// Near plane of the cube shadow faces, meters.
 pub const SHADOW_NEAR: f32 = 0.05;
 
@@ -48,6 +50,19 @@ impl FrameLight {
                 .color
                 .extend(self.shadow.map_or(-1.0, |slot| slot as f32)),
         }
+    }
+}
+
+/// An emissive surface as a small light that only the fog sees (surfaces
+/// get emissive light from the bake): a point at its center, as bright as
+/// a sphere of its size glowing with that color, reaching as far as it
+/// stays visible.
+pub fn emissive_light(emissive: Vec3, center: Vec3, radius: f32) -> GpuLight {
+    let intensity = emissive * std::f32::consts::PI * radius * radius;
+    let range = (radius * 4.0 + (intensity.max_element() / 0.02).sqrt()).clamp(1.0, 12.0);
+    GpuLight {
+        position: center.extend(range),
+        color: intensity.extend(-1.0),
     }
 }
 

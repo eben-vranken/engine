@@ -11,13 +11,15 @@ struct Frame {
     sun_color: vec4<f32>,
     ambient_sky: vec4<f32>,
     ambient_ground: vec4<f32>,
-    // rgb: color, a: density per meter.
-    fog: vec4<f32>,
+    // xyz: the way the camera looks. w: 1 = volumetric fog on.
+    camera_forward: vec4<f32>,
     // x: texture repeats per meter. y: number of lights. z: seconds.
     // w: texels per side of a sun shadow cascade.
     params: vec4<f32>,
     // xyz: meters around the camera each sun cascade covers.
     shadow: vec4<f32>,
+    // xy: 1 / internal size in pixels. z, w: fog grid near and far depth.
+    screen: vec4<f32>,
 };
 
 struct Object {
@@ -49,6 +51,10 @@ const POINT_SHADOW_SIZE: f32 = 512.0;
 @group(0) @binding(3) var sun_shadow: texture_depth_2d_array;
 @group(0) @binding(4) var point_shadows: texture_depth_2d_array;
 @group(0) @binding(5) var shadow_sampler: sampler_comparison;
+// The fog between the camera and each depth: rgb = light, a = how much of
+// what's behind shows through.
+@group(0) @binding(6) var fog_volume: texture_3d<f32>;
+@group(0) @binding(7) var fog_sampler: sampler;
 @group(1) @binding(0) var<uniform> object: Object;
 // The grid for primitives; a model part's base color texture.
 @group(2) @binding(0) var albedo_texture: texture_2d<f32>;
@@ -207,9 +213,38 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let rim = pow(1.0 - max(dot(n, to_camera), 0.0), 2.0);
     color = mix(color, HIGHLIGHT * 1.5, object.highlight.x * (0.3 + 0.6 * rim));
 
-    let distance = length(in.world - frame.camera_pos.xyz);
-    let fog = 1.0 - exp(-distance * frame.fog.a);
-    color = mix(color, frame.fog.rgb, fog);
+    return vec4<f32>(fog(color, in.clip.xy, in.world), 1.0);
+}
 
-    return vec4<f32>(color, 1.0);
+// The scene color at a pixel seen through the fog in front of it.
+fn fog(color: vec3<f32>, pixel: vec2<f32>, world: vec3<f32>) -> vec3<f32> {
+    if frame.camera_forward.w == 0.0 {
+        return color;
+    }
+    let uv = pixel * frame.screen.xy;
+    let depth = max(dot(world - frame.camera_pos.xyz, frame.camera_forward.xyz), frame.screen.z);
+    let slices = f32(textureDimensions(fog_volume).z);
+    // Slice k holds the fog up to the far end of slice k.
+    let t = log(depth / frame.screen.z) / log(frame.screen.w / frame.screen.z);
+    let w = t - 0.5 / slices;
+    let f = textureSampleLevel(fog_volume, fog_sampler, vec3<f32>(uv, w), 0.0);
+    return color * f.a + f.rgb;
+}
+
+// A fullscreen triangle on the far plane.
+@vertex
+fn vs_sky(@builtin(vertex_index) index: u32) -> @builtin(position) vec4<f32> {
+    let uv = vec2<f32>(f32((index << 1u) & 2u), f32(index & 2u));
+    return vec4<f32>(uv * 2.0 - 1.0, 1.0, 1.0);
+}
+
+// The sky: the ambient sky color behind all of the fog.
+@fragment
+fn fs_sky(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
+    if frame.camera_forward.w == 0.0 {
+        return vec4<f32>(frame.ambient_sky.rgb, 1.0);
+    }
+    let uv = pixel.xy * frame.screen.xy;
+    let f = textureSampleLevel(fog_volume, fog_sampler, vec3<f32>(uv, 1.0), 0.0);
+    return vec4<f32>(frame.ambient_sky.rgb * f.a + f.rgb, 1.0);
 }

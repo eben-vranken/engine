@@ -93,8 +93,13 @@ pub fn zones(
         for component in &object.components {
             let (corners, edges, label_at, text): (Vec<Vec3>, &[(usize, usize)], Vec3, String) =
                 match component {
-                    Component::ZoneVolume(volume) => {
-                        let matrix = object.transform.matrix() * Mat4::from_scale(volume.size);
+                    Component::ZoneVolume(_) | Component::FogVolume(_) => {
+                        let (size, text) = match component {
+                            Component::ZoneVolume(v) => (v.size, object.zone.to_uppercase()),
+                            Component::FogVolume(v) => (v.size, "FOG".to_owned()),
+                            _ => unreachable!(),
+                        };
+                        let matrix = object.transform.matrix() * Mat4::from_scale(size);
                         let corners = (0..8)
                             .map(|i| {
                                 let unit = Vec3::new(
@@ -106,7 +111,7 @@ pub fn zones(
                             })
                             .collect();
                         let top = matrix.transform_point3(Vec3::Y * 0.5);
-                        (corners, &BOX_EDGES, top, object.zone.to_uppercase())
+                        (corners, &BOX_EDGES, top, text)
                     }
                     Component::Portal(portal) => {
                         let matrix = object.transform.matrix();
