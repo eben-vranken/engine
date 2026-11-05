@@ -39,7 +39,7 @@ impl PhysicsWorld {
         for (object, geometry, _, transform) in scene.renderables() {
             let collider = match assets.resolve(geometry) {
                 Resolved::Shape(shape) => collider_for(shape, transform),
-                Resolved::Mesh(mesh) => mesh_collider(&mesh, transform),
+                Resolved::Model(model) => mesh_collider(&model.mesh, transform),
             };
             if let Some(mut collider) = collider {
                 collider.user_data = object as u128;

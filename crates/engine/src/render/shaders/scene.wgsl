@@ -19,7 +19,8 @@ struct Object {
     model: mat4x4<f32>,
     normal_matrix: mat4x4<f32>,
     color: vec4<f32>,
-    // x: selection highlight, 0 or 1. y: 1 = grid texture, 0 = flat color.
+    // x: selection highlight, 0 or 1. y: 1 = primitive (UVs in meters,
+    // tiling the grid texture), 0 = model (its own UVs and texture).
     highlight: vec4<f32>,
 };
 
@@ -27,9 +28,10 @@ struct Object {
 const HIGHLIGHT: vec3<f32> = vec3<f32>(1.0, 0.34, 0.025);
 
 @group(0) @binding(0) var<uniform> frame: Frame;
-@group(0) @binding(1) var grid_texture: texture_2d<f32>;
-@group(0) @binding(2) var grid_sampler: sampler;
 @group(1) @binding(0) var<uniform> object: Object;
+// The grid for primitives; a model part's base color texture.
+@group(2) @binding(0) var albedo_texture: texture_2d<f32>;
+@group(2) @binding(1) var albedo_sampler: sampler;
 
 struct VertexOut {
     @builtin(position) clip: vec4<f32>,
@@ -56,8 +58,8 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let n = normalize(in.normal);
-    let grid = textureSample(grid_texture, grid_sampler, in.uv * frame.params.x).rgb;
-    let albedo = mix(vec3<f32>(1.0), grid, object.highlight.y) * object.color.rgb;
+    let uv = in.uv * mix(1.0, frame.params.x, object.highlight.y);
+    let albedo = textureSample(albedo_texture, albedo_sampler, uv).rgb * object.color.rgb;
 
     let sun = max(dot(n, -frame.sun_dir.xyz), 0.0) * frame.sun_color.rgb;
     let ambient = mix(frame.ambient_ground.rgb, frame.ambient_sky.rgb, n.y * 0.5 + 0.5);

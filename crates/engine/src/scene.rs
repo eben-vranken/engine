@@ -93,8 +93,9 @@ pub struct Primitive {
     pub color: Vec3,
 }
 
-/// A glTF model from the game project, drawn with flat color (no grid
-/// texture) and given a matching triangle-mesh collider.
+/// A glTF model from the game project, drawn with its materials' base color
+/// (texture × color, point-sampled) and given a matching triangle-mesh
+/// collider.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 pub struct Model {
     /// Path relative to the project folder, e.g. `models/arch.gltf`.

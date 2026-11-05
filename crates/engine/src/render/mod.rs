@@ -17,7 +17,9 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 use mesh::{MeshData, Shape};
 use scale::ScaleLayout;
+use std::ops::Range;
 use std::sync::Arc;
+use texture::Image;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -71,7 +73,7 @@ struct Draw {
     object: usize,
     /// What the mesh was built from, to notice when it changes.
     geometry: GeometryKey,
-    /// Uses the grid texture (primitives) or flat color (models).
+    /// Primitives tile the grid texture in meters; models use their own UVs.
     textured: bool,
     uniform: ObjectUniform,
 }
@@ -91,7 +93,7 @@ impl From<Geometry<'_>> for GeometryKey {
     }
 }
 
-/// `textured`: primitives use the grid texture; models are flat-colored.
+/// `textured`: primitives tile the grid texture; models use their own UVs.
 fn object_uniform(
     color: Vec3,
     transform: &Transform,
@@ -110,7 +112,8 @@ fn object_uniform(
 struct GpuMesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
-    index_count: u32,
+    /// Index ranges and the texture each is drawn with.
+    parts: Vec<(Range<u32>, wgpu::BindGroup)>,
 }
 
 /// Render targets at internal resolution; rebuilt when it changes.
@@ -143,6 +146,10 @@ pub struct Renderer {
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     object_layout: wgpu::BindGroupLayout,
+    /// Group 2: one texture and the point sampler.
+    material_layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    grid_material: wgpu::BindGroup,
     object_stride: u64,
     object_buffer: wgpu::Buffer,
     object_bind_group: wgpu::BindGroup,
@@ -214,19 +221,22 @@ impl Renderer {
         // Scene pass resources.
         let frame_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("frame"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let material_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("material"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
@@ -236,7 +246,7 @@ impl Renderer {
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
-                    binding: 2,
+                    binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
@@ -278,23 +288,12 @@ impl Renderer {
         let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("frame"),
             layout: &frame_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: frame_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(
-                        &grid.create_view(&Default::default()),
-                    ),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: frame_buffer.as_entire_binding(),
+            }],
         });
+        let grid_material = material_bind_group(&device, &material_layout, &grid, &sampler);
 
         let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
         let object_stride = (size_of::<ObjectUniform>() as u64).next_multiple_of(alignment);
@@ -305,7 +304,11 @@ impl Renderer {
         let scene_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("scene"),
-                bind_group_layouts: &[Some(&frame_layout), Some(&object_layout)],
+                bind_group_layouts: &[
+                    Some(&frame_layout),
+                    Some(&object_layout),
+                    Some(&material_layout),
+                ],
                 immediate_size: 0,
             });
         let scene_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -428,6 +431,9 @@ impl Renderer {
             frame_buffer,
             frame_bind_group,
             object_layout,
+            material_layout,
+            sampler,
+            grid_material,
             object_stride,
             object_buffer,
             object_bind_group,
@@ -517,9 +523,43 @@ impl Renderer {
 
     /// Uploads a mesh; also says whether it gets the grid texture.
     fn create_mesh(&self, geometry: Resolved) -> (GpuMesh, bool) {
-        let (data, textured) = match geometry {
-            Resolved::Shape(shape) => (std::sync::Arc::new(MeshData::from_shape(shape)), true),
-            Resolved::Mesh(mesh) => (mesh, false),
+        let shape_mesh;
+        let (data, parts, textured) = match &geometry {
+            Resolved::Shape(shape) => {
+                shape_mesh = MeshData::from_shape(*shape);
+                let all = 0..shape_mesh.indices.len() as u32;
+                (&shape_mesh, vec![(all, self.grid_material.clone())], true)
+            }
+            Resolved::Model(model) => {
+                let max = self.device.limits().max_texture_dimension_2d;
+                let materials: Vec<wgpu::BindGroup> = model
+                    .images
+                    .iter()
+                    .map(|image| {
+                        let fallback;
+                        let image = if image.width.max(image.height) > max {
+                            log::warn!("texture larger than {max} px; using white");
+                            fallback = Image::solid([1.0; 3]);
+                            &fallback
+                        } else {
+                            image
+                        };
+                        let texture = texture::upload(&self.device, &self.queue, image);
+                        material_bind_group(
+                            &self.device,
+                            &self.material_layout,
+                            &texture,
+                            &self.sampler,
+                        )
+                    })
+                    .collect();
+                let parts = model
+                    .parts
+                    .iter()
+                    .map(|part| (part.indices.clone(), materials[part.image].clone()))
+                    .collect();
+                (&model.mesh, parts, false)
+            }
         };
         let buffer = |label, contents: &[u8], usage| {
             self.device
@@ -540,7 +580,7 @@ impl Renderer {
                 bytemuck::cast_slice(&data.indices),
                 wgpu::BufferUsages::INDEX,
             ),
-            index_count: data.indices.len() as u32,
+            parts,
         };
         (mesh, textured)
     }
@@ -757,7 +797,10 @@ impl Renderer {
                 pass.set_bind_group(1, &self.object_bind_group, &[offset]);
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..1);
+                for (indices, material) in &mesh.parts {
+                    pass.set_bind_group(2, material, &[]);
+                    pass.draw_indexed(indices.clone(), 0, 0..1);
+                }
             }
         }
 
@@ -792,6 +835,30 @@ impl Renderer {
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
     }
+}
+
+fn material_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    texture: &wgpu::Texture,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("material"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(
+                    &texture.create_view(&Default::default()),
+                ),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
 }
 
 fn create_object_buffer(

@@ -9,9 +9,34 @@ pub const GRID_TEXELS_PER_METER: u32 = 32;
 pub const GRID_METERS: u32 = 2;
 
 /// An RGBA8 image in sRGB, with its mip chain (level 0 first).
+#[derive(Debug, Clone)]
 pub struct Image {
-    pub size: u32,
+    pub width: u32,
+    pub height: u32,
     pub mips: Vec<Vec<u8>>,
+}
+
+impl Image {
+    /// Mips are generated for square power-of-two images; other sizes get
+    /// only level 0 (they still point-sample fine, but may shimmer far away).
+    pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        let mips = if width == height && width.is_power_of_two() {
+            mip_chain(pixels, width)
+        } else {
+            vec![pixels]
+        };
+        Self {
+            width,
+            height,
+            mips,
+        }
+    }
+
+    /// One texel of a linear RGB color.
+    pub fn solid(linear: [f32; 3]) -> Self {
+        let [r, g, b] = linear.map(linear_to_srgb);
+        Self::new(1, 1, vec![r, g, b, 255])
+    }
 }
 
 pub fn grid_image() -> Image {
@@ -31,10 +56,7 @@ pub fn grid_image() -> Image {
             pixels.extend([value, value, value, 255]);
         }
     }
-    Image {
-        size,
-        mips: mip_chain(pixels, size),
-    }
+    Image::new(size, size, pixels)
 }
 
 /// Box-filters each level down to 1×1. Averaging happens in linear light,
@@ -69,7 +91,7 @@ fn mip_chain(level0: Vec<u8>, size: u32) -> Vec<Vec<u8>> {
     mips
 }
 
-fn srgb_to_linear(value: u8) -> f32 {
+pub fn srgb_to_linear(value: u8) -> f32 {
     let c = value as f32 / 255.0;
     if c <= 0.04045 {
         c / 12.92
@@ -78,7 +100,7 @@ fn srgb_to_linear(value: u8) -> f32 {
     }
 }
 
-fn linear_to_srgb(linear: f32) -> u8 {
+pub fn linear_to_srgb(linear: f32) -> u8 {
     let c = if linear <= 0.0031308 {
         linear * 12.92
     } else {
@@ -90,10 +112,10 @@ fn linear_to_srgb(linear: f32) -> u8 {
 /// Uploads an image as an sRGB texture with all its mips.
 pub fn upload(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu::Texture {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("grid"),
+        label: Some("texture"),
         size: wgpu::Extent3d {
-            width: image.size,
-            height: image.size,
+            width: image.width,
+            height: image.height,
             depth_or_array_layers: 1,
         },
         mip_level_count: image.mips.len() as u32,
@@ -104,7 +126,10 @@ pub fn upload(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu
         view_formats: &[],
     });
     for (level, data) in image.mips.iter().enumerate() {
-        let size = (image.size >> level).max(1);
+        let (width, height) = (
+            (image.width >> level).max(1),
+            (image.height >> level).max(1),
+        );
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -115,12 +140,12 @@ pub fn upload(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu
             data,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(size * 4),
-                rows_per_image: Some(size),
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
             },
             wgpu::Extent3d {
-                width: size,
-                height: size,
+                width,
+                height,
                 depth_or_array_layers: 1,
             },
         );
@@ -135,10 +160,10 @@ mod tests {
     #[test]
     fn mip_chain_goes_down_to_one_texel() {
         let image = grid_image();
-        assert_eq!(image.size, 64);
+        assert_eq!(image.width, 64);
         assert_eq!(image.mips.len(), 7); // 64, 32, 16, 8, 4, 2, 1
         for (level, data) in image.mips.iter().enumerate() {
-            let size = (image.size >> level) as usize;
+            let size = (image.width >> level) as usize;
             assert_eq!(data.len(), size * size * 4);
         }
     }

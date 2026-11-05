@@ -470,7 +470,7 @@ impl Running {
             self.assets.forget(&path);
             let bounds = self.assets.model(&path).map_or(
                 (Vec3::splat(-0.25), Vec3::splat(0.25)), // the placeholder box
-                |mesh| mesh.bounds(),
+                |model| model.mesh.bounds(),
             );
             // Dropped on a panel: aim through the middle of the view.
             let [x, y, w, h] = self.renderer.image_rect();
