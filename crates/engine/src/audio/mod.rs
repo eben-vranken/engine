@@ -2,14 +2,16 @@
 //! acoustics, cpal for the output device. The listener is whatever camera
 //! is active, so the editor previews sound too.
 //!
-//! - Direct sound (distance, air absorption, occlusion, transmission) is
-//!   simulated on the main thread every frame; it's cheap.
-//! - Reflections (echoes, reverb) are simulated on a background thread
-//!   (AudioNimbus' `wiring`), paused while nothing plays.
-//! - The mixer on the audio thread (`mixer.rs`) renders both.
+//! Two simulators, each with its own copy of the acoustic scene:
+//! - direct sound (distance, air absorption, occlusion, transmission) runs on
+//!   the main thread every frame; its scene follows moving doors at once;
+//! - reflections (echoes, reverb) run on a background thread (AudioNimbus'
+//!   `wiring`), paused while nothing plays; its scene catches up between
+//!   passes.
 //!
-//! Sounds come from `SoundSource` components, plus one-shots (claps,
-//! footsteps) played from a small pool of voices.
+//! The mixer on the audio thread (`mixer.rs`) renders both. Sounds come from
+//! `SoundSource` components, plus one-shots (claps, footsteps) played from a
+//! small pool of voices.
 
 mod clip;
 mod geometry;
@@ -17,7 +19,7 @@ mod mixer;
 
 use crate::assets::Assets;
 use crate::camera::Camera;
-use crate::scene::{AcousticPreset, Component, Scene};
+use crate::scene::{AcousticPreset, Component, Scene, SoundSource};
 use audionimbus::wiring::{ReflectionsFrame, ReflectionsSimulation, Simulation, SourceWithInputs};
 use audionimbus::{
     AirAbsorptionModel, AmbisonicsDecodeEffect, AmbisonicsDecodeEffectSettings, AudioSettings,
@@ -41,22 +43,26 @@ use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// Samples per channel processed at a time (21 ms at 48 kHz).
-const FRAME_SIZE: u32 = 1024;
+/// Samples per channel processed at a time (about 11 ms at 48 kHz): small,
+/// so sounds start soon after what triggers them.
+const FRAME_SIZE: u32 = 512;
 /// How often edits to static geometry are picked up (rebuilding is cheap,
 /// but not every frame of a drag).
 const GEOMETRY_CHECK: Duration = Duration::from_millis(250);
-/// Sources are spheres this big for occlusion, so sound fades in and out
-/// around edges instead of switching (meters).
-const SOURCE_RADIUS: f32 = 0.4;
+/// Rays per source for volumetric occlusion: more = smoother fades.
+const OCCLUSION_SAMPLES: u32 = 32;
+/// Seconds for occlusion changes to settle, so a door opening fades the
+/// sound in rather than switching it.
+const OCCLUSION_SMOOTHING: f32 = 0.1;
 /// Longest reverb tail simulated (seconds); enough for a large stone hall.
 const MAX_REVERB: f32 = 3.0;
 /// Voices kept ready for one-shot sounds (claps, footsteps); enough for
 /// sprinting footsteps that each ring out for the full reverb tail.
 const ONE_SHOT_VOICES: usize = 10;
 
-type AcousticSimulator = Simulator<DefaultRayTracer, Direct, Reflections, (), Convolution>;
-type AcousticSource = Source<Direct, Reflections, (), Convolution>;
+type DirectSimulator = Simulator<DefaultRayTracer, Direct>;
+type ReflectionSimulator = Simulator<DefaultRayTracer, (), Reflections, (), Convolution>;
+type ReflectionSource = Source<(), Reflections, (), Convolution>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
@@ -94,14 +100,17 @@ pub struct Audio {
     context: Context,
     settings: AudioSettings,
     hrtf: Hrtf,
-    simulator: AcousticSimulator,
-    simulation: Simulation<u32, DefaultRayTracer, Direct, Reflections, (), Convolution>,
-    reflections: ReflectionsSimulation<u32, Direct, (), Convolution>,
+    direct: DirectSimulator,
+    direct_geometry: AcousticGeometry,
+    reflection: ReflectionSimulator,
+    reflection_geometry: AcousticGeometry,
+    simulation: Simulation<u32, DefaultRayTracer, (), Reflections, (), Convolution>,
+    reflections: ReflectionsSimulation<u32, (), (), Convolution>,
     reflections_paused: bool,
-    geometry: AcousticGeometry,
     /// Fingerprint the geometry was built from, and when it was last checked.
     geometry_signature: u64,
     geometry_checked: Instant,
+    last_update: Instant,
     voices: Vec<Entry>,
     next_id: u32,
     commands: Sender<Command>,
@@ -116,10 +125,16 @@ pub struct Audio {
 struct Entry {
     id: u32,
     kind: Kind,
-    source: AcousticSource,
+    direct: Source<Direct>,
+    reflection: ReflectionSource,
     position: Vec3,
     volume: f32,
     looping: bool,
+    /// Size of the sound for occlusion (meters).
+    radius: f32,
+    /// Smoothed occlusion and transmission, so changes fade.
+    occlusion: f32,
+    transmission: [f32; 3],
 }
 
 impl Entry {
@@ -143,11 +158,11 @@ impl Audio {
         let device = cpal::default_host()
             .default_output_device()
             .ok_or(AudioError::NoDevice)?;
-        let config = device
+        let supported = device
             .default_output_config()
             .map_err(|e| AudioError::Device(e.to_string()))?;
-        let rate = config.sample_rate();
-        let channels = config.channels() as usize;
+        let rate = supported.sample_rate();
+        let channels = supported.channels() as usize;
 
         let context = Context::default();
         let settings = AudioSettings {
@@ -155,25 +170,35 @@ impl Audio {
             frame_size: FRAME_SIZE,
         };
         let hrtf = Hrtf::try_new(&context, &settings, &HrtfSettings::default()).map_err(steam)?;
-        let simulation_settings = SimulationSettings::new(&settings)
-            .with_direct(DirectSimulationSettings {
-                max_num_occlusion_samples: 16,
-            })
-            .with_reflections(ConvolutionSettings {
+
+        let empty = || AcousticGeometry::build(&context, &Scene::default(), &mut Assets::default());
+        let direct_geometry = empty()?;
+        let mut direct = Simulator::try_new(
+            &context,
+            &SimulationSettings::new(&settings).with_direct(DirectSimulationSettings {
+                max_num_occlusion_samples: OCCLUSION_SAMPLES,
+            }),
+        )
+        .map_err(steam)?;
+        direct.set_scene(&direct_geometry.scene);
+        direct.commit();
+
+        let reflection_geometry = empty()?;
+        let mut reflection = Simulator::try_new(
+            &context,
+            &SimulationSettings::new(&settings).with_reflections(ConvolutionSettings {
                 max_num_rays: 4096,
                 num_diffuse_samples: 32,
                 max_duration: MAX_REVERB,
                 max_num_sources: 16,
                 num_threads: 2,
                 max_order: 1,
-            });
-        let mut simulator = Simulator::try_new(&context, &simulation_settings).map_err(steam)?;
-        // Empty until the first update brings the scene's geometry.
-        let geometry =
-            AcousticGeometry::build(&context, &Scene::default(), &mut Assets::default())?;
-        simulator.set_scene(&geometry.scene);
-        simulator.commit();
-        let mut simulation = Simulation::new::<u32>(simulator.clone());
+            }),
+        )
+        .map_err(steam)?;
+        reflection.set_scene(&reflection_geometry.scene);
+        reflection.commit();
+        let mut simulation = Simulation::new::<u32>(reflection.clone());
         let reflections =
             simulation.spawn_reflections(|err| log::error!("audio reflections: {err}"));
         reflections.pause();
@@ -197,7 +222,7 @@ impl Audio {
         };
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (commands, receive_commands) = channel();
-        let mut mixer = Mixer::new(
+        let mixer = Mixer::new(
             hrtf.clone(),
             FRAME_SIZE as usize,
             rate,
@@ -206,17 +231,7 @@ impl Audio {
             reflections.output(),
             decoders,
         );
-        let stream = device
-            .build_output_stream::<f32, _, _>(
-                config.config(),
-                move |out, _| mixer.fill(out, channels),
-                |err| log::error!("audio output: {err}"),
-                None,
-            )
-            .map_err(|e| AudioError::Device(e.to_string()))?;
-        stream
-            .play()
-            .map_err(|e| AudioError::Device(e.to_string()))?;
+        let stream = open_stream(&device, &supported, channels, mixer)?;
         log::info!("audio: {rate} Hz, {channels} channels");
 
         let mut audio = Self {
@@ -225,13 +240,16 @@ impl Audio {
             context,
             settings,
             hrtf,
-            simulator,
+            direct,
+            direct_geometry,
+            reflection,
+            reflection_geometry,
             simulation,
             reflections,
             reflections_paused: true,
-            geometry,
             geometry_signature: geometry::signature(&Scene::default()),
             geometry_checked: Instant::now(),
+            last_update: Instant::now(),
             voices: Vec::new(),
             next_id: 0,
             commands,
@@ -250,12 +268,14 @@ impl Audio {
     /// Call every frame: follows the scene's geometry and sound sources and
     /// the listener, and runs the direct simulation.
     pub fn update(&mut self, scene: &Scene, assets: &mut Assets, listener: &Camera) {
+        let now = Instant::now();
+        let dt = (now - self.last_update).as_secs_f32().min(0.1);
+        self.last_update = now;
         self.update_geometry(scene, assets);
         self.sync_scene_voices(scene);
 
         // Which voices are simulated: scene sources, and one-shots still
         // ringing out.
-        let now = Instant::now();
         for entry in &mut self.voices {
             if let Kind::OneShot { until } = &mut entry.kind
                 && until.is_some_and(|t| now >= t)
@@ -263,11 +283,7 @@ impl Audio {
                 *until = None;
             }
         }
-        let active: Vec<&Entry> = self
-            .voices
-            .iter()
-            .filter(|e| !matches!(e.kind, Kind::OneShot { until: None }))
-            .collect();
+        let active = |e: &&Entry| !matches!(e.kind, Kind::OneShot { until: None });
 
         let right = listener.right();
         let ahead = listener.forward();
@@ -278,53 +294,46 @@ impl Audio {
             ahead: vector(ahead),
             origin: vector(listener.position),
         };
-        let shared_inputs = SimulationSharedInputs::new(listener_frame)
-            .with_direct()
-            .with_reflections(ReflectionsSharedInputs {
-                num_rays: 4096,
-                num_bounces: 16,
-                duration: MAX_REVERB,
-                order: 1,
-                irradiance_min_distance: 1.0,
-            });
-        // Direct-only calls: they don't wait for a reflection pass in progress.
-        if let Err(err) = self
-            .simulator
-            .set_shared_inputs_subset::<Direct, (), (), _, _, _>(&shared_inputs)
-        {
+
+        // Direct sound, here and now.
+        let direct_shared = SimulationSharedInputs::new(listener_frame).with_direct();
+        if let Err(err) = self.direct.set_shared_inputs(&direct_shared) {
             log::error!("audio listener: {err}");
             return;
         }
-        for entry in &active {
-            if let Err(err) = entry
-                .source
-                .set_inputs_subset::<Direct, (), (), _, _, _>(&inputs(
-                    entry.position,
-                    entry.occluded(),
-                ))
-            {
+        for entry in self.voices.iter().filter(active) {
+            let inputs = direct_inputs(entry.position, entry.occluded(), entry.radius);
+            if let Err(err) = entry.direct.set_inputs(&inputs) {
                 log::error!("audio source: {err}");
             }
         }
-        self.simulator.run_direct();
+        self.direct.run_direct();
 
-        // Reflections run on their own thread from the latest snapshot.
+        // Reflections on their own thread, from the latest snapshot.
         self.simulation.update_sources(|sources| {
-            for entry in &active {
+            for entry in self.voices.iter().filter(active) {
                 sources.push((
                     entry.id,
                     SourceWithInputs {
-                        source: entry.source.clone(),
-                        simulation_inputs: inputs(entry.position, entry.occluded()),
+                        source: entry.reflection.clone(),
+                        simulation_inputs: reflection_inputs(entry.position),
                     },
                 ));
             }
         });
         self.reflections.set_input(ReflectionsFrame {
             sources: self.simulation.sources.clone(),
-            shared_inputs,
+            shared_inputs: SimulationSharedInputs::new(listener_frame).with_reflections(
+                ReflectionsSharedInputs {
+                    num_rays: 4096,
+                    num_bounces: 16,
+                    duration: MAX_REVERB,
+                    order: 1,
+                    irradiance_min_distance: 1.0,
+                },
+            ),
         });
-        let idle = active.is_empty();
+        let idle = !self.voices.iter().any(|e| active(&e));
         if idle != self.reflections_paused {
             if idle {
                 self.reflections.pause();
@@ -334,36 +343,42 @@ impl Audio {
             self.reflections_paused = idle;
         }
 
-        let voices = active
-            .iter()
-            .map(|entry| {
-                let toward = (entry.position - listener.position).normalize_or(ahead);
-                let mut params = VoiceParams {
-                    volume: entry.volume,
-                    looping: entry.looping,
-                    direction: [toward.dot(right), toward.dot(up), -toward.dot(ahead)],
-                    ..Default::default()
-                };
-                if let Ok(outputs) = entry.source.get_outputs_subset::<Direct, (), ()>() {
-                    let direct = outputs.direct();
-                    params.distance_attenuation = direct.distance_attenuation.unwrap_or(1.0);
-                    if let Some(air) = direct.air_absorption {
-                        params.air_absorption = air.0;
-                    }
-                    if entry.occluded() {
-                        params.occlusion = direct.occlusion.unwrap_or(1.0);
-                        if let Some(
-                            Transmission::FrequencyDependent(t)
-                            | Transmission::FrequencyIndependent(t),
-                        ) = direct.transmission
-                        {
-                            params.transmission = t.0;
+        let fade = 1.0 - (-dt / OCCLUSION_SMOOTHING).exp();
+        let mut voices = Vec::new();
+        for entry in self.voices.iter_mut() {
+            if !active(&&*entry) {
+                continue;
+            }
+            let toward = (entry.position - listener.position).normalize_or(ahead);
+            let mut params = VoiceParams {
+                volume: entry.volume,
+                looping: entry.looping,
+                direction: [toward.dot(right), toward.dot(up), -toward.dot(ahead)],
+                ..Default::default()
+            };
+            if let Ok(outputs) = entry.direct.get_outputs() {
+                let direct = outputs.direct();
+                params.distance_attenuation = direct.distance_attenuation.unwrap_or(1.0);
+                if let Some(air) = direct.air_absorption {
+                    params.air_absorption = air.0;
+                }
+                if entry.occluded() {
+                    let target = direct.occlusion.unwrap_or(1.0);
+                    entry.occlusion += (target - entry.occlusion) * fade;
+                    if let Some(
+                        Transmission::FrequencyDependent(t) | Transmission::FrequencyIndependent(t),
+                    ) = direct.transmission
+                    {
+                        for (smoothed, target) in entry.transmission.iter_mut().zip(t.0) {
+                            *smoothed += (target - *smoothed) * fade;
                         }
                     }
+                    params.occlusion = entry.occlusion;
+                    params.transmission = entry.transmission;
                 }
-                (entry.id, params)
-            })
-            .collect();
+            }
+            voices.push((entry.id, params));
+        }
         if let Ok(mut shared) = self.shared.lock() {
             shared.voices = voices;
             shared.listener = listener_frame;
@@ -419,7 +434,7 @@ impl Audio {
     /// Adds and removes voices to match the scene's `SoundSource`s. Voices
     /// whose object and clip stay the same keep playing undisturbed.
     fn sync_scene_voices(&mut self, scene: &Scene) {
-        let mut wanted: Vec<(usize, &crate::scene::SoundSource, Vec3)> = Vec::new();
+        let mut wanted: Vec<(usize, &SoundSource, Vec3)> = Vec::new();
         for (object, o) in scene.objects.iter().enumerate() {
             for component in &o.components {
                 if let Component::SoundSource(sound) = component {
@@ -442,7 +457,8 @@ impl Audio {
         for id in gone {
             if let Some(i) = self.voices.iter().position(|e| e.id == id) {
                 let entry = self.voices.remove(i);
-                self.simulator.remove_source(&entry.source);
+                self.direct.remove_source(&entry.direct);
+                self.reflection.remove_source(&entry.reflection);
                 let _ = self.commands.send(Command::Remove(id));
                 changed = true;
             }
@@ -467,16 +483,20 @@ impl Audio {
             entry.position = position;
             entry.volume = sound.volume;
             entry.looping = sound.looping;
+            entry.radius = sound.radius.max(0.05);
         }
         if changed {
+            self.direct.commit();
             self.simulation.request_simulator_commit();
         }
     }
 
-    /// Creates a voice: a simulated source and the mixer's effects.
+    /// Creates a voice: a source in each simulator and the mixer's effects.
     fn add_voice(&mut self, kind: Kind, clip: Option<Clip>) -> bool {
-        let source = match AcousticSource::try_new(&self.simulator) {
-            Ok(source) => source,
+        let sources = Source::try_new(&self.direct)
+            .and_then(|direct| Ok((direct, ReflectionSource::try_new(&self.reflection)?)));
+        let (direct, reflection) = match sources {
+            Ok(sources) => sources,
             Err(err) => {
                 log::error!("audio source: {err}");
                 return false;
@@ -489,15 +509,20 @@ impl Audio {
                 return false;
             }
         };
-        self.simulator.add_source(&source);
+        self.direct.add_source(&direct);
+        self.reflection.add_source(&reflection);
         let _ = self.commands.send(Command::Add(voice));
         self.voices.push(Entry {
             id: self.next_id,
             kind,
-            source,
+            direct,
+            reflection,
             position: Vec3::ZERO,
             volume: 1.0,
             looping: false,
+            radius: 1.0,
+            occlusion: 1.0,
+            transmission: [1.0; 3],
         });
         self.next_id += 1;
         true
@@ -543,21 +568,24 @@ impl Audio {
         })
     }
 
-    /// Rebuilds the acoustic geometry when static objects were edited, and
-    /// moves the moving ones every frame. Commits happen on the simulation
-    /// thread, so the main thread never waits for a reflection pass.
+    /// Rebuilds both acoustic scenes when static objects were edited, and
+    /// moves the moving ones every frame: the direct scene at once, the
+    /// reflection scene on its thread between passes.
     fn update_geometry(&mut self, scene: &Scene, assets: &mut Assets) {
         if self.geometry_checked.elapsed() >= GEOMETRY_CHECK {
             self.geometry_checked = Instant::now();
             let signature = geometry::signature(scene);
             if signature != self.geometry_signature {
-                match AcousticGeometry::build(&self.context, scene, assets) {
-                    Ok(geometry) => {
-                        self.geometry = geometry;
-                        self.simulator.set_scene(&self.geometry.scene);
+                let built = AcousticGeometry::build(&self.context, scene, assets)
+                    .and_then(|d| Ok((d, AcousticGeometry::build(&self.context, scene, assets)?)));
+                match built {
+                    Ok((direct, reflection)) => {
+                        self.direct_geometry = direct;
+                        self.direct.set_scene(&self.direct_geometry.scene);
+                        self.direct.commit();
+                        self.reflection_geometry = reflection;
+                        self.reflection.set_scene(&self.reflection_geometry.scene);
                         self.simulation.request_simulator_commit();
-                        // Direct sound runs here, so it needs the commit now.
-                        self.simulator.commit();
                         self.geometry_signature = signature;
                     }
                     Err(err) => log::error!("acoustic geometry: {err}"),
@@ -565,9 +593,12 @@ impl Audio {
                 return;
             }
         }
-        if self.geometry.follow(scene) {
+        if self.direct_geometry.follow(scene) {
+            self.direct_geometry.scene.commit();
+        }
+        if self.reflection_geometry.follow(scene) {
             self.simulation
-                .request_scene_commits(std::slice::from_ref(&self.geometry.scene));
+                .request_scene_commits(std::slice::from_ref(&self.reflection_geometry.scene));
         }
     }
 
@@ -601,16 +632,56 @@ impl Audio {
     }
 }
 
-/// What each source is simulated for; occlusion only if `occluded`.
-fn inputs(position: Vec3, occluded: bool) -> SimulationInputs<Direct, Reflections, ()> {
+/// The output stream, asking the device for a buffer as small as one mixer
+/// frame (lower latency) and falling back to its default size.
+fn open_stream(
+    device: &cpal::Device,
+    supported: &cpal::SupportedStreamConfig,
+    channels: usize,
+    mixer: Mixer,
+) -> Result<cpal::Stream, AudioError> {
+    let mixer = Arc::new(Mutex::new(mixer));
+    let build = |config: cpal::StreamConfig| {
+        let mixer = mixer.clone();
+        device.build_output_stream::<f32, _, _>(
+            config,
+            move |out, _| {
+                // Only this callback ever locks it.
+                if let Ok(mut mixer) = mixer.lock() {
+                    mixer.fill(out, channels);
+                }
+            },
+            |err| log::error!("audio output: {err}"),
+            None,
+        )
+    };
+    let mut config = supported.config();
+    if let cpal::SupportedBufferSize::Range { min, max } = supported.buffer_size() {
+        config.buffer_size = cpal::BufferSize::Fixed(FRAME_SIZE.clamp(*min, *max));
+    }
+    let stream = build(config)
+        .or_else(|err| {
+            log::info!("audio: small buffer refused ({err}); using the device default");
+            build(supported.config())
+        })
+        .map_err(|e| AudioError::Device(e.to_string()))?;
+    stream
+        .play()
+        .map_err(|e| AudioError::Device(e.to_string()))?;
+    Ok(stream)
+}
+
+/// What each source's direct sound is simulated for; occlusion only if
+/// `occluded`, with the sound modeled as a sphere of `radius`.
+fn direct_inputs(position: Vec3, occluded: bool, radius: f32) -> SimulationInputs<Direct> {
     let mut direct = DirectSimulationParameters::new()
         .with_distance_attenuation(DistanceAttenuationModel::default())
         .with_air_absorption(AirAbsorptionModel::default());
     if occluded {
         direct = direct.with_occlusion(
             Occlusion::new(OcclusionAlgorithm::Volumetric {
-                radius: SOURCE_RADIUS,
-                num_occlusion_samples: 16,
+                radius,
+                num_occlusion_samples: OCCLUSION_SAMPLES,
             })
             .with_transmission(TransmissionParameters {
                 num_transmission_rays: 3,
@@ -618,15 +689,24 @@ fn inputs(position: Vec3, occluded: bool) -> SimulationInputs<Direct, Reflection
         );
     }
     SimulationInputs {
-        source: CoordinateSystem {
-            origin: vector(position),
-            ..Default::default()
-        },
-        parameters: SimulationParameters::new()
-            .with_direct(direct)
-            .with_reflections(ConvolutionParameters {
-                baked_data_identifier: None,
-            }),
+        source: at(position),
+        parameters: SimulationParameters::new().with_direct(direct),
+    }
+}
+
+fn reflection_inputs(position: Vec3) -> SimulationInputs<(), Reflections> {
+    SimulationInputs {
+        source: at(position),
+        parameters: SimulationParameters::new().with_reflections(ConvolutionParameters {
+            baked_data_identifier: None,
+        }),
+    }
+}
+
+fn at(position: Vec3) -> CoordinateSystem {
+    CoordinateSystem {
+        origin: vector(position),
+        ..Default::default()
     }
 }
 

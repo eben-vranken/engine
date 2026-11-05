@@ -221,6 +221,9 @@ pub struct SoundSource {
     /// 1 = as recorded.
     pub volume: f32,
     pub looping: bool,
+    /// How big the sound is for walls and doors (meters): a bigger sound
+    /// fades in more gradually as a door opens or you round a corner.
+    pub radius: f32,
 }
 
 impl Default for SoundSource {
@@ -229,6 +232,7 @@ impl Default for SoundSource {
             clip: String::new(),
             volume: 1.0,
             looping: true,
+            radius: 1.0,
         }
     }
 }

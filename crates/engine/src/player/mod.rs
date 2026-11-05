@@ -54,6 +54,8 @@ pub struct Player {
     eye_height: f32,
     bob_phase: f32,
     bob_weight: f32,
+    /// A foot came down this frame (the head bob's lowest point).
+    pub stepped: bool,
     dip_offset: f32,
     dip_velocity: f32,
     /// View offset that eases out height changes from stairs and slopes.
@@ -78,6 +80,7 @@ impl Player {
             eye_height: settings.body.height - settings.body.eye_offset,
             bob_phase: 0.0,
             bob_weight: 0.0,
+            stepped: false,
             dip_offset: 0.0,
             dip_velocity: 0.0,
             fov_kick: 0.0,
@@ -387,8 +390,13 @@ impl Player {
             0.0
         };
         self.bob_weight += (weight_target - self.bob_weight) * (1.0 - (-10.0 * dt).exp());
+        // One bob cycle is one step; the foot lands when the head is lowest,
+        // halfway through the cycle.
+        self.stepped = false;
         if self.grounded {
-            self.bob_phase = (self.bob_phase + speed * dt / camera.bob_stride.max(0.1)).fract();
+            let before = self.bob_phase;
+            self.bob_phase = (before + speed * dt / camera.bob_stride.max(0.1)).fract();
+            self.stepped = speed > 0.5 && crossed_half(before, self.bob_phase);
         }
 
         let kick_target = if self.sprinting && speed > settings.movement.walk_speed {
@@ -480,6 +488,16 @@ fn smoothstep(t: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
+/// True if a phase (0..1, wrapping) went past 0.5 on its way from
+/// `before` to `after`.
+fn crossed_half(before: f32, after: f32) -> bool {
+    if after >= before {
+        before < 0.5 && after >= 0.5
+    } else {
+        before < 0.5 || after >= 0.5
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,6 +586,43 @@ mod tests {
                 "{fps} fps: jumped {height} m"
             );
         }
+    }
+
+    #[test]
+    fn one_footstep_per_step_length_walked() {
+        let world = flat_world();
+        let settings = PlayerSettings::default();
+        let mut player = Player::new(spawn(), &settings);
+        let mut input = Input::default();
+        simulate(&mut player, &mut input, &world, 1.0, 120.0);
+        input.key_down(KeyCode::KeyW);
+        let start = player.feet;
+        let mut steps = 0;
+        for _ in 0..480 {
+            player.update(&input, &settings, &world, 1.0 / 120.0);
+            steps += player.stepped as u32;
+        }
+        let walked = (player.feet - start).length();
+        let expected = walked / settings.camera.bob_stride;
+        assert!(
+            (steps as f32 - expected).abs() <= 1.0,
+            "{steps} steps over {walked} m, expected about {expected}"
+        );
+        // Standing still: no more steps.
+        input.key_up(KeyCode::KeyW);
+        simulate(&mut player, &mut input, &world, 2.0, 120.0);
+        player.update(&input, &settings, &world, 1.0 / 120.0);
+        assert!(!player.stepped);
+    }
+
+    #[test]
+    fn half_cycle_crossings() {
+        assert!(crossed_half(0.4, 0.6));
+        assert!(!crossed_half(0.1, 0.4));
+        assert!(!crossed_half(0.6, 0.9));
+        assert!(crossed_half(0.9, 0.6), "wrapped past 1 and on past 0.5");
+        assert!(!crossed_half(0.9, 0.2), "wrapped, but not yet at 0.5");
+        assert!(crossed_half(0.3, 0.1), "wrapped all the way round");
     }
 
     #[test]

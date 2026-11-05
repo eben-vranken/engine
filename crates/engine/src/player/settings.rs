@@ -139,7 +139,8 @@ pub struct CameraFeel {
     pub head_bob: bool,
     /// m
     pub bob_amplitude: f32,
-    /// m walked per bob cycle (one step).
+    /// m walked per step: one head bob down and up, and one footstep. Smaller
+    /// = quicker steps.
     pub bob_stride: f32,
     /// m: how far the view dips on a hard landing (scaled by impact speed).
     pub landing_dip: f32,

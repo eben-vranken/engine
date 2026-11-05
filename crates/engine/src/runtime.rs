@@ -140,9 +140,8 @@ struct Running {
     behaviors: Option<Behaviors>,
     /// A text prompt for what the player is looking at.
     prompt: Option<&'static str>,
-    /// Footsteps: meters walked since the last step, and whether the player
-    /// was on the ground last frame (landing makes a step too).
-    stride: f32,
+    /// Whether the player was on the ground last frame (landing makes a
+    /// footstep).
     was_grounded: bool,
     /// `None` without an output device (the game runs silent).
     audio: Option<Audio>,
@@ -342,7 +341,6 @@ impl Running {
             play: None,
             behaviors: (!config.editor).then(|| Behaviors::start(&config.scene)),
             prompt: None,
-            stride: 0.0,
             was_grounded: true,
             audio: Audio::new(config.game_dir.clone())
                 .inspect_err(|err| log::error!("{err}; running without sound"))
@@ -494,7 +492,7 @@ impl Running {
         if self.behaviors.is_none() {
             return;
         }
-        self.game_sounds(dt);
+        self.game_sounds();
         let interaction = self.interaction();
         let Some(behaviors) = &mut self.behaviors else {
             return;
@@ -536,7 +534,7 @@ impl Running {
 
     /// Sounds the player makes: claps (Q), footsteps by floor material, and
     /// M to bring the looping sound to where the player stands.
-    fn game_sounds(&mut self, dt: f32) {
+    fn game_sounds(&mut self) {
         let eye = match self.mode {
             CameraMode::Player => self.player.camera(&self.settings),
             CameraMode::Fly => self.fly.camera.clone(),
@@ -567,11 +565,8 @@ impl Running {
         let grounded = self.player.grounded;
         let landed = grounded && !self.was_grounded;
         self.was_grounded = grounded;
-        if grounded {
-            self.stride += self.player.horizontal_speed() * dt;
-        }
-        if landed || self.stride >= STRIDE {
-            self.stride = 0.0;
+        // In step with the head bob: one footstep per bob, plus one on landing.
+        if landed || self.player.stepped {
             let feet = self.player.feet;
             let floor = self.physics.object_below(feet + Vec3::Y * 0.1, 0.4);
             let material = floor
@@ -1027,9 +1022,6 @@ fn spawn_point(scene: &Scene) -> Spawn {
 const REACH: f32 = 2.5;
 
 /// A quiet text prompt just below the middle of the view.
-/// Meters walked per footstep.
-const STRIDE: f32 = 0.75;
-
 /// The acoustic simulation's switches, top right of the view.
 fn draw_audio_panel(ui: &egui::Ui, image: egui::Rect, toggles: &Toggles, game_running: bool) {
     let state = |on: bool| if on { "[ON] " } else { "[OFF]" };
