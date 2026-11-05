@@ -73,6 +73,10 @@ struct App {
 
 impl App {
     fn close(&mut self, event_loop: &ActiveEventLoop) {
+        // Never offer to save a scene mid-play.
+        if let Some(running) = self.running.as_mut() {
+            running.stop_play();
+        }
         let may_close = match self.running.as_mut().and_then(|r| r.editor.as_mut()) {
             Some(editor) => editor.request_close(),
             None => true,
@@ -128,6 +132,14 @@ struct Running {
     assets: Assets,
     /// The editor confirmed closing; the event loop exits next.
     exit_requested: bool,
+    /// Editor: playing in place; what Stop restores.
+    play: Option<PlaySnapshot>,
+}
+
+/// The editor's state when Play was pressed.
+struct PlaySnapshot {
+    scene: Scene,
+    camera: Camera,
 }
 
 impl ApplicationHandler for App {
@@ -180,7 +192,11 @@ impl ApplicationHandler for App {
                 match button {
                     MouseButton::Right => app.rmb_look = state.is_pressed() && in_viewport,
                     MouseButton::Left if state.is_pressed() && in_viewport && !app.rmb_look => {
-                        app.pending_pick = Some(app.cursor);
+                        if app.play.is_some() {
+                            app.mouse_released = false;
+                        } else {
+                            app.pending_pick = Some(app.cursor);
+                        }
                     }
                     _ => {}
                 }
@@ -200,6 +216,11 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
+            }
+            WindowEvent::DroppedFile(_) if app.play.is_some() => {
+                if let Some(editor) = &mut app.editor {
+                    editor.show_error("STOP PLAYING TO IMPORT MODELS".into());
+                }
             }
             WindowEvent::DroppedFile(path) if app.editor.is_some() => {
                 // The window got no cursor events during the drag; ask the OS.
@@ -253,17 +274,7 @@ impl Running {
                 (PlayerSettings::default(), Some(err.to_string()))
             }
         };
-        let spawn = config.scene.player_start().map_or(
-            Spawn {
-                position: Vec3::ZERO,
-                yaw: 0.0,
-            },
-            Spawn::from_transform,
-        );
-        if config.scene.player_start().is_none() {
-            log::warn!("the scene has no PlayerStart; spawning at the origin");
-        }
-        let player = Player::new(spawn, &settings);
+        let player = Player::new(spawn_point(&config.scene), &settings);
         let start = player.camera(&settings);
         let mut fly = FlyCamera::new(start.position, start.yaw, start.pitch);
         fly.camera.fov_y = start.fov_y;
@@ -312,6 +323,7 @@ impl Running {
             dropped: Vec::new(),
             game_dir: config.game_dir.clone(),
             exit_requested: false,
+            play: None,
         })
     }
 
@@ -343,6 +355,11 @@ impl Running {
     }
 
     fn handle_keys(&mut self, actions: &mut HudActions) {
+        if self.editor.is_some() && self.input.pressed(KeyCode::F5) {
+            self.toggle_play();
+        }
+        // While playing in the editor, the game's keys apply (below).
+        let playing = self.play.is_some();
         let input = &self.input;
         let factor = self.renderer.layout().factor;
         if input.pressed(KeyCode::BracketLeft) {
@@ -357,7 +374,7 @@ impl Running {
         if input.pressed(KeyCode::KeyV) {
             actions.vsync = Some(!self.renderer.vsync());
         }
-        if let Some(editor) = &mut self.editor {
+        if !playing && let Some(editor) = &mut self.editor {
             let ctrl = input.held(KeyCode::ControlLeft) || input.held(KeyCode::ControlRight);
             let shift = input.held(KeyCode::ShiftLeft) || input.held(KeyCode::ShiftRight);
             let mut settled = false;
@@ -431,6 +448,48 @@ impl Running {
         }
         if input.pressed(KeyCode::KeyR) {
             self.player.respawn(&self.settings);
+        }
+    }
+
+    /// Editor: Play runs the scene from its PlayerStart; Stop puts back the
+    /// scene and the editor camera as they were.
+    fn toggle_play(&mut self) {
+        if self.play.is_some() {
+            self.stop_play();
+        } else {
+            self.start_play();
+        }
+    }
+
+    fn start_play(&mut self) {
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        editor.commit_pending(&self.scene);
+        editor.playing = true;
+        self.play = Some(PlaySnapshot {
+            scene: self.scene.clone(),
+            camera: self.fly.camera.clone(),
+        });
+        self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
+        self.player = Player::new(spawn_point(&self.scene), &self.settings);
+        self.mode = CameraMode::Player;
+        self.mouse_released = false;
+        self.tuning_open = false;
+    }
+
+    fn stop_play(&mut self) {
+        let Some(snapshot) = self.play.take() else {
+            return;
+        };
+        self.scene = snapshot.scene;
+        self.fly.camera = snapshot.camera;
+        self.renderer.set_scene(&self.scene, &mut self.assets);
+        self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
+        self.mode = CameraMode::Fly;
+        self.tuning_open = false;
+        if let Some(editor) = &mut self.editor {
+            editor.playing = false;
         }
     }
 
@@ -658,7 +717,10 @@ impl Running {
             self.renderer.queue(),
             |ui| match editor {
                 Some(editor) => {
-                    editor_output = Some(editor.ui(ui, scene, &editor_stats, blink, &view))
+                    editor_output = Some(editor.ui(ui, scene, &editor_stats, blink, &view));
+                    if editor.playing && tuning_open {
+                        tuning_action = tuning::panel(ui, settings, &file_name, status, error);
+                    }
                 }
                 None => {
                     draw_hud(ui, &hud, &mut actions);
@@ -698,6 +760,9 @@ impl Running {
         self.import_dropped(&camera);
 
         if let Some(output) = &editor_output {
+            if output.toggle_play {
+                self.toggle_play();
+            }
             if output.exit {
                 self.exit_requested = true;
             }
@@ -726,7 +791,12 @@ impl Running {
                 v.height().max(1.0) as u32,
             ]
         }));
-        let selected = self.editor.as_ref().and_then(|e| e.selected);
+        // No selection highlight in the running game.
+        let selected = self
+            .editor
+            .as_ref()
+            .and_then(|e| e.selected)
+            .filter(|_| self.play.is_none());
         if selected != self.highlighted {
             self.renderer.set_highlight(selected);
             self.highlighted = selected;
@@ -747,6 +817,20 @@ impl Running {
             });
         self.input.end_frame();
     }
+}
+
+/// Where the player starts: the scene's PlayerStart, or the origin.
+fn spawn_point(scene: &Scene) -> Spawn {
+    scene.player_start().map_or_else(
+        || {
+            log::warn!("the scene has no PlayerStart; spawning at the origin");
+            Spawn {
+                position: Vec3::ZERO,
+                yaw: 0.0,
+            }
+        },
+        Spawn::from_transform,
+    )
 }
 
 /// Editor: new objects go on surfaces up to this far ahead (meters).

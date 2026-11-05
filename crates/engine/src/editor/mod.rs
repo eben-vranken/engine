@@ -41,6 +41,8 @@ pub struct Editor {
     /// An edit in progress: the object's index and how it was before.
     pending: Option<(usize, Object)>,
     pub gizmo: TransformGizmo,
+    /// The scene is running in the viewport; editing is locked until Stop.
+    pub playing: bool,
 }
 
 /// What to do once unsaved changes are dealt with.
@@ -72,6 +74,8 @@ pub struct EditorOutput {
     pub open: Option<PathBuf>,
     /// The user confirmed closing the editor.
     pub exit: bool,
+    /// The Play/Stop button was clicked.
+    pub toggle_play: bool,
 }
 
 impl Editor {
@@ -88,6 +92,7 @@ impl Editor {
             history: History::default(),
             pending: None,
             gizmo: TransformGizmo::default(),
+            playing: false,
         }
     }
 
@@ -108,6 +113,7 @@ impl Editor {
             gizmo_hovered: false,
             open: None,
             exit: false,
+            toggle_play: false,
         };
         egui::Panel::top("editor_top").show(ui, |ui| {
             self.top_bar(ui, scene, stats, blink, view, &mut output)
@@ -116,15 +122,22 @@ impl Editor {
             .resizable(true)
             .default_size(260.0)
             .min_size(220.0)
-            .show(ui, |ui| self.hierarchy(ui, scene));
+            .show(ui, |ui| {
+                ui.add_enabled_ui(!self.playing, |ui| self.hierarchy(ui, scene));
+            });
         egui::Panel::right("editor_inspector")
             .resizable(true)
             .default_size(340.0)
             // Wide enough for its content, so selecting doesn't resize the viewport.
             .min_size(340.0)
-            .show(ui, |ui| self.inspector(ui, scene, &mut output));
+            .show(ui, |ui| {
+                ui.add_enabled_ui(!self.playing, |ui| self.inspector(ui, scene, &mut output));
+            });
 
-        if let Some(index) = self.selected.filter(|&i| i < scene.objects.len()) {
+        if let Some(index) = self
+            .selected
+            .filter(|&i| i < scene.objects.len() && !self.playing)
+        {
             let current = scene.objects[index].transform;
             if let Some(moved) = self.gizmo.ui(ui, view, &current)
                 && moved != current
@@ -147,7 +160,7 @@ impl Editor {
         self.confirm_dialog(ui, scene, &mut output);
 
         output.viewport = ui.available_rect_before_wrap();
-        hints(ui, output.viewport);
+        hints(ui, output.viewport, self.playing);
         output
     }
 
@@ -428,82 +441,98 @@ impl Editor {
             ui.label(RichText::new(format!("ENGINE // EDITOR{cursor}")).strong());
             ui.add_space(12.0);
             ui.label(self.game_name.to_uppercase());
-            egui::ComboBox::from_id_salt("scene_picker")
-                .selected_text(self.scene_path.display().to_string().to_uppercase())
-                .show_ui(ui, |ui| {
-                    for path in scene_files(&self.project_dir) {
-                        let current = path == self.scene_path;
-                        let text = path.display().to_string().to_uppercase();
-                        if ui.selectable_label(current, text).clicked() && !current {
-                            self.open_scene(path, output);
+            ui.add_space(12.0);
+            let play = if self.playing {
+                "[STOP F5]"
+            } else {
+                " PLAY F5 "
+            };
+            if ui.small_button(play).clicked() {
+                output.toggle_play = true;
+            }
+            if self.playing {
+                ui.label(RichText::new("[PLAYING]").color(theme::AMBER));
+            }
+            ui.add_space(12.0);
+            // Editing waits until Stop: the scene is restored then.
+            ui.add_enabled_ui(!self.playing, |ui| {
+                egui::ComboBox::from_id_salt("scene_picker")
+                    .selected_text(self.scene_path.display().to_string().to_uppercase())
+                    .show_ui(ui, |ui| {
+                        for path in scene_files(&self.project_dir) {
+                            let current = path == self.scene_path;
+                            let text = path.display().to_string().to_uppercase();
+                            if ui.selectable_label(current, text).clicked() && !current {
+                                self.open_scene(path, output);
+                            }
                         }
-                    }
-                });
-            if self.is_dirty() {
-                ui.label(RichText::new("[MODIFIED]").color(theme::AMBER));
-            }
-            if ui.small_button("SAVE").clicked() {
-                output.settled |= self.save(scene);
-            }
-            if let Some((text, error)) = &self.message {
-                let color = if *error {
-                    theme::ALERT
-                } else {
-                    theme::AMBER_DIM
-                };
-                ui.label(RichText::new(text.to_uppercase()).small().color(color));
-            }
-            ui.add_space(12.0);
-
-            let undo = format!("UNDO [{}]", self.history.undo_len());
-            if ui
-                .add_enabled(self.history.undo_len() > 0, egui::Button::new(undo).small())
-                .clicked()
-                && let Some(change) = self.undo(scene)
-            {
-                output.changed.push(change);
-                output.settled = true;
-            }
-            let redo = format!("REDO [{}]", self.history.redo_len());
-            if ui
-                .add_enabled(self.history.redo_len() > 0, egui::Button::new(redo).small())
-                .clicked()
-                && let Some(change) = self.redo(scene)
-            {
-                output.changed.push(change);
-                output.settled = true;
-            }
-
-            ui.add_space(12.0);
-            ui.add_enabled_ui(!scene.zones.is_empty(), |ui| {
-                ui.menu_button("ADD", |ui| {
-                    for (kind, shape) in primitives() {
-                        if ui.button(kind.to_uppercase()).clicked()
-                            && let Some(change) = self.add_primitive(scene, kind, shape, view)
-                        {
-                            output.changed.push(change);
-                            output.settled = true;
-                        }
-                    }
-                });
-            });
-
-            ui.add_space(12.0);
-            for (kind, text) in [
-                (GizmoModeKind::Translate, "MOVE W"),
-                (GizmoModeKind::Rotate, "ROTATE E"),
-                (GizmoModeKind::Scale, "SCALE R"),
-            ] {
-                let label = if self.gizmo.kind == kind {
-                    format!("[{text}]")
-                } else {
-                    format!(" {text} ")
-                };
-                if ui.small_button(label).clicked() {
-                    self.gizmo.kind = kind;
+                    });
+                if self.is_dirty() {
+                    ui.label(RichText::new("[MODIFIED]").color(theme::AMBER));
                 }
-            }
-            ui.label(dim("CTRL SNAP"));
+                if ui.small_button("SAVE").clicked() {
+                    output.settled |= self.save(scene);
+                }
+                if let Some((text, error)) = &self.message {
+                    let color = if *error {
+                        theme::ALERT
+                    } else {
+                        theme::AMBER_DIM
+                    };
+                    ui.label(RichText::new(text.to_uppercase()).small().color(color));
+                }
+                ui.add_space(12.0);
+
+                let undo = format!("UNDO [{}]", self.history.undo_len());
+                if ui
+                    .add_enabled(self.history.undo_len() > 0, egui::Button::new(undo).small())
+                    .clicked()
+                    && let Some(change) = self.undo(scene)
+                {
+                    output.changed.push(change);
+                    output.settled = true;
+                }
+                let redo = format!("REDO [{}]", self.history.redo_len());
+                if ui
+                    .add_enabled(self.history.redo_len() > 0, egui::Button::new(redo).small())
+                    .clicked()
+                    && let Some(change) = self.redo(scene)
+                {
+                    output.changed.push(change);
+                    output.settled = true;
+                }
+
+                ui.add_space(12.0);
+                ui.add_enabled_ui(!scene.zones.is_empty(), |ui| {
+                    ui.menu_button("ADD", |ui| {
+                        for (kind, shape) in primitives() {
+                            if ui.button(kind.to_uppercase()).clicked()
+                                && let Some(change) = self.add_primitive(scene, kind, shape, view)
+                            {
+                                output.changed.push(change);
+                                output.settled = true;
+                            }
+                        }
+                    });
+                });
+
+                ui.add_space(12.0);
+                for (kind, text) in [
+                    (GizmoModeKind::Translate, "MOVE W"),
+                    (GizmoModeKind::Rotate, "ROTATE E"),
+                    (GizmoModeKind::Scale, "SCALE R"),
+                ] {
+                    let label = if self.gizmo.kind == kind {
+                        format!("[{text}]")
+                    } else {
+                        format!(" {text} ")
+                    };
+                    if ui.small_button(label).clicked() {
+                        self.gizmo.kind = kind;
+                    }
+                }
+                ui.label(dim("CTRL SNAP"));
+            });
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(format!(
@@ -754,7 +783,12 @@ fn dim(text: &str) -> RichText {
 }
 
 /// Controls, in the viewport's bottom-left corner.
-fn hints(ui: &Ui, viewport: Rect) {
+fn hints(ui: &Ui, viewport: Rect, playing: bool) {
+    let text = if playing {
+        "F5 STOP  ESC FREE MOUSE  CLICK CAPTURE MOUSE  R RESPAWN  F1 TUNING  F2 FLY"
+    } else {
+        "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+D DUPLICATE  DEL DELETE  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE  F5 PLAY"
+    };
     egui::Area::new(egui::Id::unique("editor_hints"))
         // Anchored at the bottom, so wrapped lines grow upward.
         .pivot(egui::Align2::LEFT_BOTTOM)
@@ -762,13 +796,7 @@ fn hints(ui: &Ui, viewport: Rect) {
         .interactable(false)
         .show(ui.ctx(), |ui| {
             ui.set_max_width(viewport.width() - 20.0);
-            ui.label(
-                RichText::new(
-                    "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+D DUPLICATE  DEL DELETE  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE",
-                )
-                .small()
-                .color(theme::AMBER_DIM),
-            );
+            ui.label(RichText::new(text).small().color(theme::AMBER_DIM));
         });
 }
 
