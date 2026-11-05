@@ -77,6 +77,15 @@ Add, remove and reshape objects from inside the editor. There are two ways to cr
 
 **Acceptance:** the user builds a small room from primitives and a model dragged in from Blender, reshapes a primitive, deletes and duplicates objects, undoes all of it, and saves.
 
+## 4.1 Collision toggle
+A small step right after milestone 4, for background and walk-through objects.
+
+- [ ] `collision` checkbox on primitives and models in the inspector, on by default, undoable
+- [ ] Off = the player passes through, but the object can still be clicked to select it (its collider moves to a group the player ignores)
+- [ ] Later, if needed: a choice of full mesh / simple box / none, where "box" is a cheap collider for far-off detailed models
+
+**Acceptance:** the user turns collision off on an object, walks through it in Play, and can still click to select it in the editor.
+
 ## 5. Play/Stop in place
 - [ ] Play runs the scene inside the editor; Stop restores the edited state
 - [ ] PlayerStart object; the player uses the game project's `player.ron`
