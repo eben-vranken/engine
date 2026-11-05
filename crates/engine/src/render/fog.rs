@@ -18,15 +18,15 @@ use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 
 /// Cells across, down and deep. Fixed, so it costs the same at every
-/// window size; 160 × 90 matches 16:9, about 8 internal pixels per cell.
-pub const GRID: [u32; 3] = [160, 90, 64];
+/// window size; 192 × 108 matches 16:9, about 6–7 internal pixels per cell.
+pub const GRID: [u32; 3] = [192, 108, 96];
 /// Depth of the first slice (meters).
 pub const NEAR: f32 = 0.4;
 /// Most fog regions (zone volumes plus FogVolumes).
 pub const MAX_REGIONS: usize = 64;
 /// Weight of this frame's sample against the accumulated history: lower is
 /// smoother but slower to follow a flickering light.
-const BLEND: f32 = 0.12;
+const BLEND: f32 = 0.08;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 #[repr(C)]

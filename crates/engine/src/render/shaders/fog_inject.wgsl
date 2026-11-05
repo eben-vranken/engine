@@ -164,6 +164,52 @@ fn medium(p: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(zone_fog.rgb * d, d) + extra;
 }
 
+const SAMPLES: u32 = 4u;
+
+// A point in cell `id`: `offset` xy in -0.5..0.5 across the cell, z in 0..1
+// through its depth.
+fn cell_point(id: vec3<u32>, size: vec3<f32>, offset: vec3<f32>) -> vec3<f32> {
+    let near = fog.depth.x;
+    let far = fog.depth.y;
+    let t = (f32(id.z) + offset.z) / size.z;
+    let depth = near * pow(far / near, t);
+    let uv = (vec2<f32>(id.xy) + 0.5 + offset.xy) / size.xy;
+    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    let ray = fog.camera_forward.xyz + ndc.x * fog.camera_right.xyz + ndc.y * fog.camera_up.xyz;
+    return fog.camera_pos.xyz + ray * depth;
+}
+
+// rgb: light scattered toward the camera per meter, a: density, at p seen
+// along `view`.
+fn in_scatter(p: vec3<f32>, view: vec3<f32>) -> vec4<f32> {
+    let m = medium(p);
+    if m.a <= 0.0 {
+        return vec4<f32>(0.0);
+    }
+    let g = fog.sun_color.w;
+    // cos θ between where the light travels and the way back to the
+    // camera: 1 when looking straight into the light.
+    var light = fog.sun_color.rgb * sun_visibility(p) * phase(dot(fog.sun_dir.xyz, -view), g);
+    let light_count = u32(fog.default_shape.z);
+    for (var i = 0u; i < light_count; i++) {
+        let l = lights[i];
+        let to_point = p - l.position.xyz;
+        let distance = length(to_point);
+        let range = l.position.w;
+        if distance >= range {
+            continue;
+        }
+        let ratio = distance / range;
+        let window = saturate(1.0 - ratio * ratio * ratio * ratio);
+        let falloff = window * window / max(distance * distance, 0.04);
+        let travel = to_point / max(distance, 1e-4);
+        light += l.color.rgb * falloff * point_visibility(l, p) * phase(dot(travel, -view), g);
+    }
+    // Ambient light arrives from everywhere: the phase averages out.
+    light += fog.ambient.rgb / (4.0 * PI);
+    return vec4<f32>(m.rgb * light, m.a);
+}
+
 @compute @workgroup_size(4, 4, 4)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = textureDimensions(output);
@@ -173,44 +219,26 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     let size = vec3<f32>(dims);
     let frame = u32(fog.default_shape.w);
 
-    // A random depth inside the cell, different every frame.
-    let jitter = fract(hash(id) + f32(frame % 64u) * 0.618034);
-    let t = (f32(id.z) + jitter) / size.z;
     let near = fog.depth.x;
     let far = fog.depth.y;
-    let depth = near * pow(far / near, t);
-    let uv = (vec2<f32>(id.xy) + 0.5) / size.xy;
-    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    let ray = fog.camera_forward.xyz + ndc.x * fog.camera_right.xyz + ndc.y * fog.camera_up.xyz;
-    let p = fog.camera_pos.xyz + ray * depth;
-    let view = normalize(ray);
 
-    let m = medium(p);
-    var light = vec3<f32>(0.0);
-    if m.a > 0.0 {
-        let g = fog.sun_color.w;
-        // cos θ between where the light travels and the way back to the
-        // camera: 1 when looking straight into the light.
-        light = fog.sun_color.rgb * sun_visibility(p) * phase(dot(fog.sun_dir.xyz, -view), g);
-        let light_count = u32(fog.default_shape.z);
-        for (var i = 0u; i < light_count; i++) {
-            let l = lights[i];
-            let to_point = p - l.position.xyz;
-            let distance = length(to_point);
-            let range = l.position.w;
-            if distance >= range {
-                continue;
-            }
-            let ratio = distance / range;
-            let window = saturate(1.0 - ratio * ratio * ratio * ratio);
-            let falloff = window * window / max(distance * distance, 0.04);
-            let travel = to_point / max(distance, 1e-4);
-            light += l.color.rgb * falloff * point_visibility(l, p) * phase(dot(travel, -view), g);
-        }
-        // Ambient light arrives from everywhere: the phase averages out.
-        light += fog.ambient.rgb / (4.0 * PI);
+    // A few points spread through the cell (stratified in depth, jittered
+    // sideways), at new places every frame: the shaft's edge cuts through
+    // cells, and averaging several shadow lookups per cell keeps that edge
+    // from flickering.
+    var current = vec4<f32>(0.0);
+    let rotation = fract(hash(id) + f32(frame % 64u) * 0.618034);
+    for (var s = 0u; s < SAMPLES; s++) {
+        let seed = vec3<u32>(id.xy, id.z * SAMPLES + s + frame * 7919u);
+        let along = fract(rotation + f32(s) / f32(SAMPLES));
+        let side = vec2<f32>(hash(seed), hash(seed.yzx)) - 0.5;
+        let p = cell_point(id, size, vec3<f32>(side, along));
+        current += in_scatter(p, normalize(p - fog.camera_pos.xyz));
     }
-    var current = vec4<f32>(m.rgb * light, m.a);
+    current /= f32(SAMPLES);
+
+    // The cell's center, to find it in last frame's grid.
+    let p = cell_point(id, size, vec3<f32>(0.0, 0.0, 0.5));
 
     // Blend with where this point was last frame.
     var weight = fog.camera_forward.w;
