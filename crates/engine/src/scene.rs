@@ -91,6 +91,9 @@ pub struct Primitive {
     /// Linear RGB tint multiplied with the grid texture.
     #[serde(default = "white")]
     pub color: Vec3,
+    /// Blocks the player. Off: walk-through, but still clickable in the editor.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub collision: bool,
 }
 
 /// A glTF model from the game project, drawn with its materials' base color
@@ -103,6 +106,9 @@ pub struct Model {
     /// Linear RGB tint.
     #[serde(default = "white")]
     pub color: Vec3,
+    /// Blocks the player. Off: walk-through, but still clickable in the editor.
+    #[serde(default = "yes", skip_serializing_if = "is_true")]
+    pub collision: bool,
 }
 
 /// What an object looks like and collides as.
@@ -114,6 +120,14 @@ pub enum Geometry<'a> {
 
 fn white() -> Vec3 {
     Vec3::ONE
+}
+
+fn yes() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 /// Global lighting and atmosphere. All colors are linear RGB; light colors
@@ -221,6 +235,28 @@ impl Scene {
         })
     }
 
+    /// Everything with a collider: object index, geometry, transform, and
+    /// whether it blocks the player.
+    pub fn colliders(&self) -> impl Iterator<Item = (usize, Geometry<'_>, &Transform, bool)> {
+        self.objects.iter().enumerate().flat_map(|(index, object)| {
+            object.components.iter().filter_map(move |c| match c {
+                Component::Primitive(p) => Some((
+                    index,
+                    Geometry::Shape(p.shape),
+                    &object.transform,
+                    p.collision,
+                )),
+                Component::Model(m) => Some((
+                    index,
+                    Geometry::Model(&m.path),
+                    &object.transform,
+                    m.collision,
+                )),
+                Component::PlayerStart => None,
+            })
+        })
+    }
+
     /// Transform of the first object with a `PlayerStart`.
     pub fn player_start(&self) -> Option<&Transform> {
         self.objects
@@ -247,6 +283,7 @@ pub(crate) fn test_scene(shapes: Vec<(Shape, Vec3)>) -> Scene {
                 components: vec![Component::Primitive(Primitive {
                     shape,
                     color: Vec3::ONE,
+                    collision: true,
                 })],
             })
             .collect(),
@@ -273,6 +310,7 @@ mod tests {
                             size: Vec3::new(10.0, 0.5, 10.0),
                         },
                         color: Vec3::splat(0.6),
+                        collision: true,
                     })],
                 },
                 Object {
@@ -295,6 +333,22 @@ mod tests {
         let text = ron::ser::to_string_pretty(&scene, Default::default()).unwrap();
         let back: Scene = ron::from_str(&text).unwrap();
         assert_eq!(scene, back);
+    }
+
+    #[test]
+    fn collision_is_on_unless_turned_off() {
+        let scene: Scene = ron::from_str(
+            r#"(zones: [(name: "a")], objects: [(name: "x", zone: "a", components: [
+                Primitive((shape: Box(size: (1.0, 1.0, 1.0)))),
+                Model((path: "models/m.glb", collision: false)),
+            ])])"#,
+        )
+        .unwrap();
+        let solid: Vec<bool> = scene.colliders().map(|(.., solid)| solid).collect();
+        assert_eq!(solid, [true, false]);
+        // Only the exception is written back.
+        let text = ron::to_string(&scene).unwrap();
+        assert_eq!(text.matches("collision").count(), 1);
     }
 
     #[test]

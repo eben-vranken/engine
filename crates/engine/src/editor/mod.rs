@@ -339,6 +339,7 @@ impl Editor {
             components: vec![Component::Primitive(Primitive {
                 shape,
                 color: Vec3::splat(0.8),
+                collision: true,
             })],
         };
         Some(self.append(scene, object))
@@ -356,6 +357,7 @@ impl Editor {
             components: vec![Component::Model(Model {
                 path: path.clone(),
                 color: Vec3::ONE,
+                collision: true,
             })],
         };
         self.message = Some((format!("ADDED {path}"), false));

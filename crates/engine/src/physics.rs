@@ -7,6 +7,11 @@ use crate::scene::{Scene, Transform};
 use glam::Vec3;
 use rapier3d::prelude::*;
 
+/// Collider groups: solid colliders are in every group (rapier's default);
+/// walk-through ones only in their own, which gameplay queries skip.
+const SOLID: Group = Group::GROUP_1;
+const WALK_THROUGH: Group = Group::GROUP_2;
+
 pub struct PhysicsWorld {
     pipeline: PhysicsPipeline,
     params: IntegrationParameters,
@@ -36,13 +41,18 @@ impl PhysicsWorld {
             soft_bodies: SoftBodySet::new(),
             ccd: CCDSolver::new(),
         };
-        for (object, geometry, _, transform) in scene.renderables() {
+        for (object, geometry, transform, solid) in scene.colliders() {
             let collider = match assets.resolve(geometry) {
                 Resolved::Shape(shape) => collider_for(shape, transform),
                 Resolved::Model(model) => mesh_collider(&model.mesh, transform),
             };
             if let Some(mut collider) = collider {
                 collider.user_data = object as u128;
+                if !solid {
+                    collider.set_collision_groups(
+                        InteractionGroups::all().with_memberships(WALK_THROUGH),
+                    );
+                }
                 world.colliders.insert(collider);
             }
         }
@@ -74,7 +84,7 @@ impl PhysicsWorld {
     /// and the distance to it.
     pub fn pick(&self, origin: Vec3, direction: Vec3, max_distance: f32) -> Option<(usize, f32)> {
         let ray = Ray::new(origin, direction);
-        let (handle, distance) = self.queries().cast_ray(&ray, max_distance, true)?;
+        let (handle, distance) = self.editor_queries().cast_ray(&ray, max_distance, true)?;
         let object = self.colliders.get(handle)?.user_data as usize;
         Some((object, distance))
     }
@@ -88,7 +98,7 @@ impl PhysicsWorld {
     ) -> Option<(Vec3, Vec3)> {
         let ray = Ray::new(origin, direction);
         let (_, hit) = self
-            .queries()
+            .editor_queries()
             .cast_ray_and_get_normal(&ray, max_distance, true)?;
         // Triangle meshes report the face's own normal, which can point away
         // from the ray (back faces, flipped winding); turn it toward the ray.
@@ -100,13 +110,25 @@ impl PhysicsWorld {
         Some((ray.point_at(hit.time_of_impact), normal))
     }
 
-    /// Scene queries (ray and shape casts) against everything in the world.
+    /// Scene queries (ray and shape casts) for gameplay: only what blocks
+    /// the player, not walk-through objects.
     pub fn queries(&self) -> QueryPipeline<'_> {
+        let solid = InteractionGroups::all().with_filter(SOLID);
+        self.query_pipeline(QueryFilter::default().groups(solid))
+    }
+
+    /// Queries against everything, walk-through objects included, for
+    /// picking and placing in the editor.
+    fn editor_queries(&self) -> QueryPipeline<'_> {
+        self.query_pipeline(QueryFilter::default())
+    }
+
+    fn query_pipeline<'a>(&'a self, filter: QueryFilter<'a>) -> QueryPipeline<'a> {
         self.broad_phase.as_query_pipeline(
             self.narrow_phase.query_dispatcher(),
             &self.bodies,
             &self.colliders,
-            QueryFilter::default(),
+            filter,
         )
     }
 }
@@ -174,7 +196,7 @@ fn mesh_collider(mesh: &MeshData, transform: &Transform) -> Option<Collider> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scene::test_scene;
+    use crate::scene::{Component, test_scene};
     use glam::{Vec2, Vec3};
 
     #[test]
@@ -223,6 +245,22 @@ mod tests {
         assert!(normal.distance(Vec3::Y) < 1e-3);
         let (_, normal) = world.surface(Vec3::NEG_Y * 3.0, Vec3::Y, 10.0).unwrap();
         assert!(normal.distance(Vec3::NEG_Y) < 1e-3);
+    }
+
+    #[test]
+    fn walk_through_objects_are_pickable_but_not_solid() {
+        let mut scene = test_scene(vec![(Shape::Box { size: Vec3::ONE }, Vec3::NEG_Z * 5.0)]);
+        if let Component::Primitive(p) = &mut scene.objects[0].components[0] {
+            p.collision = false;
+        }
+        let world = PhysicsWorld::from_scene(&scene, &mut Assets::default());
+        assert_eq!(
+            world.pick(Vec3::ZERO, Vec3::NEG_Z, 100.0).map(|h| h.0),
+            Some(0)
+        );
+        assert!(world.surface(Vec3::ZERO, Vec3::NEG_Z, 100.0).is_some());
+        let ray = Ray::new(Vec3::ZERO, Vec3::NEG_Z);
+        assert!(world.queries().cast_ray(&ray, 100.0, true).is_none());
     }
 
     #[test]
