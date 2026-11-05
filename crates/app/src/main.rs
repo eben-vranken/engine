@@ -1,0 +1,53 @@
+//! Single entry point. The editor is the game with a UI on top:
+//!
+//!   cargo run -p app                                -> play the sandbox
+//!   cargo run -p app -- --editor                    -> edit the sandbox
+//!   cargo run -p app -- --editor --game ../my-game  -> edit another game project
+//!
+//! `--game <path>` picks the game project folder (default: `sandbox`).
+//! Game projects are content-only folders; they never contain engine code.
+
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Play,
+    Editor,
+}
+
+struct Args {
+    mode: Mode,
+    game: PathBuf,
+}
+
+fn parse_args() -> Args {
+    let mut mode = Mode::Play;
+    let mut game = PathBuf::from("sandbox");
+    let mut args = std::env::args().skip(1);
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--editor" => mode = Mode::Editor,
+            "--game" => {
+                if let Some(path) = args.next() {
+                    game = PathBuf::from(path);
+                }
+            }
+            other => eprintln!("ignoring unknown argument: {other}"),
+        }
+    }
+
+    Args { mode, game }
+}
+
+fn main() {
+    let args = parse_args();
+    println!(
+        "{} v{} | mode: {:?} | game: {}",
+        engine::NAME,
+        engine::VERSION,
+        args.mode,
+        args.game.display()
+    );
+    println!("Nothing to run yet. Next step: milestone 1 in docs/ROADMAP.md.");
+}

@@ -1,0 +1,9 @@
+[package]
+name = "app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The single binary: runs a game, or the editor on top of it with --editor."
+
+[dependencies]
+engine.workspace = true
