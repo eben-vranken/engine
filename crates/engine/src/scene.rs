@@ -92,6 +92,7 @@ pub enum Component {
     Door(Door),
     Switch(Switch),
     PhysicsBody(PhysicsBody),
+    SoundSource(SoundSource),
 }
 
 /// Another object in the scene, by name. The inspector shows a picker.
@@ -204,6 +205,29 @@ impl Default for PhysicsBody {
         Self {
             mass: 20.0,
             starts_asleep: false,
+        }
+    }
+}
+
+/// Plays a sound from the object's position, heard through the acoustic
+/// simulation. Plays in the editor too, so spaces can be listened to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct SoundSource {
+    /// A WAV file in the project, e.g. `audio/drip.wav`; empty plays a
+    /// built-in plucked-string phrase.
+    pub clip: String,
+    /// 1 = as recorded.
+    pub volume: f32,
+    pub looping: bool,
+}
+
+impl Default for SoundSource {
+    fn default() -> Self {
+        Self {
+            clip: String::new(),
+            volume: 1.0,
+            looping: true,
         }
     }
 }

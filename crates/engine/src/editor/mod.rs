@@ -14,7 +14,8 @@ pub mod markers;
 
 use crate::render::mesh::Shape;
 use crate::scene::{
-    Component, Door, Floating, Model, Object, PhysicsBody, Primitive, Scene, Switch, Transform,
+    Component, Door, Floating, Model, Object, PhysicsBody, Primitive, Scene, SoundSource, Switch,
+    Transform,
 };
 use crate::ui::theme;
 use egui::{Align, Layout, Rect, RichText, Ui};
@@ -846,7 +847,7 @@ fn shape_kind(ui: &mut Ui, id: usize, shape: &mut Shape) {
 }
 
 /// Components the inspector can add (one of each per object).
-fn new_components() -> [(&'static str, Component); 4] {
+fn new_components() -> [(&'static str, Component); 5] {
     [
         ("floating", Component::Floating(Floating::default())),
         ("door", Component::Door(Door::default())),
@@ -854,6 +855,10 @@ fn new_components() -> [(&'static str, Component); 4] {
         (
             "physics body",
             Component::PhysicsBody(PhysicsBody::default()),
+        ),
+        (
+            "sound source",
+            Component::SoundSource(SoundSource::default()),
         ),
     ]
 }

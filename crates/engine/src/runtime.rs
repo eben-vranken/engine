@@ -3,6 +3,7 @@
 //! player tuning panel.
 
 use crate::assets::Assets;
+use crate::audio::Audio;
 use crate::behaviors::{Behaviors, Interaction, is_usable_switch};
 use crate::camera::{Camera, FlyCamera};
 use crate::editor::history::Change;
@@ -139,6 +140,8 @@ struct Running {
     behaviors: Option<Behaviors>,
     /// A text prompt for what the player is looking at.
     prompt: Option<&'static str>,
+    /// `None` without an output device (the game runs silent).
+    audio: Option<Audio>,
 }
 
 /// The editor's state when Play was pressed.
@@ -335,6 +338,9 @@ impl Running {
             play: None,
             behaviors: (!config.editor).then(|| Behaviors::start(&config.scene)),
             prompt: None,
+            audio: Audio::new(config.game_dir.clone())
+                .inspect_err(|err| log::error!("{err}; running without sound"))
+                .ok(),
         })
     }
 
@@ -746,6 +752,9 @@ impl Running {
                 self.fly.camera.clone()
             }
         };
+        if let Some(audio) = &mut self.audio {
+            audio.update(&self.scene, &camera);
+        }
 
         let hud = HudInfo {
             fps: self.fps.fps,

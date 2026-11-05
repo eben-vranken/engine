@@ -6,13 +6,16 @@ license.workspace = true
 description = "Core runtime: rendering, audio, scenes, zones, behaviors."
 
 [dependencies]
+audionimbus = { version = "0.16.2", features = ["auto-install"] }
 bevy_reflect = { version = "0.20.1", features = ["glam"] }
 bytemuck = { version = "1.25.2", features = ["derive"] }
+cpal = "0.18.2"
 egui = { version = "0.37.0", features = ["default_fonts"] }
 egui-wgpu = "0.37.0"
 egui-winit = "0.37.0"
 glam = { version = "0.33", features = ["bytemuck", "serde"] }
 gltf = "1.4.1"
+hound = "3.5.1"
 log = "0.4.35"
 pollster = "1.0.1"
 rapier3d = "0.36.1"
