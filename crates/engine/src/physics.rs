@@ -2,7 +2,7 @@
 //! scene; the character controller queries it.
 
 use crate::render::mesh::{MeshData, Shape};
-use crate::scene::{Object, Scene};
+use crate::scene::{Primitive, Scene, Transform};
 use rapier3d::prelude::*;
 
 pub struct PhysicsWorld {
@@ -34,8 +34,8 @@ impl PhysicsWorld {
             soft_bodies: SoftBodySet::new(),
             ccd: CCDSolver::new(),
         };
-        for object in &scene.objects {
-            if let Some(collider) = collider_for(object) {
+        for (primitive, transform) in scene.primitives() {
+            if let Some(collider) = collider_for(primitive, transform) {
                 world.colliders.insert(collider);
             }
         }
@@ -74,30 +74,39 @@ impl PhysicsWorld {
     }
 }
 
-fn collider_for(object: &Object) -> Option<Collider> {
-    let shape = match object.shape {
-        Shape::Box { size } => SharedShape::cuboid(size.x * 0.5, size.y * 0.5, size.z * 0.5),
+/// A collider matching the primitive's render mesh. Scale is baked into the
+/// shape, since colliders can't be scaled after the fact.
+fn collider_for(primitive: &Primitive, transform: &Transform) -> Option<Collider> {
+    let scale = transform.scale.abs();
+    let shape = match primitive.shape {
+        Shape::Box { size } => {
+            let half = size * scale * 0.5;
+            SharedShape::cuboid(half.x, half.y, half.z)
+        }
         // A thin slab just under the quad, so it can be stood on.
-        Shape::Plane { size } => SharedShape::cuboid(size.x * 0.5, 0.005, size.y * 0.5),
+        Shape::Plane { size } => {
+            SharedShape::cuboid(size.x * scale.x * 0.5, 0.005, size.y * scale.z * 0.5)
+        }
         // Everything else is convex: wrap its render mesh, so collision matches what you see.
         shape => {
             let points: Vec<Vector> = MeshData::from_shape(shape)
                 .vertices
                 .iter()
-                .map(|v| Vector::from(v.position))
+                .map(|v| Vector::from(v.position) * transform.scale)
                 .collect();
             SharedShape::convex_hull(&points)?
         }
     };
-    let offset = match object.shape {
+    let rotation = transform.quat();
+    let offset = match primitive.shape {
         Shape::Plane { .. } => Vector::Y * -0.005,
         _ => Vector::ZERO,
     };
     Some(
         ColliderBuilder::new(shape)
             .position(Pose::from_parts(
-                object.position + object.rotation * offset,
-                object.rotation,
+                transform.position + rotation * offset,
+                rotation,
             ))
             .build(),
     )
@@ -106,19 +115,17 @@ fn collider_for(object: &Object) -> Option<Collider> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scene::test_scene;
     use glam::{Vec2, Vec3};
 
     #[test]
     fn ray_hits_static_box() {
-        let scene = Scene {
-            objects: vec![Object::new(
-                Shape::Box {
-                    size: Vec3::new(10.0, 1.0, 10.0),
-                },
-                Vec3::new(0.0, -0.5, 0.0),
-            )],
-            ..Default::default()
-        };
+        let scene = test_scene(vec![(
+            Shape::Box {
+                size: Vec3::new(10.0, 1.0, 10.0),
+            },
+            Vec3::new(0.0, -0.5, 0.0),
+        )]);
         let world = PhysicsWorld::from_scene(&scene);
         let ray = Ray::new(Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y);
         let (_, toi) = world
@@ -147,10 +154,25 @@ mod tests {
             },
         ];
         for shape in shapes {
+            let primitive = Primitive {
+                shape,
+                color: Vec3::ONE,
+            };
             assert!(
-                collider_for(&Object::new(shape, Vec3::ZERO)).is_some(),
+                collider_for(&primitive, &Transform::default()).is_some(),
                 "{shape:?}"
             );
         }
+    }
+
+    #[test]
+    fn scale_is_baked_into_the_collider() {
+        let mut scene = test_scene(vec![(Shape::Box { size: Vec3::ONE }, Vec3::ZERO)]);
+        scene.objects[0].transform.scale = Vec3::new(1.0, 4.0, 1.0);
+        let world = PhysicsWorld::from_scene(&scene);
+        let ray = Ray::new(Vec3::new(0.0, 5.0, 0.0), Vec3::NEG_Y);
+        let (_, toi) = world.queries().cast_ray(&ray, 100.0, true).unwrap();
+        // A unit box scaled ×4 in Y has its top at y = 2.
+        assert!((toi - 3.0).abs() < 1e-3, "hit at y = {}", 5.0 - toi);
     }
 }

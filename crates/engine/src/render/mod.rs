@@ -390,11 +390,11 @@ impl Renderer {
     /// Uploads every object's mesh and transform. Objects are static for now.
     pub fn set_scene(&mut self, scene: &Scene) {
         self.environment = scene.environment.clone();
-        self.meshes = scene
-            .objects
+        let primitives: Vec<_> = scene.primitives().collect();
+        self.meshes = primitives
             .iter()
-            .map(|object| {
-                let data = MeshData::from_shape(object.shape);
+            .map(|(primitive, _)| {
+                let data = MeshData::from_shape(primitive.shape);
                 GpuMesh {
                     vertices: self
                         .device
@@ -419,14 +419,14 @@ impl Renderer {
             &self.device,
             &self.object_layout,
             self.object_stride,
-            scene.objects.len().max(1),
+            primitives.len().max(1),
         );
-        for (i, object) in scene.objects.iter().enumerate() {
-            let model = Mat4::from_rotation_translation(object.rotation, object.position);
+        for (i, (primitive, transform)) in primitives.iter().enumerate() {
+            let model = transform.matrix();
             let uniform = ObjectUniform {
                 model,
                 normal_matrix: model.inverse().transpose(),
-                color: object.color.extend(1.0),
+                color: primitive.color.extend(1.0),
             };
             self.queue.write_buffer(
                 &buffer,

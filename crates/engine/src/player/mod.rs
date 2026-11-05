@@ -25,6 +25,17 @@ pub struct Spawn {
     pub yaw: f32,
 }
 
+impl Spawn {
+    /// Spawn at a scene object, facing where the object faces. The camera's
+    /// yaw turns right while a Y rotation turns left, hence the minus.
+    pub fn from_transform(transform: &crate::scene::Transform) -> Self {
+        Self {
+            position: transform.position,
+            yaw: -transform.rotation.y.to_radians(),
+        }
+    }
+}
+
 pub struct Player {
     spawn: Spawn,
     /// Bottom of the capsule.
@@ -473,18 +484,15 @@ fn smoothstep(t: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::render::mesh::Shape;
-    use crate::scene::{Object, Scene};
+    use crate::scene::test_scene;
 
     fn flat_world() -> PhysicsWorld {
-        PhysicsWorld::from_scene(&Scene {
-            objects: vec![Object::new(
-                Shape::Box {
-                    size: Vec3::new(100.0, 1.0, 100.0),
-                },
-                Vec3::new(0.0, -0.5, 0.0),
-            )],
-            ..Default::default()
-        })
+        PhysicsWorld::from_scene(&test_scene(vec![(
+            Shape::Box {
+                size: Vec3::new(100.0, 1.0, 100.0),
+            },
+            Vec3::new(0.0, -0.5, 0.0),
+        )]))
     }
 
     fn spawn() -> Spawn {
@@ -571,17 +579,14 @@ mod tests {
         assert!(player.feet.z < -3.0, "should have walked toward -Z");
     }
 
-    fn world_with(mut objects: Vec<Object>) -> PhysicsWorld {
-        objects.push(Object::new(
+    fn world_with(mut objects: Vec<(Shape, Vec3)>) -> PhysicsWorld {
+        objects.push((
             Shape::Box {
                 size: Vec3::new(200.0, 1.0, 200.0),
             },
             Vec3::new(0.0, -0.5, 0.0),
         ));
-        PhysicsWorld::from_scene(&Scene {
-            objects,
-            ..Default::default()
-        })
+        PhysicsWorld::from_scene(&test_scene(objects))
     }
 
     /// Holds `keys` for `seconds` and returns the lowest horizontal speed seen
@@ -631,7 +636,7 @@ mod tests {
         let settings = PlayerSettings::default();
         for angle in [15.0f32, 30.0, 45.0] {
             let depth = 6.0 / angle.to_radians().tan();
-            let world = world_with(vec![Object::new(
+            let world = world_with(vec![(
                 Shape::Wedge {
                     size: Vec3::new(4.0, 6.0, depth),
                 },
@@ -655,7 +660,7 @@ mod tests {
     fn too_steep_slope_blocks() {
         let settings = PlayerSettings::default();
         let depth = 6.0 / 60f32.to_radians().tan();
-        let world = world_with(vec![Object::new(
+        let world = world_with(vec![(
             Shape::Wedge {
                 size: Vec3::new(4.0, 6.0, depth),
             },
@@ -673,10 +678,10 @@ mod tests {
     #[test]
     fn climbs_stairs_without_losing_speed() {
         let settings = PlayerSettings::default();
-        let mut objects: Vec<Object> = (0..10)
+        let mut objects: Vec<(Shape, Vec3)> = (0..10)
             .map(|k| {
                 let height = 0.2 * (k + 1) as f32;
-                Object::new(
+                (
                     Shape::Box {
                         size: Vec3::new(3.0, height, 0.3),
                     },
@@ -685,7 +690,7 @@ mod tests {
             })
             .collect();
         // Landing at the top.
-        objects.push(Object::new(
+        objects.push((
             Shape::Box {
                 size: Vec3::new(3.0, 2.0, 10.0),
             },
@@ -711,7 +716,7 @@ mod tests {
     #[test]
     fn slides_along_a_wall_at_an_angle() {
         let settings = PlayerSettings::default();
-        let world = world_with(vec![Object::new(
+        let world = world_with(vec![(
             Shape::Box {
                 size: Vec3::new(40.0, 3.0, 0.5),
             },

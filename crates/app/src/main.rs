@@ -7,8 +7,7 @@
 //! `--game <path>` picks the game project folder (default: `sandbox`).
 //! Game projects are content-only folders; they never contain engine code.
 
-mod test_level;
-
+use engine::project::Project;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,11 +58,19 @@ fn main() -> anyhow::Result<()> {
         log::warn!("the editor arrives in milestone 3; running play mode");
     }
 
+    let project = Project::open(&args.game)?;
+    let scene = project.load_start_scene()?;
+    log::info!(
+        "{}: {} objects in {} zones",
+        project.start_scene_path().display(),
+        scene.objects.len(),
+        scene.zones.len()
+    );
+
     engine::run(engine::RunConfig {
-        title: format!("{} — {}", engine::NAME, args.game.display()),
-        game_dir: args.game.clone(),
-        scene: test_level::scene(),
-        spawn: test_level::spawn(),
+        title: format!("{} — {}", project.settings.name, engine::NAME),
+        game_dir: project.dir,
+        scene,
     })?;
     Ok(())
 }

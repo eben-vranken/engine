@@ -40,8 +40,8 @@ pub struct RunConfig {
     pub title: String,
     /// The game project folder; `player.ron` lives here.
     pub game_dir: PathBuf,
+    /// Must contain a `PlayerStart`; the player spawns at the origin otherwise.
     pub scene: Scene,
-    pub spawn: Spawn,
 }
 
 pub fn run(config: RunConfig) -> Result<(), RunError> {
@@ -188,7 +188,17 @@ impl Running {
                 (PlayerSettings::default(), Some(err.to_string()))
             }
         };
-        let player = Player::new(config.spawn, &settings);
+        let spawn = config.scene.player_start().map_or(
+            Spawn {
+                position: Vec3::ZERO,
+                yaw: 0.0,
+            },
+            Spawn::from_transform,
+        );
+        if config.scene.player_start().is_none() {
+            log::warn!("the scene has no PlayerStart; spawning at the origin");
+        }
+        let player = Player::new(spawn, &settings);
         let start = player.camera(&settings);
         let mut fly = FlyCamera::new(start.position, start.yaw, start.pitch);
         fly.camera.fov_y = start.fov_y;

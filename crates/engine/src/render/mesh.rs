@@ -18,7 +18,7 @@ pub struct Vertex {
 }
 
 /// A primitive shape. Sizes are full extents in meters.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Shape {
     Box {
         size: Vec3,
