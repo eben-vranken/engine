@@ -123,7 +123,18 @@ Steam Audio in the engine, tested by walking through spaces in first person.
 
 **Acceptance:** 60+ fps at 4K output with default render scale on an RTX 3060 Ti class GPU; a dark grey-box hall with one window and one lantern looks atmospheric to the user.
 
-## 11. Gameplay systems ← current
+## 10. Materials and reflections ← current
+Surfaces that read as stone, wood, plaster, wet floor or metal, and glossy ones that reflect the room around them.
+
+- [ ] `Material` component for primitives: a texture from the project (point-sampled, texels per meter), color, roughness; without one, the grid as now
+- [ ] Models use their glTF roughness and metalness
+- [ ] Highlights from the sun and lights on glossy surfaces (and none on rough ones)
+- [ ] Reflection probes baked per zone with BAKE LIGHTING, box-projected to the zone's volume, so glossy surfaces reflect the room; moving objects and live lights are not in them
+- [ ] Optional, after the above: screen-space reflections for sharp, moving reflections in water and puddles
+
+**Acceptance:** in the hall, a polished marble floor reflects the window and the lantern in the right places, a stone wall stays matte, and the frame rate on the laptop (Iris Xe) stays above 60 fps on HIGH.
+
+## 11. Gameplay systems
 - [ ] Abilities + gates, save system, map from zone data
 
 ## 12. Stairs primitive
