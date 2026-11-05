@@ -54,6 +54,7 @@ struct ObjectUniform {
     model: Mat4,
     normal_matrix: Mat4,
     color: Vec4,
+    highlight: Vec4,
 }
 
 #[repr(C)]
@@ -88,6 +89,11 @@ pub struct Renderer {
 
     /// `None` picks the factor from the window height.
     scale_override: Option<u32>,
+    /// Part of the window the scene is drawn into (x, y, width, height in
+    /// pixels); `None` = the whole window.
+    viewport: Option<[u32; 4]>,
+    /// Top-left of the viewport in the window.
+    view_origin: [u32; 2],
     layout: ScaleLayout,
     targets: Targets,
 
@@ -99,6 +105,8 @@ pub struct Renderer {
     object_buffer: wgpu::Buffer,
     object_bind_group: wgpu::BindGroup,
     meshes: Vec<GpuMesh>,
+    /// Per draw: the scene object it belongs to, and its uniform data.
+    draws: Vec<(usize, ObjectUniform)>,
     environment: Environment,
 
     upscale_pipeline: wgpu::RenderPipeline,
@@ -368,6 +376,8 @@ impl Renderer {
             config,
             adapter_name,
             scale_override: None,
+            viewport: None,
+            view_origin: [0, 0],
             layout,
             targets,
             scene_pipeline,
@@ -378,6 +388,7 @@ impl Renderer {
             object_buffer,
             object_bind_group,
             meshes: Vec::new(),
+            draws: Vec::new(),
             environment: Environment::default(),
             upscale_pipeline,
             upscale_layout,
@@ -393,7 +404,7 @@ impl Renderer {
         let primitives: Vec<_> = scene.primitives().collect();
         self.meshes = primitives
             .iter()
-            .map(|(primitive, _)| {
+            .map(|(_, primitive, _)| {
                 let data = MeshData::from_shape(primitive.shape);
                 GpuMesh {
                     vertices: self
@@ -421,21 +432,52 @@ impl Renderer {
             self.object_stride,
             primitives.len().max(1),
         );
-        for (i, (primitive, transform)) in primitives.iter().enumerate() {
-            let model = transform.matrix();
-            let uniform = ObjectUniform {
-                model,
-                normal_matrix: model.inverse().transpose(),
-                color: primitive.color.extend(1.0),
-            };
+        self.draws = primitives
+            .iter()
+            .map(|(object, primitive, transform)| {
+                let model = transform.matrix();
+                let uniform = ObjectUniform {
+                    model,
+                    normal_matrix: model.inverse().transpose(),
+                    color: primitive.color.extend(1.0),
+                    highlight: Vec4::ZERO,
+                };
+                (*object, uniform)
+            })
+            .collect();
+        for (i, (_, uniform)) in self.draws.iter().enumerate() {
             self.queue.write_buffer(
                 &buffer,
                 i as u64 * self.object_stride,
-                bytemuck::bytes_of(&uniform),
+                bytemuck::bytes_of(uniform),
             );
         }
         self.object_buffer = buffer;
         self.object_bind_group = bind_group;
+    }
+
+    /// Highlights the given scene object (by index) as selected.
+    pub fn set_highlight(&mut self, selected: Option<usize>) {
+        for (i, (object, uniform)) in self.draws.iter_mut().enumerate() {
+            let highlight = (Some(*object) == selected) as u32 as f32;
+            if uniform.highlight.x != highlight {
+                uniform.highlight.x = highlight;
+                self.queue.write_buffer(
+                    &self.object_buffer,
+                    i as u64 * self.object_stride,
+                    bytemuck::bytes_of(uniform),
+                );
+            }
+        }
+    }
+
+    /// Draws the scene into part of the window (x, y, width, height in
+    /// pixels), e.g. between editor panels. `None` = the whole window.
+    pub fn set_viewport(&mut self, viewport: Option<[u32; 4]>) {
+        if viewport != self.viewport {
+            self.viewport = viewport;
+            self.update_layout();
+        }
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -503,10 +545,16 @@ impl Renderer {
     }
 
     fn update_layout(&mut self) {
+        let [width, height] = [self.config.width, self.config.height];
+        let [x, y, w, h] = self.viewport.unwrap_or([0, 0, width, height]);
+        let x = x.min(width - 1);
+        let y = y.min(height - 1);
+        let size = [w.clamp(1, width - x), h.clamp(1, height - y)];
+        self.view_origin = [x, y];
         let factor = self
             .scale_override
-            .unwrap_or_else(|| scale::default_factor(self.config.height));
-        let layout = ScaleLayout::new([self.config.width, self.config.height], factor);
+            .unwrap_or_else(|| scale::default_factor(size[1]));
+        let layout = ScaleLayout::new(size, factor);
         if layout.internal != self.layout.internal {
             self.targets = create_targets(
                 &self.device,
@@ -521,7 +569,10 @@ impl Renderer {
 
     fn write_upscale_params(&self) {
         let params = UpscaleParams {
-            origin: self.layout.origin.map(|v| v as f32),
+            origin: [
+                (self.view_origin[0] + self.layout.origin[0]) as f32,
+                (self.view_origin[1] + self.layout.origin[1]) as f32,
+            ],
             factor: self.layout.factor as f32,
             linear_output: self.config.format.is_srgb() as u32,
         };
@@ -633,7 +684,8 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            let [x, y] = self.layout.origin.map(|v| v as f32);
+            let x = (self.view_origin[0] + self.layout.origin[0]) as f32;
+            let y = (self.view_origin[1] + self.layout.origin[1]) as f32;
             let [sw, sh] = self.layout.scaled().map(|v| v as f32);
             pass.set_viewport(x, y, sw, sh, 0.0, 1.0);
             pass.set_pipeline(&self.upscale_pipeline);

@@ -19,7 +19,12 @@ struct Object {
     model: mat4x4<f32>,
     normal_matrix: mat4x4<f32>,
     color: vec4<f32>,
+    // x: selection highlight, 0 or 1.
+    highlight: vec4<f32>,
 };
+
+// Linear version of the UI amber, for the selection highlight.
+const HIGHLIGHT: vec3<f32> = vec3<f32>(1.0, 0.34, 0.025);
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var grid_texture: texture_2d<f32>;
@@ -57,6 +62,11 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let sun = max(dot(n, -frame.sun_dir.xyz), 0.0) * frame.sun_color.rgb;
     let ambient = mix(frame.ambient_ground.rgb, frame.ambient_sky.rgb, n.y * 0.5 + 0.5);
     var color = albedo * (sun + ambient);
+
+    // Selected: amber tint, stronger toward the silhouette.
+    let to_camera = normalize(frame.camera_pos.xyz - in.world);
+    let rim = pow(1.0 - max(dot(n, to_camera), 0.0), 2.0);
+    color = mix(color, HIGHLIGHT * 1.5, object.highlight.x * (0.3 + 0.6 * rim));
 
     let distance = length(in.world - frame.camera_pos.xyz);
     let fog = 1.0 - exp(-distance * frame.fog.a);

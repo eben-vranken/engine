@@ -34,7 +34,7 @@ impl PhysicsWorld {
             soft_bodies: SoftBodySet::new(),
             ccd: CCDSolver::new(),
         };
-        for (primitive, transform) in scene.primitives() {
+        for (_, primitive, transform) in scene.primitives() {
             if let Some(collider) = collider_for(primitive, transform) {
                 world.colliders.insert(collider);
             }

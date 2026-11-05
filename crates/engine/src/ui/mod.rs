@@ -19,6 +19,13 @@ pub struct UiFrame {
     pixels_per_point: f32,
 }
 
+impl UiFrame {
+    /// Physical pixels per egui point (the display scale factor).
+    pub fn pixels_per_point(&self) -> f32 {
+        self.pixels_per_point
+    }
+}
+
 impl Overlay {
     pub fn new(window: &Window, device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let ctx = egui::Context::default();

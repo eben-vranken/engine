@@ -54,10 +54,6 @@ fn main() -> anyhow::Result<()> {
         args.mode,
         args.game.display()
     );
-    if args.mode == Mode::Editor {
-        log::warn!("the editor arrives in milestone 3; running play mode");
-    }
-
     let project = Project::open(&args.game)?;
     let scene = project.load_start_scene()?;
     log::info!(
@@ -67,10 +63,19 @@ fn main() -> anyhow::Result<()> {
         scene.zones.len()
     );
 
+    let editor = args.mode == Mode::Editor;
     engine::run(engine::RunConfig {
-        title: format!("{} — {}", project.settings.name, engine::NAME),
+        title: format!(
+            "{} — {}{}",
+            project.settings.name,
+            engine::NAME,
+            if editor { " editor" } else { "" }
+        ),
+        scene_path: project.settings.start_scene.clone(),
+        game_name: project.settings.name.clone(),
         game_dir: project.dir,
         scene,
+        editor,
     })?;
     Ok(())
 }

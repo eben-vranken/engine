@@ -185,11 +185,11 @@ impl Scene {
         Ok(())
     }
 
-    /// Objects with a primitive, and their world transform.
-    pub fn primitives(&self) -> impl Iterator<Item = (&Primitive, &Transform)> {
-        self.objects.iter().flat_map(|object| {
+    /// Every primitive with its object's index and world transform.
+    pub fn primitives(&self) -> impl Iterator<Item = (usize, &Primitive, &Transform)> {
+        self.objects.iter().enumerate().flat_map(|(index, object)| {
             object.components.iter().filter_map(move |c| match c {
-                Component::Primitive(p) => Some((p, &object.transform)),
+                Component::Primitive(p) => Some((index, p, &object.transform)),
                 _ => None,
             })
         })

@@ -3,6 +3,7 @@
 //! player tuning panel.
 
 use crate::camera::FlyCamera;
+use crate::editor::{Editor, EditorStats};
 use crate::input::Input;
 use crate::physics::PhysicsWorld;
 use crate::player::settings::{PlayerSettings, SettingsFile};
@@ -42,6 +43,11 @@ pub struct RunConfig {
     pub game_dir: PathBuf,
     /// Must contain a `PlayerStart`; the player spawns at the origin otherwise.
     pub scene: Scene,
+    /// The file `scene` came from.
+    pub scene_path: PathBuf,
+    pub game_name: String,
+    /// Open the editor instead of playing.
+    pub editor: bool,
 }
 
 pub fn run(config: RunConfig) -> Result<(), RunError> {
@@ -90,6 +96,15 @@ struct Running {
     rmb_look: bool,
     last_frame: Instant,
     fps: FpsCounter,
+    scene: Scene,
+    /// Present when running the editor.
+    editor: Option<Editor>,
+    /// Object currently highlighted in the viewport.
+    highlighted: Option<usize>,
+    /// Mouse position in window pixels.
+    cursor: Vec2,
+    /// Where the scene is drawn, in window pixels (the editor's viewport).
+    viewport: Option<egui::Rect>,
 }
 
 impl ApplicationHandler for App {
@@ -129,6 +144,18 @@ impl ApplicationHandler for App {
                     } else if !ui_consumed {
                         app.input.key_down(code);
                     }
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                app.cursor = Vec2::new(position.x as f32, position.y as f32);
+            }
+            WindowEvent::MouseInput { button, state, .. } if app.editor.is_some() => {
+                if button == MouseButton::Right {
+                    let in_viewport = app
+                        .viewport
+                        .is_some_and(|v| v.contains(egui::pos2(app.cursor.x, app.cursor.y)));
+                    app.rmb_look =
+                        state.is_pressed() && in_viewport && !app.overlay.wants_pointer();
                 }
             }
             WindowEvent::MouseInput { button, state, .. } => {
@@ -202,6 +229,12 @@ impl Running {
         let start = player.camera(&settings);
         let mut fly = FlyCamera::new(start.position, start.yaw, start.pitch);
         fly.camera.fov_y = start.fov_y;
+        let editor = config
+            .editor
+            .then(|| Editor::new(config.game_name.clone(), config.scene_path.clone()));
+        if editor.is_some() {
+            fly.move_requires_look = true;
+        }
 
         Ok(Self {
             window,
@@ -215,7 +248,11 @@ impl Running {
             settings_error,
             last_reload_check: Instant::now(),
             fly,
-            mode: CameraMode::Player,
+            mode: if editor.is_some() {
+                CameraMode::Fly
+            } else {
+                CameraMode::Player
+            },
             tuning_open: false,
             input: Input::default(),
             focused: true,
@@ -223,6 +260,11 @@ impl Running {
             rmb_look: false,
             last_frame: Instant::now(),
             fps: FpsCounter::default(),
+            scene: config.scene.clone(),
+            editor,
+            highlighted: None,
+            cursor: Vec2::ZERO,
+            viewport: None,
         })
     }
 
@@ -267,6 +309,12 @@ impl Running {
         }
         if input.pressed(KeyCode::KeyV) {
             actions.vsync = Some(!self.renderer.vsync());
+        }
+        if let Some(editor) = &mut self.editor {
+            if input.pressed(KeyCode::Escape) {
+                editor.selected = None;
+            }
+            return;
         }
         if input.pressed(KeyCode::Escape) {
             self.mouse_released = true;
@@ -379,23 +427,55 @@ impl Running {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let editor_stats = EditorStats {
+            fps: hud.fps,
+            frame_ms: hud.frame_ms,
+            internal: hud.internal,
+            factor: hud.factor,
+        };
+        let blink = hud.cursor_on;
         let tuning_open = self.tuning_open;
         let settings = &mut self.settings;
         let (status, error) = (&self.settings_status, self.settings_error.as_deref());
         let mut tuning_action = None;
+        let editor = &mut self.editor;
+        let scene = &self.scene;
+        let mut viewport = None;
         let ui_frame = self.overlay.run(
             &self.window,
             self.renderer.device(),
             self.renderer.queue(),
-            |ui| {
-                draw_hud(ui, &hud, &mut actions);
-                if tuning_open {
-                    tuning_action = tuning::panel(ui, settings, &file_name, status, error);
+            |ui| match editor {
+                Some(editor) => viewport = Some(editor.ui(ui, scene, &editor_stats, blink)),
+                None => {
+                    draw_hud(ui, &hud, &mut actions);
+                    if tuning_open {
+                        tuning_action = tuning::panel(ui, settings, &file_name, status, error);
+                    }
                 }
             },
         );
         if let Some(action) = tuning_action {
             self.apply_tuning(action);
+        }
+
+        // The editor's viewport, from egui points to window pixels.
+        let ppp = ui_frame.pixels_per_point();
+        self.viewport = viewport.map(|rect: egui::Rect| {
+            egui::Rect::from_min_max((rect.min * ppp).round(), (rect.max * ppp).round())
+        });
+        self.renderer.set_viewport(self.viewport.map(|v| {
+            [
+                v.min.x.max(0.0) as u32,
+                v.min.y.max(0.0) as u32,
+                v.width().max(1.0) as u32,
+                v.height().max(1.0) as u32,
+            ]
+        }));
+        let selected = self.editor.as_ref().and_then(|e| e.selected);
+        if selected != self.highlighted {
+            self.renderer.set_highlight(selected);
+            self.highlighted = selected;
         }
 
         if let Some(scale) = actions.scale {

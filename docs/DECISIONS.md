@@ -45,3 +45,6 @@ Append new decisions at the bottom. Don't rewrite old entries; supersede them wi
 | 2026-11-05 | Objects reference their zone by name; loading fails on an unknown zone | Every object must belong to a zone, enforced from the first scene file |
 | 2026-11-05 | `game.ron` holds the game name and start scene path | The engine needs an entry point into a project; more settings (musical key etc.) are added when needed |
 | 2026-11-05 | `PlayerStart` component added in milestone 3 (ahead of milestone 4) | Needed so the test level is pure data, with no spawn point left in code |
+| 2026-11-05 | The editor is a module of the `engine` crate, not the `app` crate | It needs the runtime's internals (renderer viewport, input, scene); the app stays a thin binary. Split into its own crate if it grows large |
+| 2026-11-05 | Editor viewport = the space between the panels; the scene renders (and render-scales) into just that rect | The 3D view is never covered by UI, and the pixel grid stays exact |
+| 2026-11-05 | Editor camera moves only while the right mouse button is held | Keeps letter keys free for editor shortcuts (gizmo modes etc.) |

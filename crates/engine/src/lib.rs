@@ -1,8 +1,9 @@
 //! Core engine runtime.
 //!
-//! Everything a game needs at runtime lives here; the `app` crate adds the
-//! editor UI on top. Planned modules (add them only when a milestone needs
-//! them, see `docs/ROADMAP.md`):
+//! Everything a game needs at runtime lives here, plus the `editor` module
+//! (the same runtime with panels on top, opened with `--editor`); the `app`
+//! crate is just the binary. Planned modules (add them only when a milestone
+//! needs them, see `docs/ROADMAP.md`):
 //!
 //! - `render`    render scale, baked GI, volumetric fog, shadows, post
 //! - `audio`     Steam Audio (via AudioNimbus), acoustic materials, limiter
@@ -13,6 +14,7 @@
 //! - `player`    character controller, camera, abilities
 
 pub mod camera;
+pub mod editor;
 pub mod input;
 pub mod physics;
 pub mod player;

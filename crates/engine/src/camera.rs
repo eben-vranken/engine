@@ -47,6 +47,9 @@ pub struct FlyCamera {
     pub speed: f32,
     /// Radians per pixel of mouse movement.
     pub sensitivity: f32,
+    /// Only move while looking (right mouse held), so the keys stay free
+    /// for shortcuts otherwise. Used in the editor.
+    pub move_requires_look: bool,
 }
 
 impl FlyCamera {
@@ -62,6 +65,7 @@ impl FlyCamera {
             },
             speed: 6.0,
             sensitivity: 0.0025,
+            move_requires_look: false,
         }
     }
 
@@ -71,6 +75,9 @@ impl FlyCamera {
             self.camera.yaw += delta.x * self.sensitivity;
             self.camera.pitch = (self.camera.pitch - delta.y * self.sensitivity)
                 .clamp(-89f32.to_radians(), 89f32.to_radians());
+        }
+        if self.move_requires_look && !input.looking {
+            return;
         }
         if input.scroll != 0.0 {
             self.speed = (self.speed * 1.2f32.powf(input.scroll)).clamp(0.5, 200.0);
