@@ -6,6 +6,7 @@
 //! one variant to [`Component`].
 
 use crate::render::mesh::Shape;
+use bevy_reflect::Reflect;
 use glam::{EulerRot, Mat4, Quat, Vec3};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -36,7 +37,7 @@ pub struct Object {
     pub components: Vec<Component>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Reflect)]
 #[serde(default)]
 pub struct Transform {
     /// Meters.
@@ -75,7 +76,7 @@ impl Transform {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 pub enum Component {
     Primitive(Primitive),
     /// Where the player spawns; faces the object's yaw.
@@ -83,7 +84,7 @@ pub enum Component {
 }
 
 /// A shape generated in code, drawn with the grid texture and a collider.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 pub struct Primitive {
     pub shape: Shape,
     /// Linear RGB tint multiplied with the grid texture.

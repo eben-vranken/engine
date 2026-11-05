@@ -1,12 +1,18 @@
 //! The editor: the running game with panels on top. The scene hierarchy is
 //! on the left (grouped by zone), the inspector on the right, and the 3D
 //! viewport takes whatever space is left in the middle.
+//!
+//! Every change goes through [`history::Edit`] so it can be undone. While a
+//! value is being dragged or typed, the change is applied live but held as
+//! *pending*; it becomes one undo step when the interaction ends.
 
-use crate::render::mesh::Shape;
-use crate::scene::{Component, Object, Scene};
+pub mod history;
+pub mod inspector;
+
+use crate::scene::{Object, Scene};
 use crate::ui::theme;
 use egui::{Align, Layout, Rect, RichText, Ui};
-use glam::Vec3;
+use history::{Edit, History};
 use std::path::PathBuf;
 
 pub struct Editor {
@@ -18,6 +24,9 @@ pub struct Editor {
     /// The scene file being edited, for display.
     pub scene_path: PathBuf,
     pub game_name: String,
+    history: History,
+    /// An edit in progress: the object's index and how it was before.
+    pending: Option<(usize, Object)>,
 }
 
 /// Numbers for the top bar.
@@ -28,6 +37,16 @@ pub struct EditorStats {
     pub factor: u32,
 }
 
+/// What the editor did this frame, for the runtime to act on.
+pub struct EditorOutput {
+    /// Space left for the 3D viewport, in points.
+    pub viewport: Rect,
+    /// Objects whose data changed (redraw them).
+    pub changed: Vec<usize>,
+    /// An edit was committed, undone or redone (rebuild collision).
+    pub settled: bool,
+}
+
 impl Editor {
     pub fn new(game_name: String, scene_path: PathBuf) -> Self {
         Self {
@@ -35,12 +54,27 @@ impl Editor {
             reveal_selection: false,
             scene_path,
             game_name,
+            history: History::default(),
+            pending: None,
         }
     }
 
-    /// Draws the panels and returns the rect left for the 3D viewport, in points.
-    pub fn ui(&mut self, ui: &mut Ui, scene: &Scene, stats: &EditorStats, blink: bool) -> Rect {
-        egui::Panel::top("editor_top").show(ui, |ui| self.top_bar(ui, stats, blink));
+    /// Draws the panels, applies inspector edits to `scene`, and reports
+    /// what changed.
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        scene: &mut Scene,
+        stats: &EditorStats,
+        blink: bool,
+    ) -> EditorOutput {
+        let mut output = EditorOutput {
+            viewport: Rect::NOTHING,
+            changed: Vec::new(),
+            settled: false,
+        };
+        egui::Panel::top("editor_top")
+            .show(ui, |ui| self.top_bar(ui, scene, stats, blink, &mut output));
         egui::Panel::left("editor_scene")
             .resizable(true)
             .default_size(260.0)
@@ -48,23 +82,94 @@ impl Editor {
             .show(ui, |ui| self.hierarchy(ui, scene));
         egui::Panel::right("editor_inspector")
             .resizable(true)
-            .default_size(320.0)
+            .default_size(340.0)
             // Wide enough for its content, so selecting doesn't resize the viewport.
-            .min_size(300.0)
-            .show(ui, |ui| self.inspector(ui, scene));
+            .min_size(340.0)
+            .show(ui, |ui| self.inspector(ui, scene, &mut output));
 
-        let viewport = ui.available_rect_before_wrap();
-        hints(ui, viewport);
-        viewport
+        // A drag or text entry has ended: the pending change becomes one undo step.
+        let interacting =
+            ui.ctx().egui_is_using_pointer() || ui.ctx().memory(|m| m.focused().is_some());
+        if !interacting {
+            output.settled |= self.commit_pending(scene);
+        }
+
+        output.viewport = ui.available_rect_before_wrap();
+        hints(ui, output.viewport);
+        output
     }
 
-    fn top_bar(&self, ui: &mut Ui, stats: &EditorStats, blink: bool) {
+    /// Records the edit in progress, if any. Returns true if one was recorded.
+    pub fn commit_pending(&mut self, scene: &Scene) -> bool {
+        let Some((index, before)) = self.pending.take() else {
+            return false;
+        };
+        let after = &scene.objects[index];
+        if *after == before {
+            return false;
+        }
+        self.history.record(Edit::SetObject {
+            index,
+            before: Box::new(before),
+            after: Box::new(after.clone()),
+        });
+        true
+    }
+
+    /// Undoes the last edit; returns the object it changed.
+    pub fn undo(&mut self, scene: &mut Scene) -> Option<usize> {
+        self.commit_pending(scene);
+        self.history.undo(scene)
+    }
+
+    /// Redoes the last undone edit; returns the object it changed.
+    pub fn redo(&mut self, scene: &mut Scene) -> Option<usize> {
+        self.commit_pending(scene);
+        self.history.redo(scene)
+    }
+
+    /// Changes the selection, finishing any edit on the previous one.
+    pub fn select(&mut self, scene: &Scene, selected: Option<usize>) -> bool {
+        let settled = self.commit_pending(scene);
+        self.selected = selected;
+        settled
+    }
+
+    fn top_bar(
+        &mut self,
+        ui: &mut Ui,
+        scene: &mut Scene,
+        stats: &EditorStats,
+        blink: bool,
+        output: &mut EditorOutput,
+    ) {
         ui.horizontal(|ui| {
             let cursor = if blink { "_" } else { " " };
             ui.label(RichText::new(format!("ENGINE // EDITOR{cursor}")).strong());
             ui.add_space(12.0);
             ui.label(self.game_name.to_uppercase());
             ui.label(dim(&self.scene_path.display().to_string().to_uppercase()));
+            ui.add_space(12.0);
+
+            let undo = format!("UNDO [{}]", self.history.undo_len());
+            if ui
+                .add_enabled(self.history.undo_len() > 0, egui::Button::new(undo).small())
+                .clicked()
+                && let Some(index) = self.undo(scene)
+            {
+                output.changed.push(index);
+                output.settled = true;
+            }
+            let redo = format!("REDO [{}]", self.history.redo_len());
+            if ui
+                .add_enabled(self.history.redo_len() > 0, egui::Button::new(redo).small())
+                .clicked()
+                && let Some(index) = self.redo(scene)
+            {
+                output.changed.push(index);
+                output.settled = true;
+            }
+
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(format!(
                     "{}×{} ×{}",
@@ -87,6 +192,7 @@ impl Editor {
             scene.zones.len()
         )));
         ui.add_space(4.0);
+        let mut clicked = None;
         egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| {
@@ -108,7 +214,7 @@ impl Editor {
                                 let selected = self.selected == Some(index);
                                 let response = ui.selectable_label(selected, &object.name);
                                 if response.clicked() {
-                                    self.selected = Some(index);
+                                    clicked = Some(index);
                                 }
                                 if selected && reveal {
                                     response.scroll_to_me(Some(Align::Center));
@@ -118,111 +224,61 @@ impl Editor {
                 }
             });
         self.reveal_selection = false;
+        if let Some(index) = clicked {
+            self.select(scene, Some(index));
+        }
     }
 
-    fn inspector(&self, ui: &mut Ui, scene: &Scene) {
+    fn inspector(&mut self, ui: &mut Ui, scene: &mut Scene, output: &mut EditorOutput) {
         ui.add_space(4.0);
         ui.label(RichText::new("INSPECTOR").strong());
         ui.add_space(4.0);
-        let Some(object) = self.selected.and_then(|i| scene.objects.get(i)) else {
+        let Some(index) = self.selected.filter(|&i| i < scene.objects.len()) else {
             ui.label(dim("NOTHING SELECTED"));
             return;
         };
 
-        egui::Grid::new("inspector_object")
-            .num_columns(2)
-            .spacing([12.0, 4.0])
-            .show(ui, |ui| {
-                ui.label(dim("NAME"));
-                ui.label(&object.name);
-                ui.end_row();
-                ui.label(dim("ZONE"));
-                ui.label(object.zone.to_uppercase());
-                ui.end_row();
-            });
+        let zones = &scene.zones;
+        let object = &mut scene.objects[index];
+        let before = object.clone();
 
-        section(ui, "TRANSFORM");
-        let t = &object.transform;
-        egui::Grid::new("inspector_transform")
-            .num_columns(2)
-            .spacing([12.0, 4.0])
+        egui::ScrollArea::vertical()
+            .auto_shrink(false)
             .show(ui, |ui| {
-                for (label, v) in [
-                    ("POSITION", t.position),
-                    ("ROTATION", t.rotation),
-                    ("SCALE", t.scale),
-                ] {
-                    ui.label(dim(label));
-                    ui.label(vec3(v));
-                    ui.end_row();
-                }
-            });
-
-        for component in &object.components {
-            match component {
-                Component::Primitive(primitive) => {
-                    section(ui, "PRIMITIVE");
-                    egui::Grid::new("inspector_primitive")
-                        .num_columns(2)
-                        .spacing([12.0, 4.0])
-                        .show(ui, |ui| {
-                            let (kind, rows) = shape_rows(primitive.shape);
-                            ui.label(dim("SHAPE"));
-                            ui.label(kind);
-                            ui.end_row();
-                            for (label, value) in rows {
-                                ui.label(dim(label));
-                                ui.label(value);
-                                ui.end_row();
+                ui.horizontal(|ui| {
+                    inspector::field_label(ui, "NAME");
+                    ui.text_edit_singleline(&mut object.name);
+                });
+                ui.horizontal(|ui| {
+                    inspector::field_label(ui, "ZONE");
+                    egui::ComboBox::from_id_salt("inspector_zone")
+                        .selected_text(object.zone.to_uppercase())
+                        .show_ui(ui, |ui| {
+                            for zone in zones {
+                                ui.selectable_value(
+                                    &mut object.zone,
+                                    zone.name.clone(),
+                                    zone.name.to_uppercase(),
+                                );
                             }
-                            ui.label(dim("COLOR"));
-                            ui.label(vec3(primitive.color));
-                            ui.end_row();
                         });
+                });
+
+                section(ui, "TRANSFORM");
+                inspector::fields(ui, &mut object.transform);
+
+                for component in &mut object.components {
+                    section(ui, &inspector::title(component));
+                    inspector::fields(ui, component);
                 }
-                Component::PlayerStart => section(ui, "PLAYER START"),
+            });
+
+        if *object != before {
+            if self.pending.as_ref().is_none_or(|(i, _)| *i != index) {
+                self.pending = Some((index, before));
             }
+            output.changed.push(index);
         }
-    }
-}
-
-fn vec3(v: Vec3) -> String {
-    format!("{:>7.2} {:>7.2} {:>7.2}", v.x, v.y, v.z)
-}
-
-/// A shape's kind and its parameters as inspector rows.
-fn shape_rows(shape: Shape) -> (&'static str, Vec<(&'static str, String)>) {
-    match shape {
-        Shape::Box { size } => ("BOX", vec![("SIZE", vec3(size))]),
-        Shape::Plane { size } => (
-            "PLANE",
-            vec![("SIZE", format!("{:>7.2} {:>7.2}", size.x, size.y))],
-        ),
-        Shape::Wedge { size } => ("WEDGE", vec![("SIZE", vec3(size))]),
-        Shape::Cylinder {
-            radius,
-            height,
-            segments,
-        } => (
-            "CYLINDER",
-            vec![
-                ("RADIUS", format!("{radius:>7.2}")),
-                ("HEIGHT", format!("{height:>7.2}")),
-                ("SEGMENTS", format!("{segments:>7}")),
-            ],
-        ),
-        Shape::Sphere {
-            radius,
-            segments,
-            rings,
-        } => (
-            "SPHERE",
-            vec![
-                ("RADIUS", format!("{radius:>7.2}")),
-                ("SEGMENTS", format!("{segments:>7}")),
-                ("RINGS", format!("{rings:>7}")),
-            ],
-        ),
     }
 }
 
@@ -243,9 +299,11 @@ fn hints(ui: &Ui, viewport: Rect) {
         .interactable(false)
         .show(ui.ctx(), |ui| {
             ui.label(
-                RichText::new("CLICK SELECT  RMB + WASD/QE FLY  WHEEL SPEED  ESC DESELECT")
-                    .small()
-                    .color(theme::AMBER_DIM),
+                RichText::new(
+                    "CLICK SELECT  RMB + WASD/QE FLY  WHEEL SPEED  CTRL+Z/Y UNDO/REDO  ESC DESELECT",
+                )
+                .small()
+                .color(theme::AMBER_DIM),
             );
         });
 }

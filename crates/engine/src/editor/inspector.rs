@@ -1,0 +1,161 @@
+//! Inspector widgets generated from reflection: any component that derives
+//! `Reflect` gets an editable panel without UI code of its own. Numbers become
+//! drag fields, vectors three fields in a row, booleans toggles, text a text
+//! box; nested structs and enum fields are indented underneath.
+
+use crate::ui::theme;
+use bevy_reflect::{PartialReflect, ReflectMut};
+use egui::{DragValue, Ui};
+use glam::{Vec2, Vec3};
+
+const LABEL_WIDTH: f32 = 96.0;
+
+/// Draws one row per field of a struct or enum value. Returns true if
+/// anything changed.
+pub fn fields(ui: &mut Ui, value: &mut dyn PartialReflect) -> bool {
+    let mut changed = false;
+    match value.reflect_mut() {
+        ReflectMut::Struct(s) => {
+            for i in 0..s.field_len() {
+                let name = s.name_at(i).unwrap_or_default().to_owned();
+                if let Some(field) = s.field_at_mut(i) {
+                    changed |= row(ui, &name, field);
+                }
+            }
+        }
+        ReflectMut::Enum(e) => {
+            for i in 0..e.field_len() {
+                let name = e.name_at(i).map(str::to_owned);
+                let Some(field) = e.field_at_mut(i) else {
+                    continue;
+                };
+                match name {
+                    Some(name) => changed |= row(ui, &name, field),
+                    // A tuple variant wrapping one struct: show the struct's fields.
+                    None => changed |= fields(ui, field),
+                }
+            }
+        }
+        _ => {}
+    }
+    changed
+}
+
+/// The section title for a value: an enum shows its variant name.
+pub fn title(value: &dyn PartialReflect) -> String {
+    match value.reflect_ref() {
+        bevy_reflect::ReflectRef::Enum(e) => label_text(e.variant_name()),
+        _ => value
+            .get_represented_type_info()
+            .map(|info| label_text(info.type_path_table().ident().unwrap_or("?")))
+            .unwrap_or_default(),
+    }
+}
+
+fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect) -> bool {
+    let speed = drag_speed(name);
+    let label = |ui: &mut Ui| field_label(ui, &label_text(name));
+
+    if let Some(v) = field.try_downcast_mut::<f32>() {
+        return ui
+            .horizontal(|ui| {
+                label(ui);
+                ui.add(DragValue::new(v).speed(speed).max_decimals(3))
+                    .changed()
+            })
+            .inner;
+    }
+    if let Some(v) = field.try_downcast_mut::<Vec3>() {
+        return ui
+            .horizontal(|ui| {
+                label(ui);
+                let mut changed = false;
+                for c in [&mut v.x, &mut v.y, &mut v.z] {
+                    changed |= ui
+                        .add(DragValue::new(c).speed(speed).max_decimals(3))
+                        .changed();
+                }
+                changed
+            })
+            .inner;
+    }
+    if let Some(v) = field.try_downcast_mut::<Vec2>() {
+        return ui
+            .horizontal(|ui| {
+                label(ui);
+                let mut changed = false;
+                for c in [&mut v.x, &mut v.y] {
+                    changed |= ui
+                        .add(DragValue::new(c).speed(speed).max_decimals(3))
+                        .changed();
+                }
+                changed
+            })
+            .inner;
+    }
+    if let Some(v) = field.try_downcast_mut::<u32>() {
+        return ui
+            .horizontal(|ui| {
+                label(ui);
+                ui.add(DragValue::new(v).speed(0.05)).changed()
+            })
+            .inner;
+    }
+    if let Some(v) = field.try_downcast_mut::<bool>() {
+        return ui
+            .horizontal(|ui| {
+                label(ui);
+                let text = if *v { "[ON] " } else { "[OFF]" };
+                let clicked = ui.small_button(text).clicked();
+                if clicked {
+                    *v = !*v;
+                }
+                clicked
+            })
+            .inner;
+    }
+    if let Some(v) = field.try_downcast_mut::<String>() {
+        return ui
+            .horizontal(|ui| {
+                label(ui);
+                ui.text_edit_singleline(v).changed()
+            })
+            .inner;
+    }
+
+    // Nested struct or enum: a heading row, its fields indented below.
+    ui.horizontal(|ui| {
+        label(ui);
+        if let bevy_reflect::ReflectRef::Enum(e) = field.reflect_ref() {
+            ui.label(label_text(e.variant_name()));
+        }
+    });
+    ui.indent(name, |ui| fields(ui, field)).inner
+}
+
+/// A left-aligned, fixed-width label so the values line up in a column.
+pub fn field_label(ui: &mut Ui, text: &str) {
+    let size = egui::vec2(LABEL_WIDTH, ui.spacing().interact_size.y);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().text(
+        rect.left_center(),
+        egui::Align2::LEFT_CENTER,
+        text,
+        egui::TextStyle::Body.resolve(ui.style()),
+        theme::AMBER_DIM,
+    );
+}
+
+/// `max_slope` → `MAX SLOPE`.
+fn label_text(name: &str) -> String {
+    name.replace('_', " ").to_uppercase()
+}
+
+/// Degrees move faster per pixel than meters.
+fn drag_speed(name: &str) -> f64 {
+    if name.contains("rotation") || name.contains("angle") {
+        0.5
+    } else {
+        0.01
+    }
+}

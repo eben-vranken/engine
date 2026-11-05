@@ -49,3 +49,7 @@ Append new decisions at the bottom. Don't rewrite old entries; supersede them wi
 | 2026-11-05 | Editor viewport = the space between the panels; the scene renders (and render-scales) into just that rect | The 3D view is never covered by UI, and the pixel grid stays exact |
 | 2026-11-05 | Editor camera moves only while the right mouse button is held | Keeps letter keys free for editor shortcuts (gizmo modes etc.) |
 | 2026-11-05 | Click-to-select raycasts rapier's collider BVH (collider `user_data` = object index) instead of a separate render-side BVH | Reuses the acceleration structure we already have; objects without a collider (e.g. PlayerStart) get picked via icons later |
+| 2026-11-05 | `bevy_reflect` 0.20 (standalone, `glam` feature) for the generated inspector | In the brief; it uses the same glam 0.33 as rapier and the engine, so `Vec3` fields reflect directly |
+| 2026-11-05 | Undo commands snapshot the whole object (`SetObject { before, after }`) | One command type covers every inspector and gizmo edit; objects are small. Add finer commands (add/delete/reorder) as features need them |
+| 2026-11-05 | Edits apply live but are recorded as one undo step when the drag or text entry ends | A whole drag is one Ctrl+Z, as in other editors |
+| 2026-11-05 | Changing an enum's variant in the inspector (e.g. Box → Cylinder) is not supported yet | Needs default values per variant; add when it's missed |

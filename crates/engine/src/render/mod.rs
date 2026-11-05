@@ -11,10 +11,10 @@ pub mod scale;
 pub mod texture;
 
 use crate::camera::Camera;
-use crate::scene::{Environment, Scene};
+use crate::scene::{Environment, Primitive, Scene, Transform};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec4};
-use mesh::MeshData;
+use mesh::{MeshData, Shape};
 use scale::ScaleLayout;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -65,6 +65,27 @@ struct UpscaleParams {
     linear_output: u32,
 }
 
+struct Draw {
+    /// Index into `Scene::objects`.
+    object: usize,
+    shape: Shape,
+    uniform: ObjectUniform,
+}
+
+fn object_uniform(
+    primitive: &Primitive,
+    transform: &Transform,
+    highlighted: bool,
+) -> ObjectUniform {
+    let model = transform.matrix();
+    ObjectUniform {
+        model,
+        normal_matrix: model.inverse().transpose(),
+        color: primitive.color.extend(1.0),
+        highlight: Vec4::new(highlighted as u32 as f32, 0.0, 0.0, 0.0),
+    }
+}
+
 struct GpuMesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
@@ -105,8 +126,10 @@ pub struct Renderer {
     object_buffer: wgpu::Buffer,
     object_bind_group: wgpu::BindGroup,
     meshes: Vec<GpuMesh>,
-    /// Per draw: the scene object it belongs to, and its uniform data.
-    draws: Vec<(usize, ObjectUniform)>,
+    /// One per mesh in `meshes`: which object it draws, and its data.
+    draws: Vec<Draw>,
+    /// Scene object shown as selected.
+    highlighted: Option<usize>,
     environment: Environment,
 
     upscale_pipeline: wgpu::RenderPipeline,
@@ -389,6 +412,7 @@ impl Renderer {
             object_bind_group,
             meshes: Vec::new(),
             draws: Vec::new(),
+            highlighted: None,
             environment: Environment::default(),
             upscale_pipeline,
             upscale_layout,
@@ -398,77 +422,104 @@ impl Renderer {
         Ok(renderer)
     }
 
-    /// Uploads every object's mesh and transform. Objects are static for now.
+    /// Uploads every object's mesh and transform.
     pub fn set_scene(&mut self, scene: &Scene) {
         self.environment = scene.environment.clone();
         let primitives: Vec<_> = scene.primitives().collect();
         self.meshes = primitives
             .iter()
-            .map(|(_, primitive, _)| {
-                let data = MeshData::from_shape(primitive.shape);
-                GpuMesh {
-                    vertices: self
-                        .device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("vertices"),
-                            contents: bytemuck::cast_slice(&data.vertices),
-                            usage: wgpu::BufferUsages::VERTEX,
-                        }),
-                    indices: self
-                        .device
-                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                            label: Some("indices"),
-                            contents: bytemuck::cast_slice(&data.indices),
-                            usage: wgpu::BufferUsages::INDEX,
-                        }),
-                    index_count: data.indices.len() as u32,
-                }
-            })
+            .map(|(_, primitive, _)| self.create_mesh(primitive.shape))
             .collect();
-
         let (buffer, bind_group) = create_object_buffer(
             &self.device,
             &self.object_layout,
             self.object_stride,
             primitives.len().max(1),
         );
-        self.draws = primitives
-            .iter()
-            .map(|(object, primitive, transform)| {
-                let model = transform.matrix();
-                let uniform = ObjectUniform {
-                    model,
-                    normal_matrix: model.inverse().transpose(),
-                    color: primitive.color.extend(1.0),
-                    highlight: Vec4::ZERO,
-                };
-                (*object, uniform)
-            })
-            .collect();
-        for (i, (_, uniform)) in self.draws.iter().enumerate() {
-            self.queue.write_buffer(
-                &buffer,
-                i as u64 * self.object_stride,
-                bytemuck::bytes_of(uniform),
-            );
-        }
         self.object_buffer = buffer;
         self.object_bind_group = bind_group;
+        self.draws = primitives
+            .iter()
+            .map(|&(object, primitive, transform)| Draw {
+                object,
+                shape: primitive.shape,
+                uniform: object_uniform(primitive, transform, Some(object) == self.highlighted),
+            })
+            .collect();
+        for i in 0..self.draws.len() {
+            self.write_draw(i);
+        }
+    }
+
+    /// Re-uploads one object after it was edited: its transform and color,
+    /// and its mesh if the shape changed.
+    pub fn update_object(&mut self, scene: &Scene, index: usize) {
+        let primitives: Vec<_> = scene
+            .primitives()
+            .filter(|(object, _, _)| *object == index)
+            .collect();
+        let slots: Vec<usize> = (0..self.draws.len())
+            .filter(|&i| self.draws[i].object == index)
+            .collect();
+        if primitives.len() != slots.len() {
+            // Components were added or removed: rebuild everything.
+            self.set_scene(scene);
+            return;
+        }
+        let highlighted = Some(index) == self.highlighted;
+        for (&slot, (_, primitive, transform)) in slots.iter().zip(primitives) {
+            if self.draws[slot].shape != primitive.shape {
+                self.meshes[slot] = self.create_mesh(primitive.shape);
+                self.draws[slot].shape = primitive.shape;
+            }
+            self.draws[slot].uniform = object_uniform(primitive, transform, highlighted);
+            self.write_draw(slot);
+        }
     }
 
     /// Highlights the given scene object (by index) as selected.
     pub fn set_highlight(&mut self, selected: Option<usize>) {
-        for (i, (object, uniform)) in self.draws.iter_mut().enumerate() {
-            let highlight = (Some(*object) == selected) as u32 as f32;
-            if uniform.highlight.x != highlight {
-                uniform.highlight.x = highlight;
-                self.queue.write_buffer(
-                    &self.object_buffer,
-                    i as u64 * self.object_stride,
-                    bytemuck::bytes_of(uniform),
-                );
+        self.highlighted = selected;
+        for i in 0..self.draws.len() {
+            let highlight = (Some(self.draws[i].object) == selected) as u32 as f32;
+            if self.draws[i].uniform.highlight.x != highlight {
+                self.draws[i].uniform.highlight.x = highlight;
+                self.write_draw(i);
             }
         }
+    }
+
+    fn create_mesh(&self, shape: Shape) -> GpuMesh {
+        let data = MeshData::from_shape(shape);
+        let buffer = |label, contents: &[u8], usage| {
+            self.device
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(label),
+                    contents,
+                    usage,
+                })
+        };
+        GpuMesh {
+            vertices: buffer(
+                "vertices",
+                bytemuck::cast_slice(&data.vertices),
+                wgpu::BufferUsages::VERTEX,
+            ),
+            indices: buffer(
+                "indices",
+                bytemuck::cast_slice(&data.indices),
+                wgpu::BufferUsages::INDEX,
+            ),
+            index_count: data.indices.len() as u32,
+        }
+    }
+
+    fn write_draw(&self, i: usize) {
+        self.queue.write_buffer(
+            &self.object_buffer,
+            i as u64 * self.object_stride,
+            bytemuck::bytes_of(&self.draws[i].uniform),
+        );
     }
 
     /// Draws the scene into part of the window (x, y, width, height in

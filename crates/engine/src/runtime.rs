@@ -318,8 +318,29 @@ impl Running {
             actions.vsync = Some(!self.renderer.vsync());
         }
         if let Some(editor) = &mut self.editor {
+            let ctrl = input.held(KeyCode::ControlLeft) || input.held(KeyCode::ControlRight);
+            let shift = input.held(KeyCode::ShiftLeft) || input.held(KeyCode::ShiftRight);
+            let mut settled = false;
+            let mut changed = None;
             if input.pressed(KeyCode::Escape) {
-                editor.selected = None;
+                settled = editor.select(&self.scene, None);
+            }
+            if ctrl && input.pressed(KeyCode::KeyZ) {
+                changed = if shift {
+                    editor.redo(&mut self.scene)
+                } else {
+                    editor.undo(&mut self.scene)
+                };
+            }
+            if ctrl && input.pressed(KeyCode::KeyY) {
+                changed = editor.redo(&mut self.scene);
+            }
+            if let Some(index) = changed {
+                self.renderer.update_object(&self.scene, index);
+                settled = true;
+            }
+            if settled {
+                self.physics = PhysicsWorld::from_scene(&self.scene);
             }
             return;
         }
@@ -415,10 +436,13 @@ impl Running {
             );
             if ndc.abs().max_element() <= 1.0 {
                 let (origin, direction) = camera.ray(ndc, w / h);
-                editor.selected = self
+                let hit = self
                     .physics
                     .pick(origin, direction, camera.far)
                     .map(|(object, _)| object);
+                if editor.select(&self.scene, hit) {
+                    self.physics = PhysicsWorld::from_scene(&self.scene);
+                }
                 editor.reveal_selection = true;
             }
         }
@@ -462,14 +486,14 @@ impl Running {
         let (status, error) = (&self.settings_status, self.settings_error.as_deref());
         let mut tuning_action = None;
         let editor = &mut self.editor;
-        let scene = &self.scene;
-        let mut viewport = None;
+        let scene = &mut self.scene;
+        let mut editor_output = None;
         let ui_frame = self.overlay.run(
             &self.window,
             self.renderer.device(),
             self.renderer.queue(),
             |ui| match editor {
-                Some(editor) => viewport = Some(editor.ui(ui, scene, &editor_stats, blink)),
+                Some(editor) => editor_output = Some(editor.ui(ui, scene, &editor_stats, blink)),
                 None => {
                     draw_hud(ui, &hud, &mut actions);
                     if tuning_open {
@@ -482,9 +506,19 @@ impl Running {
             self.apply_tuning(action);
         }
 
+        if let Some(output) = &editor_output {
+            for &index in &output.changed {
+                self.renderer.update_object(&self.scene, index);
+            }
+            if output.settled {
+                self.physics = PhysicsWorld::from_scene(&self.scene);
+            }
+        }
+
         // The editor's viewport, from egui points to window pixels.
         let ppp = ui_frame.pixels_per_point();
-        self.viewport = viewport.map(|rect: egui::Rect| {
+        self.viewport = editor_output.map(|output| {
+            let rect = output.viewport;
             egui::Rect::from_min_max((rect.min * ppp).round(), (rect.max * ppp).round())
         });
         self.renderer.set_viewport(self.viewport.map(|v| {
