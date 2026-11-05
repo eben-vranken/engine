@@ -94,21 +94,21 @@ A small step right after milestone 4, for background and walk-through objects.
 - [x] Floating, Door, Switch, PhysicsBody
 - [x] Object references in the inspector (switch → door)
 
-## 7. Audio ← current
+## 7. Audio
 Steam Audio in the engine, tested by walking through spaces in first person.
 
-- [ ] Add `audionimbus` (with `auto-install`) and an audio output crate (e.g. `cpal`)
-- [ ] Audio behaviors: SoundSource, AcousticMaterial (moved here from milestone 6, where they couldn't be heard)
-- [ ] Test scene with four connected spaces, each with its own acoustic material: a small wooden room (dry), a narrow stone corridor (flutter echoes), a large marble hall (long tail), an open area with no walls
-- [ ] Sources: a looping recording at `sandbox/audio/guitar_loop.wav` (fallback: generated tone), a clap on a key at the listener, footsteps depending on the floor material
-- [ ] A key moves the looping source into a different space
-- [ ] On-screen toggles for A/B comparison: occlusion, reflections/reverb, HRTF, air absorption
-- [ ] Simulation on a background thread; master limiter
+- [x] Add `audionimbus` (with `auto-install`) and an audio output crate (e.g. `cpal`)
+- [x] Audio behaviors: SoundSource, AcousticMaterial (moved here from milestone 6, where they couldn't be heard)
+- [x] Test scene with four connected spaces, each with its own acoustic material: a small wooden room (dry), a narrow stone corridor (flutter echoes), a large marble hall (long tail), an open area with no walls
+- [x] Sources: a looping recording at `sandbox/audio/guitar_loop.wav` (fallback: generated tone), a clap on a key at the listener, footsteps depending on the floor material
+- [x] A key moves the looping source into a different space
+- [x] On-screen toggles for A/B comparison: occlusion, reflections/reverb, HRTF, air absorption
+- [x] Simulation on a background thread; master limiter
 
 **Acceptance (user walks through it with headphones):**
 - The four spaces clearly sound different, sound is muffled behind walls and opens up through doorways, each toggle makes an audible difference, no clicks or clipping.
 
-## 8. Zones
+## 8. Zones ← current
 - [ ] Zone data + connections in scenes
 - [ ] Frustum culling, simulation radius
 - [ ] Per-zone reverb probes
