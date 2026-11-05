@@ -36,8 +36,9 @@ pub enum Change {
     Removed(usize),
     /// Anything may have changed, but no objects were added or removed.
     All,
-    /// Only zone settings (fog, grade) changed.
-    Zones,
+    /// Only zone or environment settings changed (fog, grade, sun, sky):
+    /// no meshes need re-uploading.
+    Settings,
 }
 
 impl Edit {

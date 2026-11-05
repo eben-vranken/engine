@@ -715,7 +715,7 @@ impl Running {
                 self.renderer
                     .update_object(&self.scene, index, &mut self.assets);
             }
-            Change::Zones => self.renderer.set_zones(&self.scene, &self.assets),
+            Change::Settings => self.renderer.set_zones(&self.scene, &self.assets),
             Change::Added(_) | Change::Removed(_) | Change::All => {
                 let selected = self.editor.as_ref().and_then(|e| e.selected);
                 self.renderer.set_highlight(selected);
@@ -1151,6 +1151,7 @@ impl Running {
         let editor_stats = EditorStats {
             fps: hud.fps,
             frame_ms: hud.frame_ms,
+            gpu_ms: hud.gpu_times.map(|t| t.iter().sum()),
             internal: hud.internal,
             factor: hud.factor,
             zone,

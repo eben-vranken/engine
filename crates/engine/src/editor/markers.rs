@@ -1,6 +1,6 @@
 //! Markers for objects with no geometry of their own (the PlayerStart, zone
-//! volumes, portals), drawn over the viewport so they can be seen and
-//! clicked.
+//! volumes, portals, fog volumes, lights), drawn over the viewport so they
+//! can be seen and clicked.
 
 use super::gizmo::View;
 use crate::scene::{Component, Scene};
@@ -170,6 +170,73 @@ pub fn zones(
             if response.clicked() {
                 clicked = Some(index);
             }
+        }
+    }
+    (clicked, hovered)
+}
+
+/// Draws every light as a small sun with a LIGHT label (lights often sit
+/// inside a lamp, or have no geometry at all); a selected light also shows
+/// its range as three circles. Returns the object clicked, if any, and
+/// whether the pointer is over a marker.
+pub fn lights(
+    ui: &Ui,
+    view: &View,
+    scene: &Scene,
+    selected: Option<usize>,
+) -> (Option<usize>, bool) {
+    let painter = ui.painter().with_clip_rect(view.image);
+    let (mut clicked, mut hovered) = (None, false);
+    for (index, light, position) in scene.lights() {
+        let Some(at) = project(view, position) else {
+            continue;
+        };
+        let is_selected = selected == Some(index);
+        let color = if is_selected {
+            theme::AMBER
+        } else {
+            theme::AMBER_DIM
+        };
+        let stroke = Stroke::new(if is_selected { 2.0 } else { 1.0 }, color);
+        painter.circle_stroke(at, 4.0, stroke);
+        for i in 0..8 {
+            let a = i as f32 * std::f32::consts::TAU / 8.0;
+            let d = egui::vec2(a.cos(), a.sin());
+            painter.line_segment([at + d * 6.0, at + d * 9.0], stroke);
+        }
+        if is_selected {
+            // The range: a circle in each axis plane.
+            let r = light.range;
+            for (u, v) in [(Vec3::X, Vec3::Z), (Vec3::X, Vec3::Y), (Vec3::Z, Vec3::Y)] {
+                let point = |i: usize| {
+                    let a = i as f32 * std::f32::consts::TAU / 48.0;
+                    position + (u * a.cos() + v * a.sin()) * r
+                };
+                for i in 0..48 {
+                    if let Some(segment) = project_segment(view, point(i), point(i + 1)) {
+                        painter.line_segment(segment, Stroke::new(1.0, theme::AMBER_DIM));
+                    }
+                }
+            }
+        }
+        let label = painter.text(
+            at + egui::vec2(0.0, -11.0),
+            Align2::CENTER_BOTTOM,
+            "LIGHT",
+            FontId::monospace(11.0),
+            color,
+        );
+        if is_selected || view.looking {
+            continue;
+        }
+        let response = ui.interact(
+            label.union(Rect::from_center_size(at, egui::vec2(20.0, 20.0))),
+            egui::Id::unique(("light_marker", index)),
+            Sense::click(),
+        );
+        hovered |= response.hovered();
+        if response.clicked() {
+            clicked = Some(index);
         }
     }
     (clicked, hovered)

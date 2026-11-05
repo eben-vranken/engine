@@ -21,11 +21,25 @@ pub struct Names {
 /// Draws one row per field of a struct or enum value. Returns true if
 /// anything changed.
 pub fn fields(ui: &mut Ui, value: &mut dyn PartialReflect, names: &Names) -> bool {
+    fields_except(ui, value, names, &[])
+}
+
+/// Like [`fields`], leaving out the struct fields named in `skip` (for
+/// values drawn with their own controls).
+pub fn fields_except(
+    ui: &mut Ui,
+    value: &mut dyn PartialReflect,
+    names: &Names,
+    skip: &[&str],
+) -> bool {
     let mut changed = false;
     match value.reflect_mut() {
         ReflectMut::Struct(s) => {
             for i in 0..s.field_len() {
                 let name = s.name_at(i).unwrap_or_default().to_owned();
+                if skip.contains(&name.as_str()) {
+                    continue;
+                }
                 if let Some(field) = s.field_at_mut(i) {
                     changed |= row(ui, &name, field, names);
                 }
@@ -265,7 +279,7 @@ fn label_text(name: &str) -> String {
 ///
 /// The unsnapped value is kept for the length of the drag, so small mouse
 /// movements still add up instead of being rounded away every frame.
-fn drag(ui: &mut Ui, value: &mut f32, speed: f64, step: f32) -> bool {
+pub fn drag(ui: &mut Ui, value: &mut f32, speed: f64, step: f32) -> bool {
     let old = *value;
     let response = ui.add(DragValue::new(value).speed(speed).max_decimals(3));
     let raw_id = response.id.with("snap_raw");

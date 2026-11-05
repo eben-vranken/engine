@@ -482,7 +482,7 @@ pub struct Renderable<'a> {
 
 /// Global lighting and atmosphere. All colors are linear RGB; light colors
 /// include intensity, so values above 1 are expected.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 #[serde(default)]
 pub struct Environment {
     /// Direction the sunlight travels (from the sun toward the ground).
