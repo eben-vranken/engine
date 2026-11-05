@@ -6,4 +6,7 @@ license.workspace = true
 description = "The single binary: runs a game, or the editor on top of it with --editor."
 
 [dependencies]
+anyhow = "1.0.104"
 engine.workspace = true
+env_logger = "0.11.11"
+log = "0.4.35"

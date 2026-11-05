@@ -6,3 +6,13 @@ license.workspace = true
 description = "Core runtime: rendering, audio, scenes, zones, behaviors."
 
 [dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+egui = { version = "0.37.0", features = ["default_fonts"] }
+egui-wgpu = "0.37.0"
+egui-winit = "0.37.0"
+glam = { version = "0.34.2", features = ["bytemuck"] }
+log = "0.4.35"
+pollster = "1.0.1"
+thiserror = "2.0.21"
+wgpu = "30.0.1"
+winit = "0.30.13"

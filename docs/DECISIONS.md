@@ -24,3 +24,9 @@ Append new decisions at the bottom. Don't rewrite old entries; supersede them wi
 | 2026-11-05 | First-person character controller; third-person only if a game needs it | User's choice for the first character |
 | 2026-11-05 | Physics with rapier3d | Standard Rust physics crate; provides colliders, a kinematic character controller (steps, slopes, ground snapping) and rigid bodies for PhysicsBody |
 | 2026-11-05 | Movement properties in the game project's `player.ron`, tunable live in-game (F1) with save and hot reload | Feel is game-specific data and is tuned by playing, not recompiling |
+| 2026-11-05 | Extra crates: `glam` (math), `bytemuck` (GPU buffer casts), `pollster` (block on wgpu's async setup), `log` + `env_logger` (logging), `thiserror` / `anyhow` (errors) | Small, standard companions to wgpu; glam is the common choice around wgpu and is re-exported from `engine` so games share one math type |
+| 2026-11-05 | Tone mapping is AgX (polynomial fit), applied in the upscale pass | Handles saturated highlights more gracefully than ACES, suits a moody, low-saturation look |
+| 2026-11-05 | Default render-scale factor = ceil(output height / 720) | Matches the brief's table (1080p → 2, 1440p → 2, 4K → 3); manual override 1–8, letterbox for leftover pixels |
+| 2026-11-05 | Scene renders to an Rgba16Float target; the window surface is non-sRGB and the upscale shader writes display-encoded values | Keeps HDR until tone mapping; egui also prefers a non-sRGB surface, so both share one target |
+| 2026-11-05 | Point-sampled textures still get mipmaps, blended linearly between levels | Crisp texels up close without distant grid lines shimmering |
+| 2026-11-05 | Milestone 1's test scene is hard-coded in `crates/app/src/demo.rs` | No scene format until milestone 3; it moves into `sandbox/scenes/` then |

@@ -12,6 +12,17 @@
 //! - `behaviors` Floating, Door, Switch, PhysicsBody, Singer, ...
 //! - `player`    character controller, camera, abilities
 
+pub mod camera;
+pub mod input;
+pub mod render;
+pub mod runtime;
+pub mod scene;
+pub mod ui;
+
+/// Re-exported so games and the app use the same math types as the engine.
+pub use glam;
+pub use runtime::{RunConfig, RunError, run};
+
 /// Engine name, used in window titles and logs. Working name, may change.
 pub const NAME: &str = "engine";
 

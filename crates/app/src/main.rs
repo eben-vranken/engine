@@ -7,6 +7,10 @@
 //! `--game <path>` picks the game project folder (default: `sandbox`).
 //! Game projects are content-only folders; they never contain engine code.
 
+mod demo;
+
+use engine::camera::FlyCamera;
+use engine::glam::Vec3;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,14 +44,27 @@ fn parse_args() -> Args {
     Args { mode, game }
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,wgpu_hal=error,wgpu_core=warn"),
+    )
+    .init();
     let args = parse_args();
-    println!(
+    log::info!(
         "{} v{} | mode: {:?} | game: {}",
         engine::NAME,
         engine::VERSION,
         args.mode,
         args.game.display()
     );
-    println!("Nothing to run yet. Next step: milestone 1 in docs/ROADMAP.md.");
+    if args.mode == Mode::Editor {
+        log::warn!("the editor arrives in milestone 3; running play mode");
+    }
+
+    engine::run(engine::RunConfig {
+        title: format!("{} — {}", engine::NAME, args.game.display()),
+        scene: demo::scene(),
+        camera: FlyCamera::new(Vec3::new(0.0, 1.7, 6.0), 0.0, -0.08),
+    })?;
+    Ok(())
 }
