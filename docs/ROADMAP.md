@@ -123,10 +123,7 @@ Steam Audio in the engine, tested by walking through spaces in first person.
 
 **Acceptance:** 60+ fps at 4K output with default render scale on an RTX 3060 Ti class GPU; a dark grey-box hall with one window and one lantern looks atmospheric to the user.
 
-## 10. Music system ← current
-- [ ] Global key/scale/tempo, motifs quantized to the beat, instrument layers per zone
-
-## 11. Gameplay systems
+## 11. Gameplay systems ← current
 - [ ] Abilities + gates, save system, map from zone data
 
 ## 12. Stairs primitive
@@ -142,4 +139,5 @@ A small step after the core milestones: stairs as an editor primitive, shaped fr
 ## Later (optional)
 Not scheduled; picked up only if a game needs it.
 
+- [ ] Music system (was milestone 10): one key, scale and tempo per game (overridable per zone), motifs quantized to the beat, instrument layers that change per zone, music as positioned sources heard through the acoustic simulation
 - [ ] Singer behavior: characters that sing short motifs (voice, motif, interval, reacts_to_player). Needs the music system and a decision on voices (BRIEF.md open question); games can use recorded audio tracks through SoundSource meanwhile
