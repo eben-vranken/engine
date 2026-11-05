@@ -10,6 +10,7 @@ pub mod gizmo;
 pub mod history;
 pub mod import;
 pub mod inspector;
+pub mod markers;
 
 use crate::render::mesh::Shape;
 use crate::scene::{Component, Model, Object, Primitive, Scene, Transform};
@@ -68,7 +69,8 @@ pub struct EditorOutput {
     pub changed: Vec<Change>,
     /// An edit was committed, undone or redone (rebuild collision).
     pub settled: bool,
-    /// The pointer is on a gizmo handle, so a click there isn't a selection.
+    /// The pointer is on a gizmo handle or a marker, so a click there isn't
+    /// a viewport pick.
     pub gizmo_hovered: bool,
     /// Load this scene (relative to the project folder).
     pub open: Option<PathBuf>,
@@ -147,6 +149,15 @@ impl Editor {
                 output.changed.push(Change::Modified(index));
             }
             output.gizmo_hovered = self.gizmo.hovered() || self.gizmo.dragging();
+        }
+
+        if !self.playing {
+            let (clicked, hovered) = markers::player_starts(ui, view, scene, self.selected);
+            output.gizmo_hovered |= hovered;
+            if let Some(index) = clicked {
+                output.settled |= self.select(scene, Some(index));
+                self.reveal_selection = true;
+            }
         }
 
         // A drag or text entry has ended: the pending change becomes one undo step.
@@ -358,6 +369,29 @@ impl Editor {
         Some(self.append(scene, object))
     }
 
+    /// Adds the PlayerStart where the camera looks, facing the way the
+    /// camera faces (snapped to 15°).
+    fn add_player_start(&mut self, scene: &mut Scene, view: &View) -> Option<Change> {
+        let bounds = (
+            Vec3::new(-0.3, 0.0, -0.3),
+            Vec3::new(0.3, markers::POST_HEIGHT, 0.3),
+        );
+        let ahead = view.camera.position + view.camera.forward() * NEW_OBJECT_DISTANCE;
+        // A camera yaw turns right, an object's Y rotation turns left.
+        let yaw = (-view.camera.yaw.to_degrees() / 15.0).round() * 15.0 + 0.0;
+        let object = Object {
+            name: unique_name(scene, "player start"),
+            zone: self.new_object_zone(scene)?,
+            transform: Transform {
+                position: placement(bounds, view.aim, ahead),
+                rotation: Vec3::new(0.0, yaw, 0.0),
+                ..Default::default()
+            },
+            components: vec![Component::PlayerStart],
+        };
+        Some(self.append(scene, object))
+    }
+
     /// Adds a model (path relative to the project) at `position`, in the
     /// selection's zone. `None` if the scene has no zones.
     pub fn add_model(&mut self, scene: &mut Scene, path: String, position: Vec3) -> Option<Change> {
@@ -512,6 +546,17 @@ impl Editor {
                                 output.changed.push(change);
                                 output.settled = true;
                             }
+                        }
+                        ui.separator();
+                        let has_start = scene.player_start().is_some();
+                        if ui
+                            .add_enabled(!has_start, egui::Button::new("PLAYER START"))
+                            .on_disabled_hover_text("THE SCENE ALREADY HAS ONE")
+                            .clicked()
+                            && let Some(change) = self.add_player_start(scene, view)
+                        {
+                            output.changed.push(change);
+                            output.settled = true;
                         }
                     });
                 });
@@ -897,6 +942,32 @@ mod tests {
         let p = added.transform.position;
         assert_eq!(p, (p / SNAP).round() * SNAP);
         assert!((p - camera.position).length() > 3.0);
+    }
+
+    #[test]
+    fn player_start_stands_on_the_floor_facing_like_the_camera() {
+        let mut scene = boxes(1);
+        let mut editor = editor();
+        let camera = Camera {
+            position: Vec3::new(0.0, 1.7, 0.0),
+            // Looking toward +X (yaw turns right), slightly off the 15° grid.
+            yaw: 92f32.to_radians(),
+            pitch: -0.4,
+            fov_y: 70.0,
+            near: 0.1,
+            far: 100.0,
+        };
+        let view = View {
+            camera: &camera,
+            image: Rect::NOTHING,
+            looking: false,
+            aim: Some((Vec3::new(3.0, 0.0, 0.1), Vec3::Y)),
+        };
+        editor.add_player_start(&mut scene, &view);
+        let start = scene.player_start().expect("added");
+        assert_eq!(start.position, Vec3::new(3.0, 0.0, 0.0));
+        let facing = start.quat() * Vec3::NEG_Z;
+        assert!((facing - Vec3::X).length() < 1e-5, "faces +X, got {facing}");
     }
 
     #[test]
