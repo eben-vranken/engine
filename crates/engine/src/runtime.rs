@@ -584,7 +584,8 @@ impl Running {
                 })
                 .unwrap_or_default();
             if floor.is_some() {
-                audio.footstep(material, feet);
+                // Just above the floor, so the step comes from the surface.
+                audio.footstep(material, feet + Vec3::Y * 0.15);
             }
         }
     }

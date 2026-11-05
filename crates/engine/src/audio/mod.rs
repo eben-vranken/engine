@@ -51,8 +51,9 @@ const GEOMETRY_CHECK: Duration = Duration::from_millis(250);
 const SOURCE_RADIUS: f32 = 0.4;
 /// Longest reverb tail simulated (seconds); enough for a large stone hall.
 const MAX_REVERB: f32 = 3.0;
-/// Voices kept ready for one-shot sounds (claps, footsteps).
-const ONE_SHOT_VOICES: usize = 6;
+/// Voices kept ready for one-shot sounds (claps, footsteps); enough for
+/// sprinting footsteps that each ring out for the full reverb tail.
+const ONE_SHOT_VOICES: usize = 10;
 
 type AcousticSimulator = Simulator<DefaultRayTracer, Direct, Reflections, (), Convolution>;
 type AcousticSource = Source<Direct, Reflections, (), Convolution>;
@@ -119,6 +120,14 @@ struct Entry {
     position: Vec3,
     volume: f32,
     looping: bool,
+}
+
+impl Entry {
+    /// Scene sounds can be blocked by walls. One-shots are the player's own
+    /// sounds (claps, footsteps): right at the listener, never occluded.
+    fn occluded(&self) -> bool {
+        matches!(self.kind, Kind::Scene { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -289,7 +298,10 @@ impl Audio {
         for entry in &active {
             if let Err(err) = entry
                 .source
-                .set_inputs_subset::<Direct, (), (), _, _, _>(&inputs(entry.position))
+                .set_inputs_subset::<Direct, (), (), _, _, _>(&inputs(
+                    entry.position,
+                    entry.occluded(),
+                ))
             {
                 log::error!("audio source: {err}");
             }
@@ -303,7 +315,7 @@ impl Audio {
                     entry.id,
                     SourceWithInputs {
                         source: entry.source.clone(),
-                        simulation_inputs: inputs(entry.position),
+                        simulation_inputs: inputs(entry.position, entry.occluded()),
                     },
                 ));
             }
@@ -338,12 +350,15 @@ impl Audio {
                     if let Some(air) = direct.air_absorption {
                         params.air_absorption = air.0;
                     }
-                    params.occlusion = direct.occlusion.unwrap_or(1.0);
-                    if let Some(
-                        Transmission::FrequencyDependent(t) | Transmission::FrequencyIndependent(t),
-                    ) = direct.transmission
-                    {
-                        params.transmission = t.0;
+                    if entry.occluded() {
+                        params.occlusion = direct.occlusion.unwrap_or(1.0);
+                        if let Some(
+                            Transmission::FrequencyDependent(t)
+                            | Transmission::FrequencyIndependent(t),
+                        ) = direct.transmission
+                        {
+                            params.transmission = t.0;
+                        }
                     }
                 }
                 (entry.id, params)
@@ -586,28 +601,29 @@ impl Audio {
     }
 }
 
-/// What each source is simulated for.
-fn inputs(position: Vec3) -> SimulationInputs<Direct, Reflections, ()> {
+/// What each source is simulated for; occlusion only if `occluded`.
+fn inputs(position: Vec3, occluded: bool) -> SimulationInputs<Direct, Reflections, ()> {
+    let mut direct = DirectSimulationParameters::new()
+        .with_distance_attenuation(DistanceAttenuationModel::default())
+        .with_air_absorption(AirAbsorptionModel::default());
+    if occluded {
+        direct = direct.with_occlusion(
+            Occlusion::new(OcclusionAlgorithm::Volumetric {
+                radius: SOURCE_RADIUS,
+                num_occlusion_samples: 16,
+            })
+            .with_transmission(TransmissionParameters {
+                num_transmission_rays: 3,
+            }),
+        );
+    }
     SimulationInputs {
         source: CoordinateSystem {
             origin: vector(position),
             ..Default::default()
         },
         parameters: SimulationParameters::new()
-            .with_direct(
-                DirectSimulationParameters::new()
-                    .with_distance_attenuation(DistanceAttenuationModel::default())
-                    .with_air_absorption(AirAbsorptionModel::default())
-                    .with_occlusion(
-                        Occlusion::new(OcclusionAlgorithm::Volumetric {
-                            radius: SOURCE_RADIUS,
-                            num_occlusion_samples: 16,
-                        })
-                        .with_transmission(TransmissionParameters {
-                            num_transmission_rays: 3,
-                        }),
-                    ),
-            )
+            .with_direct(direct)
             .with_reflections(ConvolutionParameters {
                 baked_data_identifier: None,
             }),

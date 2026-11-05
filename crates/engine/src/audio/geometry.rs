@@ -169,28 +169,34 @@ fn preset_of(scene: &Scene, object: usize) -> AcousticPreset {
 }
 
 /// How each preset absorbs (low, mid, high), scatters, and transmits sound.
-/// Mostly Steam Audio's published material values; marble, velvet and water
-/// are ours.
+/// Absorption and scattering are mostly Steam Audio's published values
+/// (marble, velvet and water are ours). Transmission is tuned for games, not
+/// physics: a closed wooden door muffles a sound but it stays audible; thick
+/// stone mostly blocks it.
+///
+/// The transmission values below are what gets through a whole solid object.
+/// A ray crosses two of its faces and Steam Audio combines them as t^1.5
+/// (measured), so each face is given t^(2/3).
 fn material(preset: AcousticPreset) -> Material {
-    let (absorption, scattering, transmission) = match preset {
-        AcousticPreset::Generic => ([0.10, 0.20, 0.30], 0.05, [0.100, 0.050, 0.030]),
-        AcousticPreset::Wood => ([0.11, 0.07, 0.06], 0.05, [0.070, 0.014, 0.005]),
-        AcousticPreset::Stone => ([0.13, 0.20, 0.24], 0.05, [0.015, 0.002, 0.001]),
-        AcousticPreset::Marble => ([0.01, 0.01, 0.02], 0.05, [0.015, 0.002, 0.001]),
-        AcousticPreset::Brick => ([0.03, 0.04, 0.07], 0.05, [0.015, 0.015, 0.015]),
-        AcousticPreset::Concrete => ([0.05, 0.07, 0.08], 0.05, [0.015, 0.002, 0.001]),
-        AcousticPreset::Plaster => ([0.12, 0.06, 0.04], 0.05, [0.056, 0.056, 0.004]),
-        AcousticPreset::Carpet => ([0.24, 0.69, 0.73], 0.05, [0.020, 0.005, 0.003]),
-        AcousticPreset::Velvet => ([0.30, 0.75, 0.80], 0.30, [0.400, 0.200, 0.100]),
-        AcousticPreset::Glass => ([0.06, 0.03, 0.02], 0.05, [0.060, 0.044, 0.011]),
-        AcousticPreset::Metal => ([0.20, 0.07, 0.06], 0.05, [0.200, 0.025, 0.010]),
-        AcousticPreset::Water => ([0.01, 0.01, 0.02], 0.05, [0.020, 0.010, 0.005]),
-        AcousticPreset::Gravel => ([0.60, 0.70, 0.80], 0.05, [0.031, 0.012, 0.008]),
+    let (absorption, scattering, through): ([f32; 3], f32, [f32; 3]) = match preset {
+        AcousticPreset::Generic => ([0.10, 0.20, 0.30], 0.05, [0.30, 0.15, 0.08]),
+        AcousticPreset::Wood => ([0.11, 0.07, 0.06], 0.05, [0.30, 0.15, 0.06]),
+        AcousticPreset::Stone => ([0.13, 0.20, 0.24], 0.05, [0.05, 0.02, 0.01]),
+        AcousticPreset::Marble => ([0.01, 0.01, 0.02], 0.05, [0.04, 0.015, 0.008]),
+        AcousticPreset::Brick => ([0.03, 0.04, 0.07], 0.05, [0.06, 0.03, 0.015]),
+        AcousticPreset::Concrete => ([0.05, 0.07, 0.08], 0.05, [0.05, 0.02, 0.01]),
+        AcousticPreset::Plaster => ([0.12, 0.06, 0.04], 0.05, [0.20, 0.10, 0.03]),
+        AcousticPreset::Carpet => ([0.24, 0.69, 0.73], 0.05, [0.10, 0.05, 0.02]),
+        AcousticPreset::Velvet => ([0.30, 0.75, 0.80], 0.30, [0.50, 0.30, 0.15]),
+        AcousticPreset::Glass => ([0.06, 0.03, 0.02], 0.05, [0.35, 0.20, 0.08]),
+        AcousticPreset::Metal => ([0.20, 0.07, 0.06], 0.05, [0.20, 0.06, 0.02]),
+        AcousticPreset::Water => ([0.01, 0.01, 0.02], 0.05, [0.10, 0.05, 0.02]),
+        AcousticPreset::Gravel => ([0.60, 0.70, 0.80], 0.05, [0.05, 0.02, 0.01]),
     };
     Material {
         absorption,
         scattering,
-        transmission,
+        transmission: through.map(|t| t.powf(2.0 / 3.0)),
     }
 }
 
@@ -260,6 +266,11 @@ mod tests {
     /// Steam Audio's occlusion of a source 5 m ahead of a listener, with a
     /// wall halfway between them; 1 = clear, 0 = blocked.
     fn occlusion_through_wall(wall_solid: bool) -> f32 {
+        through_wall(wall_solid, AcousticPreset::Generic).0
+    }
+
+    /// Occlusion and mid-band transmission through a wall of `preset`.
+    fn through_wall(wall_solid: bool, preset: AcousticPreset) -> (f32, f32) {
         use audionimbus::*;
         let mut scene = test_scene(vec![(
             Shape::Box {
@@ -270,6 +281,9 @@ mod tests {
         if let Component::Primitive(p) = &mut scene.objects[0].components[0] {
             p.collision = wall_solid;
         }
+        scene.objects[0]
+            .components
+            .push(Component::AcousticMaterial(AcousticMaterial { preset }));
         let context = Context::default();
         let settings = AudioSettings::default();
         let mut simulator = Simulator::try_new(
@@ -296,17 +310,35 @@ mod tests {
                     ..Default::default()
                 },
                 parameters: SimulationParameters::new().with_direct(
-                    DirectSimulationParameters::new().with_occlusion(Occlusion::new(
-                        OcclusionAlgorithm::Volumetric {
+                    DirectSimulationParameters::new().with_occlusion(
+                        Occlusion::new(OcclusionAlgorithm::Volumetric {
                             radius: 0.4,
                             num_occlusion_samples: 16,
-                        },
-                    )),
+                        })
+                        .with_transmission(TransmissionParameters {
+                            num_transmission_rays: 3,
+                        }),
+                    ),
                 ),
             })
             .unwrap();
         simulator.run_direct();
-        source.get_outputs().unwrap().direct().occlusion.unwrap()
+        let direct = source.get_outputs().unwrap().direct();
+        let transmission = match direct.transmission.unwrap() {
+            Transmission::FrequencyDependent(t) | Transmission::FrequencyIndependent(t) => t.0[1],
+        };
+        (direct.occlusion.unwrap(), transmission)
+    }
+
+    #[test]
+    fn wooden_walls_muffle_and_stone_mostly_blocks() {
+        let (_, wood) = through_wall(true, AcousticPreset::Wood);
+        let (_, stone) = through_wall(true, AcousticPreset::Stone);
+        assert!(
+            (0.1..0.2).contains(&wood),
+            "wood lets about 15% of mids through: {wood}"
+        );
+        assert!(stone < 0.05 && stone < wood, "stone {stone}");
     }
 
     #[test]
