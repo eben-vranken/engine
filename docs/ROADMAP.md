@@ -86,11 +86,11 @@ A small step right after milestone 4, for background and walk-through objects.
 
 **Acceptance:** the user turns collision off on an object, walks through it in Play, and can still click to select it in the editor.
 
-## 5. Play/Stop in place ← current
-- [ ] Play runs the scene inside the editor; Stop restores the edited state
-- [ ] PlayerStart object; the player uses the game project's `player.ron`
+## 5. Play/Stop in place
+- [x] Play runs the scene inside the editor; Stop restores the edited state
+- [x] PlayerStart object; the player uses the game project's `player.ron`
 
-## 6. First behaviors
+## 6. First behaviors ← current
 - [ ] Floating, Door, Switch, PhysicsBody, SoundSource, Singer, AcousticMaterial
 - [ ] Object references in the inspector (switch → door)
 
