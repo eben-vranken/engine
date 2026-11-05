@@ -3,8 +3,8 @@
 
 struct Frame {
     view_proj: mat4x4<f32>,
-    // World → the sun's shadow map.
-    sun_view_proj: mat4x4<f32>,
+    // World → each of the sun's shadow cascades.
+    sun_view_proj: array<mat4x4<f32>, 3>,
     camera_pos: vec4<f32>,
     // xyz: direction the sunlight travels. w: 1 = the sun casts shadows.
     sun_dir: vec4<f32>,
@@ -14,9 +14,9 @@ struct Frame {
     // rgb: color, a: density per meter.
     fog: vec4<f32>,
     // x: texture repeats per meter. y: number of lights. z: seconds.
-    // w: size of a sun shadow texel in meters.
+    // w: texels per side of a sun shadow cascade.
     params: vec4<f32>,
-    // x: meters around the camera with sun shadows.
+    // xyz: meters around the camera each sun cascade covers.
     shadow: vec4<f32>,
 };
 
@@ -46,7 +46,7 @@ const POINT_SHADOW_SIZE: f32 = 512.0;
 @group(0) @binding(1) var<storage, read> lights: array<Light>;
 // Six view-projections per shadow slot, one per cube face.
 @group(0) @binding(2) var<storage, read> shadow_faces: array<mat4x4<f32>>;
-@group(0) @binding(3) var sun_shadow: texture_depth_2d;
+@group(0) @binding(3) var sun_shadow: texture_depth_2d_array;
 @group(0) @binding(4) var point_shadows: texture_depth_2d_array;
 @group(0) @binding(5) var shadow_sampler: sampler_comparison;
 @group(1) @binding(0) var<uniform> object: Object;
@@ -83,31 +83,51 @@ fn shadow_coords(m: mat4x4<f32>, p: vec3<f32>) -> vec3<f32> {
     return vec3<f32>(ndc.xy * vec2<f32>(0.5, -0.5) + 0.5, ndc.z);
 }
 
-// 1 = lit by the sun, 0 = in its shadow. 3×3 filtered taps (each one a
-// hardware 2×2 comparison) soften the edge.
-fn sun_visibility(world: vec3<f32>, n: vec3<f32>) -> f32 {
-    if frame.sun_dir.w == 0.0 {
-        return 1.0;
-    }
-    let texel = frame.params.w;
+// How lit a point is in one sun cascade: 1 = lit, 0 = shadow. 3×3
+// filtered taps (each a hardware 2×2 comparison) soften the edge.
+fn cascade_visibility(cascade: u32, world: vec3<f32>, n: vec3<f32>) -> f32 {
+    let texel = 2.0 * frame.shadow[cascade] / frame.params.w;
     // Pushing the lookup out along the normal avoids self-shadowing acne.
     let p = world + n * texel * 1.5;
-    let c = shadow_coords(frame.sun_view_proj, p);
+    let c = shadow_coords(frame.sun_view_proj[cascade], p);
     if any(c.xy < vec2<f32>(0.0)) || any(c.xy > vec2<f32>(1.0)) || c.z > 1.0 {
         return 1.0;
     }
-    let step = 1.0 / f32(textureDimensions(sun_shadow).x);
+    let step = 1.0 / frame.params.w;
     var lit = 0.0;
     for (var y = -1; y <= 1; y++) {
         for (var x = -1; x <= 1; x++) {
             let uv = c.xy + vec2<f32>(f32(x), f32(y)) * step;
-            lit += textureSampleCompareLevel(sun_shadow, shadow_sampler, uv, c.z);
+            lit += textureSampleCompareLevel(sun_shadow, shadow_sampler, uv, cascade, c.z);
         }
     }
-    // Fade out toward the edge of the shadowed area instead of a seam.
+    return lit / 9.0;
+}
+
+// 1 = lit by the sun, 0 = in its shadow. Uses the smallest (sharpest)
+// cascade that covers the point, blending into the next one over its outer
+// 20% so there's no visible seam; fades out past the last one.
+fn sun_visibility(world: vec3<f32>, n: vec3<f32>) -> f32 {
+    if frame.sun_dir.w == 0.0 {
+        return 1.0;
+    }
     let distance = length(world - frame.camera_pos.xyz);
-    let fade = smoothstep(frame.shadow.x * 0.8, frame.shadow.x, distance);
-    return mix(lit / 9.0, 1.0, fade);
+    for (var i = 0u; i < 3u; i++) {
+        let radius = frame.shadow[i];
+        if distance < radius {
+            let lit = cascade_visibility(i, world, n);
+            let edge = smoothstep(radius * 0.8, radius, distance);
+            if edge <= 0.0 {
+                return lit;
+            }
+            var next = 1.0;
+            if i < 2u {
+                next = cascade_visibility(i + 1u, world, n);
+            }
+            return mix(lit, next, edge);
+        }
+    }
+    return 1.0;
 }
 
 // Which cube face sees direction d: the axis it points along most.

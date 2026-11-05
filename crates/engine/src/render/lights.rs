@@ -138,7 +138,18 @@ pub fn face_for(d: Vec3) -> usize {
     }
 }
 
-/// The sun's shadow map: an orthographic view along the sunlight covering
+/// Sun shadow cascades: maps of growing size around the camera, so shadows
+/// up close get most of the resolution.
+pub const CASCADES: usize = 3;
+
+/// Meters each cascade covers around the camera, for a total shadow
+/// distance: about 8 m, 20 m, then the rest.
+pub fn cascade_radii(distance: f32) -> [f32; CASCADES] {
+    let d = distance.max(1.0);
+    [d.min(8.0), d.min(20.0).max(d * 0.4), d]
+}
+
+/// One sun shadow cascade: an orthographic view along the sunlight covering
 /// `radius` meters around `center`, `depth` meters deep either way. The
 /// view is snapped to whole shadow texels so the shadows don't crawl as
 /// the camera moves.
@@ -236,6 +247,13 @@ mod tests {
             assert!(ndc.x.abs() <= 1.0 && ndc.y.abs() <= 1.0, "{d} {face} {ndc}");
             assert!((0.0..=1.0).contains(&ndc.z), "{ndc}");
         }
+    }
+
+    #[test]
+    fn cascades_grow_and_end_at_the_shadow_distance() {
+        assert_eq!(cascade_radii(40.0), [8.0, 20.0, 40.0]);
+        let small = cascade_radii(5.0);
+        assert!(small.windows(2).all(|w| w[0] <= w[1]) && small[2] == 5.0);
     }
 
     #[test]

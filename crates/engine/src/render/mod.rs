@@ -55,7 +55,7 @@ pub enum RenderError {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct FrameUniform {
     view_proj: Mat4,
-    sun_view_proj: Mat4,
+    sun_view_proj: [Mat4; lights::CASCADES],
     camera_pos: Vec4,
     sun_dir: Vec4,
     sun_color: Vec4,
@@ -286,7 +286,7 @@ impl Renderer {
                 },
                 storage(1),
                 storage(2),
-                depth_texture(3, wgpu::TextureViewDimension::D2),
+                depth_texture(3, wgpu::TextureViewDimension::D2Array),
                 depth_texture(4, wgpu::TextureViewDimension::D2Array),
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
@@ -826,13 +826,15 @@ impl Renderer {
                 .write_buffer(&self.light_buffer, 0, bytemuck::cast_slice(&gpu_lights));
         }
         let sun_on = env.sun_color.max_element() > 0.0 && env.shadow_distance > 0.0;
-        let radius = env.shadow_distance.max(1.0);
-        let sun_view_proj = lights::sun_matrix(
-            camera.position,
-            env.sun_direction,
-            radius,
-            shadows::SUN_SIZE,
-        );
+        let radii = lights::cascade_radii(env.shadow_distance);
+        let sun_view_proj = radii.map(|radius| {
+            lights::sun_matrix(
+                camera.position,
+                env.sun_direction,
+                radius,
+                shadows::SUN_SIZE,
+            )
+        });
         let uniform = FrameUniform {
             view_proj,
             sun_view_proj,
@@ -849,9 +851,9 @@ impl Renderer {
                 1.0 / texture::GRID_METERS as f32,
                 gpu_lights.len() as f32,
                 time,
-                2.0 * radius / shadows::SUN_SIZE as f32,
+                shadows::SUN_SIZE as f32,
             ),
-            shadow: Vec4::new(radius, 0.0, 0.0, 0.0),
+            shadow: Vec4::new(radii[0], radii[1], radii[2], 0.0),
         };
         self.queue
             .write_buffer(&self.frame_buffer, 0, bytemuck::bytes_of(&uniform));

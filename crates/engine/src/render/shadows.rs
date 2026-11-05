@@ -2,21 +2,22 @@
 //! view. A surface is in shadow where something nearer to the light was
 //! drawn into the map.
 //!
-//! - The sun: one orthographic map following the camera.
+//! - The sun: three cascades (orthographic maps of growing size) following
+//!   the camera.
 //! - Point lights: six faces each (see `lights`), re-rendered only when the
 //!   light or something within its range moved, so static lights in a
 //!   static room cost nothing after the first frame.
 
 use super::frustum::Frustum;
-use super::lights::{self, FrameLight, MAX_SHADOWED};
+use super::lights::{self, CASCADES, FrameLight, MAX_SHADOWED};
 use glam::{Mat4, Vec3};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 pub const SUN_SIZE: u32 = 2048;
 pub const POINT_SIZE: u32 = 512;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-/// Pass matrices: the sun first, then six per shadow slot.
-const PASSES: usize = 1 + MAX_SHADOWED * 6;
+/// Pass matrices: the sun's cascades first, then six per shadow slot.
+const PASSES: usize = CASCADES + MAX_SHADOWED * 6;
 
 /// Something that casts shadows, as the frame sees it.
 pub struct Caster<'a> {
@@ -32,7 +33,10 @@ pub struct Caster<'a> {
 }
 
 pub struct Shadows {
+    /// All sun cascades, as one array for the scene shader.
     pub sun_view: wgpu::TextureView,
+    /// One view per cascade, to render into.
+    cascade_views: Vec<wgpu::TextureView>,
     /// All point-light faces, as one array for the scene shader.
     pub point_view: wgpu::TextureView,
     /// One view per point-light face, to render into.
@@ -66,7 +70,21 @@ impl Shadows {
                 view_formats: &[],
             })
         };
-        let sun_view = texture("sun shadow", SUN_SIZE, 1).create_view(&Default::default());
+        let sun = texture("sun shadow", SUN_SIZE, CASCADES as u32);
+        let sun_view = sun.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let cascade_views = (0..CASCADES as u32)
+            .map(|layer| {
+                sun.create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: layer,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
         let layers = (MAX_SHADOWED * 6) as u32;
         let point = texture("point shadows", POINT_SIZE, layers);
         let point_view = point.create_view(&wgpu::TextureViewDescriptor {
@@ -164,6 +182,7 @@ impl Shadows {
 
         Self {
             sun_view,
+            cascade_views,
             point_view,
             face_views,
             face_buffer,
@@ -189,7 +208,7 @@ impl Shadows {
         encoder: &mut wgpu::CommandEncoder,
         object_bind_group: &wgpu::BindGroup,
         casters: &[Caster],
-        sun: Option<Mat4>,
+        sun: Option<[Mat4; CASCADES]>,
         lights: &[FrameLight],
     ) {
         let mut faces = vec![Mat4::ZERO; MAX_SHADOWED * 6];
@@ -206,8 +225,8 @@ impl Shadows {
         }
         queue.write_buffer(&self.face_buffer, 0, bytemuck::cast_slice(&faces));
         let mut passes = vec![Mat4::ZERO; PASSES];
-        passes[0] = sun.unwrap_or(Mat4::ZERO);
-        passes[1..].copy_from_slice(&faces);
+        passes[..CASCADES].copy_from_slice(&sun.unwrap_or([Mat4::ZERO; CASCADES]));
+        passes[CASCADES..].copy_from_slice(&faces);
         for (i, m) in passes.iter().enumerate() {
             queue.write_buffer(
                 &self.pass_buffer,
@@ -217,15 +236,10 @@ impl Shadows {
         }
 
         if let Some(sun) = sun {
-            self.pass(
-                encoder,
-                &self.sun_view,
-                0,
-                sun,
-                object_bind_group,
-                casters,
-                None,
-            );
+            for (i, matrix) in sun.into_iter().enumerate() {
+                let view = &self.cascade_views[i];
+                self.pass(encoder, view, i, matrix, object_bind_group, casters, None);
+            }
         }
         for (slot, light) in todo {
             for face in 0..6 {
@@ -234,7 +248,7 @@ impl Shadows {
                 self.pass(
                     encoder,
                     &self.face_views[layer],
-                    1 + layer,
+                    CASCADES + layer,
                     faces[layer],
                     object_bind_group,
                     casters,
