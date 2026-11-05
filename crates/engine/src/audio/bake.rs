@@ -355,6 +355,9 @@ pub fn load(context: &Context, path: &Path) -> Result<Option<Baked>, BakeError> 
         let data = reader.take(data_len).ok_or_else(format)?.to_vec();
         let mut serialized = SerializedObject::try_with_buffer(context, data).map_err(steam)?;
         let batch = ProbeBatch::load(context, &mut serialized).map_err(steam)?;
+        // Loading doesn't commit, and an uncommitted batch crashes the first
+        // baked reflection pass (as in Valve's Unity plugin, commit after load).
+        batch.commit();
         zones.push(BakedZone {
             zone,
             probes,
@@ -435,18 +438,72 @@ mod tests {
         assert_eq!(baked.zones.len(), 1);
         let zone = &baked.zones[0];
         assert_eq!(zone.zone, "test");
-        assert!(!zone.probes.is_empty());
+        // A 2 m grid centred in the 4 m room, 1.5 m above the floor.
+        assert_eq!(zone.probes.len(), 4);
         for probe in &zone.probes {
-            assert!(
-                (probe.y - 1.5).abs() < 0.1,
-                "1.5 m above the floor: {probe}"
-            );
-            assert!(
-                probe.x.abs() < 2.0 && probe.z.abs() < 2.0,
-                "inside: {probe}"
-            );
+            let expected = Vec3::new(probe.x.signum(), 1.5, probe.z.signum());
+            assert!((*probe - expected).length() < 0.01, "probe at {probe}");
         }
         assert_eq!(zone.batch.num_probes(), zone.probes.len());
+
+        // The game's use: a reflection source at the listener, reading the
+        // baked reverb.
+        let reverb = simulate_baked(&context, &scene, &baked);
+        assert!(reverb, "a baked response at a probe");
+    }
+
+    /// Runs one reflection pass the way `Audio` does, with the listener's
+    /// reverb read from `baked`. True if the source got a response.
+    fn simulate_baked(context: &Context, scene: &Scene, baked: &Baked) -> bool {
+        use audionimbus::*;
+        let settings = AudioSettings {
+            sampling_rate: 48_000,
+            frame_size: 512,
+        };
+        let geometry = AcousticGeometry::build(context, scene, &mut Assets::default()).unwrap();
+        let mut simulator: Simulator<DefaultRayTracer, (), Reflections, (), Convolution> =
+            Simulator::try_new(
+                context,
+                &SimulationSettings::new(&settings).with_reflections(ConvolutionSettings {
+                    max_num_rays: 4096,
+                    num_diffuse_samples: 32,
+                    max_duration: MAX_REVERB,
+                    max_num_sources: 16,
+                    num_threads: 2,
+                    max_order: 1,
+                }),
+            )
+            .unwrap();
+        simulator.set_scene(&geometry.scene);
+        for zone in &baked.zones {
+            simulator.add_probe_batch(&zone.batch);
+        }
+        let source = Source::<(), Reflections, (), Convolution>::try_new(&simulator).unwrap();
+        simulator.add_source(&source);
+        simulator.commit();
+        let listener = CoordinateSystem {
+            origin: Vector3::new(1.0, 1.5, 1.0),
+            ..Default::default()
+        };
+        simulator
+            .set_shared_inputs(&SimulationSharedInputs::new(listener).with_reflections(
+                ReflectionsSharedInputs {
+                    num_rays: 4096,
+                    num_bounces: 16,
+                    duration: MAX_REVERB,
+                    order: 1,
+                    irradiance_min_distance: 1.0,
+                },
+            ))
+            .unwrap();
+        source
+            .set_inputs(&super::super::reflection_inputs(
+                Vec3::new(1.0, 1.5, 1.0),
+                true,
+            ))
+            .unwrap();
+        simulator.run_reflections().unwrap();
+        source.get_outputs().is_ok()
     }
 
     #[test]
