@@ -1476,6 +1476,7 @@ impl Renderer {
                     cascades: radii,
                     sun_on,
                     light_count: gpu_lights.len() as u32,
+                    time,
                 },
             );
         }

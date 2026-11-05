@@ -47,6 +47,12 @@ pub struct Fog {
     pub height: f32,
     /// How quickly it thins above `height` (per meter); 0 = not at all.
     pub falloff: f32,
+    /// Drifting wisps in the fog: 0 = even, 1 = strong swirls.
+    pub wisps: f32,
+    /// Size of the wisps (meters).
+    pub wisp_size: f32,
+    /// How fast they drift (meters per second).
+    pub wisp_speed: f32,
 }
 
 impl Default for Fog {
@@ -56,6 +62,9 @@ impl Default for Fog {
             color: Vec3::ONE,
             height: 2.0,
             falloff: 0.15,
+            wisps: 0.5,
+            wisp_size: 2.0,
+            wisp_speed: 0.15,
         }
     }
 }

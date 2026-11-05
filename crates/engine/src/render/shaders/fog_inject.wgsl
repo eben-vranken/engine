@@ -31,6 +31,8 @@ struct Fog {
     depth: vec4<f32>,
     // xyz: meters each sun cascade covers.
     cascades: vec4<f32>,
+    // Default fog's wisps: strength, size (m), speed (m/s).
+    default_wisps: vec4<f32>,
 };
 
 struct Light {
@@ -51,6 +53,8 @@ struct Region {
     shape: vec4<f32>,
     // x: the box's height in meters (volumes). yzw: ambient light (zones).
     extra: vec4<f32>,
+    // Wisps (zones): strength, size (m), speed (m/s).
+    wisps: vec4<f32>,
 };
 
 const PI: f32 = 3.14159265;
@@ -143,12 +147,16 @@ fn noise3(p: vec3<f32>) -> f32 {
     return v;
 }
 
-// Drifting wisps in the fog (two octaves of noise moving with time).
-fn wisps(p: vec3<f32>) -> f32 {
-    let t = fog.camera_pos.w;
-    let drift = vec3<f32>(0.11, 0.03, 0.07) * t;
-    let n = noise3(p * 0.45 + drift) * 0.65 + noise3(p * 1.3 - drift * 1.7) * 0.35;
-    return mix(0.35, 1.65, n);
+// Density multiplier for drifting wisps (two octaves of noise moving with
+// time); w = strength, size (m), speed (m/s).
+fn wisps(p: vec3<f32>, w: vec4<f32>) -> f32 {
+    if w.x <= 0.0 {
+        return 1.0;
+    }
+    let drift = vec3<f32>(0.8, 0.2, 0.55) * w.z * fog.camera_pos.w;
+    let q = (p + drift) / w.y;
+    let n = noise3(q) * 0.65 + noise3(q * 2.7 + 17.0) * 0.35;
+    return mix(1.0, mix(0.3, 1.7, n), w.x);
 }
 
 // Ambient light where `medium` was last called: the zone's (baked), or
@@ -158,6 +166,7 @@ var<private> local_ambient: vec3<f32>;
 // rgb: scattering (density × color), a: density, at a point.
 fn medium(p: vec3<f32>) -> vec4<f32> {
     local_ambient = fog.ambient.rgb;
+    var local_wisps = fog.default_wisps;
     var zone_fog = fog.default_fog;
     var height = fog.default_shape.x;
     var falloff = fog.default_shape.y;
@@ -179,6 +188,7 @@ fn medium(p: vec3<f32>) -> vec4<f32> {
                 height = r.shape.x;
                 falloff = r.shape.y;
                 local_ambient = r.extra.yzw;
+                local_wisps = r.wisps;
             }
         } else {
             let soft = max(r.shape.z, 1e-3) * 0.5;
@@ -189,7 +199,7 @@ fn medium(p: vec3<f32>) -> vec4<f32> {
             extra += vec4<f32>(r.fog.rgb * d, d);
         }
     }
-    let d = zone_fog.a * exp(-falloff * max(p.y - height, 0.0)) * wisps(p);
+    let d = zone_fog.a * exp(-falloff * max(p.y - height, 0.0)) * wisps(p, local_wisps);
     return vec4<f32>(zone_fog.rgb * d, d) + extra;
 }
 

@@ -43,6 +43,8 @@ struct InjectUniform {
     default_shape: Vec4,
     depth: Vec4,
     cascades: Vec4,
+    /// Default fog's wisps: strength, size, speed.
+    default_wisps: Vec4,
 }
 
 #[repr(C)]
@@ -64,6 +66,8 @@ pub struct GpuRegion {
     /// x: the box's height in meters (FogVolumes); yzw: the ambient light
     /// inside (zones).
     extra: Vec4,
+    /// Wisps (zones): strength, size, speed.
+    wisps: Vec4,
 }
 
 /// The camera's ray basis: forward, and right/up scaled so that
@@ -117,6 +121,7 @@ pub fn regions(scene: &Scene, zone_ambient: impl Fn(&str) -> Option<Vec3>) -> Ve
                         fog: volume.color.extend(volume.density.max(0.0)),
                         shape: Vec4::new(0.0, volume.falloff, volume.softness.clamp(0.0, 1.0), 1.0),
                         extra: Vec4::new(size.y.abs(), 0.0, 0.0, 0.0),
+                        wisps: Vec4::ZERO,
                     });
                 }
                 _ => {}
@@ -138,7 +143,18 @@ fn zone_region(to_box: Mat4, fog: &Fog, ambient: Vec3) -> GpuRegion {
         fog: fog.color.extend(fog.density.max(0.0)),
         shape: Vec4::new(fog.height, fog.falloff.max(0.0), 0.0, 0.0),
         extra: Vec4::new(0.0, ambient.x, ambient.y, ambient.z),
+        wisps: wisp_params(fog),
     }
+}
+
+/// A fog's wisps as strength, size, speed.
+fn wisp_params(fog: &Fog) -> Vec4 {
+    Vec4::new(
+        fog.wisps.clamp(0.0, 1.0),
+        fog.wisp_size.max(0.05),
+        fog.wisp_speed,
+        0.0,
+    )
 }
 
 /// What the fog needs to know about this frame.
@@ -152,6 +168,8 @@ pub struct FogFrame<'a> {
     pub sun_on: bool,
     /// Lights in the light buffer, including the fog-only ones.
     pub light_count: u32,
+    /// Seconds since start, for the drifting wisps.
+    pub time: f32,
 }
 
 pub struct VolumetricFog {
@@ -435,7 +453,7 @@ impl VolumetricFog {
             sun_view_proj: f.sun_view_proj,
             prev_view_proj: self.prev_view_proj.unwrap_or(f.view_proj),
             // w: seconds, for the drifting wisps.
-            camera_pos: f.camera.position.extend(self.frame as f32 / 60.0),
+            camera_pos: f.camera.position.extend(f.time),
             camera_forward: forward.extend(weight),
             camera_right: right.extend(0.0),
             camera_up: up.extend(0.0),
@@ -454,6 +472,7 @@ impl VolumetricFog {
             ),
             depth,
             cascades: Vec4::new(f.cascades[0], f.cascades[1], f.cascades[2], 0.0),
+            default_wisps: wisp_params(&env.fog),
         };
         queue.write_buffer(&self.inject_uniform, 0, bytemuck::bytes_of(&uniform));
         let integrate = IntegrateUniform {
