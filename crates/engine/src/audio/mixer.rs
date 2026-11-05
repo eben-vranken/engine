@@ -26,6 +26,8 @@ const CEILING: f32 = 0.9;
 const RELEASE: f32 = 0.25;
 /// First-order ambisonics: 4 channels.
 pub const AMBISONIC_CHANNELS: usize = 4;
+/// The reflection result for a source at the listener: the listener's room.
+pub const LISTENER_REVERB: u32 = u32::MAX;
 
 /// One sound the mixer can play, with its effects' state.
 pub struct Voice {
@@ -37,6 +39,8 @@ pub struct Voice {
     pub binaural: BinauralEffect,
     pub panning: PanningEffect,
     pub reflection: ReflectionEffect<Convolution>,
+    /// The listener's room, for sound that reaches it through walls.
+    pub room: ReflectionEffect<Convolution>,
 }
 
 pub enum Command {
@@ -63,6 +67,11 @@ pub struct VoiceParams {
     pub occlusion: f32,
     /// How much gets through the blocking surfaces, per band.
     pub transmission: [f32; 3],
+    /// Reverb from the source's own position (scene sounds).
+    pub own_reverb: bool,
+    /// How much of the sound rings in the listener's room instead: what
+    /// comes through walls, or all of the player's own sounds.
+    pub through: f32,
 }
 
 impl Default for VoiceParams {
@@ -75,6 +84,8 @@ impl Default for VoiceParams {
             air_absorption: [1.0; 3],
             occlusion: 1.0,
             transmission: [1.0; 3],
+            own_reverb: true,
+            through: 0.0,
         }
     }
 }
@@ -110,6 +121,7 @@ pub struct Mixer {
     spatial: Vec<f32>,
     reflected: Vec<f32>,
     reverb_bus: Vec<f32>,
+    through: Vec<f32>,
     limiter: Limiter,
 }
 
@@ -139,6 +151,7 @@ impl Mixer {
             spatial: vec![0.0; frame_size * 2],
             reflected: vec![0.0; frame_size * AMBISONIC_CHANNELS],
             reverb_bus: vec![0.0; frame_size * AMBISONIC_CHANNELS],
+            through: vec![0.0; frame_size],
             limiter: Limiter::new(rate),
         }
     }
@@ -251,17 +264,43 @@ impl Mixer {
                 }
             }
 
-            // Reflections: the dry sound convolved with the room's response.
-            if toggles.reflections
-                && let Some(room) = reflections.sources.get(&voice.id)
-                && let Ok(mut reflected) =
-                    AudioBufferMut::try_new(&mut self.reflected, AMBISONIC_CHANNELS)
-                && voice.reflection.apply(room, &input, &mut reflected).is_ok()
-            {
-                for (bus, sample) in self.reverb_bus.iter_mut().zip(&self.reflected) {
-                    *bus += sample;
+            // Reflections: the sound convolved with its own room's response,
+            // and the part reaching the listener's room (through walls, or the
+            // player's own sounds) with that room's response.
+            if toggles.reflections {
+                if params.own_reverb
+                    && let Some(room) = reflections.sources.get(&voice.id)
+                    && let Ok(mut reflected) =
+                        AudioBufferMut::try_new(&mut self.reflected, AMBISONIC_CHANNELS)
+                    && voice.reflection.apply(room, &input, &mut reflected).is_ok()
+                {
+                    for (bus, sample) in self.reverb_bus.iter_mut().zip(&self.reflected) {
+                        *bus += sample;
+                    }
+                    reverb = true;
                 }
-                reverb = true;
+                let through = if params.own_reverb && !toggles.occlusion {
+                    0.0
+                } else {
+                    params.through
+                };
+                if through > 0.001
+                    && let Some(room) = reflections.sources.get(&LISTENER_REVERB)
+                {
+                    for (out, sample) in self.through.iter_mut().zip(&self.input) {
+                        *out = sample * through;
+                    }
+                    if let (Ok(input), Ok(mut reflected)) = (
+                        AudioBufferRef::try_from(&self.through[..]),
+                        AudioBufferMut::try_new(&mut self.reflected, AMBISONIC_CHANNELS),
+                    ) && voice.room.apply(room, &input, &mut reflected).is_ok()
+                    {
+                        for (bus, sample) in self.reverb_bus.iter_mut().zip(&self.reflected) {
+                            *bus += sample;
+                        }
+                        reverb = true;
+                    }
+                }
             }
         }
 

@@ -36,7 +36,9 @@ use clip::Clip;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use geometry::AcousticGeometry;
 use glam::Vec3;
-use mixer::{AMBISONIC_CHANNELS, Command, Decoders, Mixer, Shared, Voice, VoiceParams};
+use mixer::{
+    AMBISONIC_CHANNELS, Command, Decoders, LISTENER_REVERB, Mixer, Shared, Voice, VoiceParams,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{Sender, channel};
@@ -107,6 +109,9 @@ pub struct Audio {
     simulation: Simulation<u32, DefaultRayTracer, (), Reflections, (), Convolution>,
     reflections: ReflectionsSimulation<u32, (), (), Convolution>,
     reflections_paused: bool,
+    /// A reflection source that follows the listener: the reverb of the
+    /// room the listener is in.
+    listener_reverb: ReflectionSource,
     /// Fingerprint the geometry was built from, and when it was last checked.
     geometry_signature: u64,
     geometry_checked: Instant,
@@ -198,6 +203,9 @@ impl Audio {
         .map_err(steam)?;
         reflection.set_scene(&reflection_geometry.scene);
         reflection.commit();
+        let listener_reverb = ReflectionSource::try_new(&reflection).map_err(steam)?;
+        reflection.add_source(&listener_reverb);
+        reflection.commit();
         let mut simulation = Simulation::new::<u32>(reflection.clone());
         let reflections =
             simulation.spawn_reflections(|err| log::error!("audio reflections: {err}"));
@@ -247,6 +255,7 @@ impl Audio {
             simulation,
             reflections,
             reflections_paused: true,
+            listener_reverb,
             geometry_signature: geometry::signature(&Scene::default()),
             geometry_checked: Instant::now(),
             last_update: Instant::now(),
@@ -311,7 +320,15 @@ impl Audio {
 
         // Reflections on their own thread, from the latest snapshot.
         self.simulation.update_sources(|sources| {
-            for entry in self.voices.iter().filter(active) {
+            sources.push((
+                LISTENER_REVERB,
+                SourceWithInputs {
+                    source: self.listener_reverb.clone(),
+                    simulation_inputs: reflection_inputs(listener.position),
+                },
+            ));
+            // The player's own sounds use the listener's room.
+            for entry in self.voices.iter().filter(active).filter(|e| e.occluded()) {
                 sources.push((
                     entry.id,
                     SourceWithInputs {
@@ -377,6 +394,12 @@ impl Audio {
                     params.transmission = entry.transmission;
                 }
             }
+            params.own_reverb = entry.occluded();
+            params.through = if entry.occluded() {
+                (1.0 - params.occlusion) * params.transmission.iter().sum::<f32>() / 3.0
+            } else {
+                1.0
+            };
             voices.push((entry.id, params));
         }
         if let Ok(mut shared) = self.shared.lock() {
@@ -556,16 +579,21 @@ impl Audio {
                 },
             )
             .map_err(steam)?,
-            reflection: ReflectionEffect::try_new(
-                context,
-                settings,
-                &ReflectionEffectSettings {
-                    impulse_response_size: (MAX_REVERB * self.rate as f32) as u32,
-                    num_channels: AMBISONIC_CHANNELS as u32,
-                },
-            )
-            .map_err(steam)?,
+            reflection: self.reverb()?,
+            room: self.reverb()?,
         })
+    }
+
+    fn reverb(&self) -> Result<ReflectionEffect<Convolution>, AudioError> {
+        ReflectionEffect::try_new(
+            &self.context,
+            &self.settings,
+            &ReflectionEffectSettings {
+                impulse_response_size: (MAX_REVERB * self.rate as f32) as u32,
+                num_channels: AMBISONIC_CHANNELS as u32,
+            },
+        )
+        .map_err(steam)
     }
 
     /// Rebuilds both acoustic scenes when static objects were edited, and
