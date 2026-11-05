@@ -8,10 +8,11 @@
 
 pub mod gizmo;
 pub mod history;
+pub mod import;
 pub mod inspector;
 
 use crate::render::mesh::Shape;
-use crate::scene::{Component, Object, Primitive, Scene, Transform};
+use crate::scene::{Component, Model, Object, Primitive, Scene, Transform};
 use crate::ui::theme;
 use egui::{Align, Layout, Rect, RichText, Ui};
 use gizmo::{TransformGizmo, View};
@@ -325,28 +326,55 @@ impl Editor {
         shape: Shape,
         view: &View,
     ) -> Option<Change> {
-        let zone = self
-            .selected
-            .and_then(|i| scene.objects.get(i))
-            .map(|o| o.zone.clone())
-            .or_else(|| scene.zones.first().map(|z| z.name.clone()))?;
+        let half = shape.half_extents();
+        let ahead = view.camera.position + view.camera.forward() * NEW_OBJECT_DISTANCE;
         let object = Object {
             name: unique_name(scene, kind),
-            zone,
-            transform: Transform::at(placement(shape, view)),
+            zone: self.new_object_zone(scene)?,
+            transform: Transform::at(placement((-half, half), view.aim, ahead)),
             components: vec![Component::Primitive(Primitive {
                 shape,
                 color: Vec3::splat(0.8),
             })],
         };
+        Some(self.append(scene, object))
+    }
+
+    /// Adds a model (path relative to the project) at `position`, in the
+    /// selection's zone. `None` if the scene has no zones.
+    pub fn add_model(&mut self, scene: &mut Scene, path: String, position: Vec3) -> Option<Change> {
+        let stem = path.rsplit('/').next().unwrap_or(&path);
+        let stem = stem.rsplit_once('.').map_or(stem, |(stem, _)| stem);
+        let object = Object {
+            name: unique_name(scene, stem),
+            zone: self.new_object_zone(scene)?,
+            transform: Transform::at(position),
+            components: vec![Component::Model(Model {
+                path: path.clone(),
+                color: Vec3::ONE,
+            })],
+        };
+        self.message = Some((format!("ADDED {path}"), false));
+        Some(self.append(scene, object))
+    }
+
+    /// New objects go into the selection's zone, or the first zone.
+    fn new_object_zone(&self, scene: &Scene) -> Option<String> {
+        self.selected
+            .and_then(|i| scene.objects.get(i))
+            .map(|o| o.zone.clone())
+            .or_else(|| scene.zones.first().map(|z| z.name.clone()))
+    }
+
+    fn append(&mut self, scene: &mut Scene, object: Object) -> Change {
         let index = scene.objects.len();
-        Some(self.push(
+        self.push(
             scene,
             Edit::Add {
                 index,
                 object: Box::new(object),
             },
-        ))
+        )
     }
 
     /// Removes the selected object.
@@ -602,20 +630,22 @@ impl Editor {
 
 /// How far in front of the camera new objects float when the camera isn't
 /// looking at a surface, in meters.
-const NEW_OBJECT_DISTANCE: f32 = 4.0;
+pub const NEW_OBJECT_DISTANCE: f32 = 4.0;
 /// The fine grid (same as Ctrl-snapping), in meters.
 const SNAP: f32 = 0.25;
 
-/// Where a new primitive goes: resting on the surface the camera looks at,
-/// or floating in front of it. Snapped to the fine grid along the surface
-/// (so snapped moves stay aligned) but not into it.
-fn placement(shape: Shape, view: &View) -> Vec3 {
-    let Some((point, normal)) = view.aim else {
-        let position = view.camera.position + view.camera.forward() * NEW_OBJECT_DISTANCE;
-        return (position / SNAP).round() * SNAP;
+/// Where a new object goes: resting on `surface` (point, normal) if there
+/// is one, otherwise at `fallback`. `bounds` is the object's bounding box
+/// (min, max corner) around its origin. Snapped to the fine grid along the
+/// surface (so snapped moves stay aligned) but not into it.
+pub fn placement(bounds: (Vec3, Vec3), surface: Option<(Vec3, Vec3)>, fallback: Vec3) -> Vec3 {
+    let Some((point, normal)) = surface else {
+        return (fallback / SNAP).round() * SNAP;
     };
-    // Push the shape out along the normal until its bounding box touches.
-    let position = point + normal * normal.abs().dot(shape.half_extents());
+    // The box's corner furthest against the normal touches the surface.
+    let (min, max) = bounds;
+    let corner = Vec3::select(normal.cmpgt(Vec3::ZERO), min, max);
+    let position = point - normal * normal.dot(corner);
     let snapped = (position / SNAP).round() * SNAP;
     Vec3::select(normal.abs().cmpgt(Vec3::splat(0.5)), position, snapped)
 }
@@ -836,30 +866,33 @@ mod tests {
     }
 
     #[test]
-    fn placement_rests_on_the_aimed_surface() {
-        let camera = Camera {
-            position: Vec3::ZERO,
-            yaw: 0.0,
-            pitch: 0.0,
-            fov_y: 70.0,
-            near: 0.1,
-            far: 100.0,
-        };
-        let mut view = View {
-            camera: &camera,
-            image: Rect::NOTHING,
-            looking: false,
-            aim: Some((Vec3::new(0.3, 0.1, -2.0), Vec3::Y)),
-        };
-        let cylinder = primitives()[3].1;
+    fn placement_rests_on_the_surface() {
+        let half = primitives()[3].1.half_extents();
+        let cylinder = (-half, half);
+        let floor = Some((Vec3::new(0.3, 0.1, -2.0), Vec3::Y));
         // On a floor at y = 0.1: bottom touches it, x/z on the grid.
         assert_eq!(
-            placement(cylinder, &view),
+            placement(cylinder, floor, Vec3::ZERO),
             Vec3::new(0.25, 0.6, -2.0),
             "half height 0.5 above the floor"
         );
         // Against a wall facing +X at x = 1.1.
-        view.aim = Some((Vec3::new(1.1, 0.4, -2.0), Vec3::X));
-        assert_eq!(placement(cylinder, &view), Vec3::new(1.6, 0.5, -2.0));
+        let wall = Some((Vec3::new(1.1, 0.4, -2.0), Vec3::X));
+        assert_eq!(
+            placement(cylinder, wall, Vec3::ZERO),
+            Vec3::new(1.6, 0.5, -2.0)
+        );
+        // A model with its origin at its base (as exported from Blender)
+        // sits with the origin on the floor.
+        let model = (Vec3::new(-1.0, 0.0, -1.0), Vec3::new(1.0, 3.0, 1.0));
+        assert_eq!(
+            placement(model, floor, Vec3::ZERO),
+            Vec3::new(0.25, 0.1, -2.0)
+        );
+        // Nothing hit: the fallback, on the grid.
+        assert_eq!(
+            placement(model, None, Vec3::new(0.3, 1.0, -4.1)),
+            Vec3::new(0.25, 1.0, -4.0)
+        );
     }
 }

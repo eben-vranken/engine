@@ -22,3 +22,6 @@ thiserror = "2.0.21"
 transform-gizmo = "0.11.0"
 wgpu = "30.0.1"
 winit = "0.30.13"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

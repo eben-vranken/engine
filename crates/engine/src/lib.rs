@@ -15,6 +15,7 @@
 
 pub mod assets;
 pub mod camera;
+mod cursor;
 pub mod editor;
 pub mod input;
 pub mod physics;

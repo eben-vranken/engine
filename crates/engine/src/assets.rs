@@ -49,6 +49,13 @@ impl Assets {
     }
 }
 
+impl Assets {
+    /// Forgets a cached model, so the next use loads the file again.
+    pub fn forget(&mut self, path: &str) {
+        self.models.remove(path);
+    }
+}
+
 /// Geometry ready to draw or collide with.
 pub enum Resolved {
     Shape(Shape),

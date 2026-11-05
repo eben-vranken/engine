@@ -3,8 +3,9 @@
 //! player tuning panel.
 
 use crate::assets::Assets;
-use crate::camera::FlyCamera;
+use crate::camera::{Camera, FlyCamera};
 use crate::editor::history::Change;
+use crate::editor::import;
 use crate::editor::{Editor, EditorStats};
 use crate::input::Input;
 use crate::physics::PhysicsWorld;
@@ -121,6 +122,8 @@ struct Running {
     viewport: Option<egui::Rect>,
     /// Editor: a left click in the viewport to resolve this frame, in window pixels.
     pending_pick: Option<Vec2>,
+    /// Files dropped on the window and where (window pixels); editor only.
+    dropped: Vec<(PathBuf, Vec2)>,
     game_dir: PathBuf,
     assets: Assets,
     /// The editor confirmed closing; the event loop exits next.
@@ -197,6 +200,13 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(p) => p.y as f32 / 40.0,
                 };
+            }
+            WindowEvent::DroppedFile(path) if app.editor.is_some() => {
+                // The window got no cursor events during the drag; ask the OS.
+                if let Some(cursor) = crate::cursor::position_in(&app.window) {
+                    app.cursor = cursor;
+                }
+                app.dropped.push((path, app.cursor));
             }
             WindowEvent::RedrawRequested => app.frame(),
             _ => {}
@@ -299,6 +309,7 @@ impl Running {
             cursor: Vec2::ZERO,
             viewport: None,
             pending_pick: None,
+            dropped: Vec::new(),
             game_dir: config.game_dir.clone(),
             exit_requested: false,
         })
@@ -436,6 +447,49 @@ impl Running {
                 self.renderer.set_highlight(selected);
                 self.highlighted = selected;
                 self.renderer.set_scene(&self.scene, &mut self.assets);
+            }
+        }
+    }
+
+    /// Editor: copies dropped model files into the project and places each
+    /// on the surface under the drop point.
+    fn import_dropped(&mut self, camera: &Camera) {
+        for (file, cursor) in std::mem::take(&mut self.dropped) {
+            let Some(editor) = &mut self.editor else {
+                return;
+            };
+            let path = match import::copy_into_project(&file, &self.game_dir) {
+                Ok(path) => path,
+                Err(err) => {
+                    log::error!("{err}");
+                    editor.show_error(err.to_string());
+                    continue;
+                }
+            };
+            // It may have been cached as missing before the copy.
+            self.assets.forget(&path);
+            let bounds = self.assets.model(&path).map_or(
+                (Vec3::splat(-0.25), Vec3::splat(0.25)), // the placeholder box
+                |mesh| mesh.bounds(),
+            );
+            // Dropped on a panel: aim through the middle of the view.
+            let [x, y, w, h] = self.renderer.image_rect();
+            let ndc = Vec2::new(
+                (cursor.x - x) / w * 2.0 - 1.0,
+                1.0 - (cursor.y - y) / h * 2.0,
+            );
+            let ndc = if ndc.abs().max_element() <= 1.0 {
+                ndc
+            } else {
+                Vec2::ZERO
+            };
+            let (origin, direction) = camera.ray(ndc, w / h);
+            let surface = self.physics.surface(origin, direction, camera.far);
+            let ahead = origin + direction * crate::editor::NEW_OBJECT_DISTANCE;
+            let position = crate::editor::placement(bounds, surface, ahead);
+            if let Some(change) = editor.add_model(&mut self.scene, path, position) {
+                self.show_change(change);
+                self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
             }
         }
     }
@@ -620,6 +674,8 @@ impl Running {
                 editor.reveal_selection = true;
             }
         }
+
+        self.import_dropped(&camera);
 
         if let Some(output) = &editor_output {
             if output.exit {

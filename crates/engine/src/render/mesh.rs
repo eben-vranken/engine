@@ -105,6 +105,17 @@ pub struct MeshData {
 }
 
 impl MeshData {
+    /// Smallest and largest corner of the axis-aligned bounding box.
+    pub fn bounds(&self) -> (Vec3, Vec3) {
+        self.vertices.iter().fold(
+            (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN)),
+            |(min, max), v| {
+                let p = Vec3::from(v.position);
+                (min.min(p), max.max(p))
+            },
+        )
+    }
+
     pub fn from_shape(shape: Shape) -> Self {
         let mut mesh = Self::default();
         match shape {

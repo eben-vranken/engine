@@ -915,6 +915,7 @@ dependencies = [
  "thiserror 2.0.21",
  "transform-gizmo",
  "wgpu",
+ "windows-sys 0.52.0",
  "winit",
 ]
 
