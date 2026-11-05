@@ -46,7 +46,6 @@ struct Light {
 
 // Linear version of the UI amber, for the selection highlight.
 const HIGHLIGHT: vec3<f32> = vec3<f32>(1.0, 0.34, 0.025);
-const POINT_SHADOW_SIZE: f32 = 512.0;
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> lights: array<Light>;
@@ -163,11 +162,12 @@ fn point_visibility(light: Light, world: vec3<f32>, n: vec3<f32>, distance: f32)
         return 1.0;
     }
     // A shadow texel covers about 2·distance/size meters.
-    let texel = 2.0 * distance / POINT_SHADOW_SIZE;
+    let size = f32(textureDimensions(point_shadows).x);
+    let texel = 2.0 * distance / size;
     let p = world + n * (texel * 1.5 + 0.005);
     let layer = u32(light.color.w) * 6u + cube_face(p - light.position.xyz);
     let c = shadow_coords(shadow_faces[layer], p);
-    let step = 1.0 / POINT_SHADOW_SIZE;
+    let step = 1.0 / size;
     var lit = 0.0;
     for (var i = 0; i < 4; i++) {
         let offset = vec2<f32>(f32(i & 1), f32(i >> 1u)) - 0.5;

@@ -27,7 +27,7 @@ struct Fog {
     default_fog: vec4<f32>,
     // x: height, y: falloff, z: number of lights, w: frame number.
     default_shape: vec4<f32>,
-    // x: near, y: far (meters of fog), z: sun shadow texels per side.
+    // x: near, y: far (meters of fog), w: samples per cell.
     depth: vec4<f32>,
     // xyz: meters each sun cascade covers.
     cascades: vec4<f32>,
@@ -54,7 +54,6 @@ struct Region {
 };
 
 const PI: f32 = 3.14159265;
-const POINT_SHADOW_SIZE: f32 = 512.0;
 
 @group(0) @binding(0) var<uniform> fog: Fog;
 @group(0) @binding(1) var<storage, read> lights: array<Light>;
@@ -170,8 +169,6 @@ fn medium(p: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(zone_fog.rgb * d, d) + extra;
 }
 
-const SAMPLES: u32 = 4u;
-
 // A point in cell `id`: `offset` xy in -0.5..0.5 across the cell, z in 0..1
 // through its depth.
 fn cell_point(id: vec3<u32>, size: vec3<f32>, offset: vec3<f32>) -> vec3<f32> {
@@ -234,14 +231,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // from flickering.
     var current = vec4<f32>(0.0);
     let rotation = fract(hash(id) + f32(frame % 64u) * 0.618034);
-    for (var s = 0u; s < SAMPLES; s++) {
-        let seed = vec3<u32>(id.xy, id.z * SAMPLES + s + frame * 7919u);
-        let along = fract(rotation + f32(s) / f32(SAMPLES));
+    let samples = max(u32(fog.depth.w), 1u);
+    for (var s = 0u; s < samples; s++) {
+        let seed = vec3<u32>(id.xy, id.z * samples + s + frame * 7919u);
+        let along = fract(rotation + f32(s) / f32(samples));
         let side = vec2<f32>(hash(seed), hash(seed.yzx)) - 0.5;
         let p = cell_point(id, size, vec3<f32>(side, along));
         current += in_scatter(p, normalize(p - fog.camera_pos.xyz));
     }
-    current /= f32(SAMPLES);
+    current /= f32(samples);
 
     // The cell's center, to find it in last frame's grid.
     let p = cell_point(id, size, vec3<f32>(0.0, 0.0, 0.5));

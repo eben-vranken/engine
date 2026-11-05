@@ -17,9 +17,11 @@ pub mod grade;
 pub mod lights;
 pub mod mesh;
 mod post;
+pub mod quality;
 pub mod scale;
 mod shadows;
 pub mod texture;
+pub mod timings;
 
 use crate::assets::{Assets, Resolved};
 use crate::camera::Camera;
@@ -32,6 +34,7 @@ use glam::{Mat4, Vec3, Vec4};
 use lights::{GpuLight, MAX_FOG_LIGHTS, MAX_LIGHTS};
 use mesh::{MeshData, Shape};
 use post::Post;
+use quality::Quality;
 use scale::ScaleLayout;
 use shadows::{Caster, Shadows};
 use std::collections::HashMap;
@@ -39,6 +42,7 @@ use std::ops::Range;
 use std::sync::Arc;
 use std::time::Instant;
 use texture::Image;
+use timings::GpuTimer;
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
@@ -236,14 +240,18 @@ pub struct Renderer {
     zone: Option<usize>,
     started: Instant,
     last_frame: Instant,
+    quality: Quality,
+    /// `None` if the GPU can't time its stages.
+    timer: Option<GpuTimer>,
 }
 
 impl Renderer {
-    pub fn new(window: Arc<Window>) -> Result<Self, RenderError> {
-        pollster::block_on(Self::new_async(window))
+    pub fn new(window: Arc<Window>, quality: Quality) -> Result<Self, RenderError> {
+        pollster::block_on(Self::new_async(window, quality))
     }
 
-    async fn new_async(window: Arc<Window>) -> Result<Self, RenderError> {
+    async fn new_async(window: Arc<Window>, quality: Quality) -> Result<Self, RenderError> {
+        let settings = quality.settings();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
             Box::new(window.clone()),
         ));
@@ -263,9 +271,11 @@ impl Renderer {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("engine"),
+                required_features: GpuTimer::features(&adapter),
                 ..Default::default()
             })
             .await?;
+        let timer = GpuTimer::new(&device, &queue);
 
         // egui and our post shader both write display-encoded values, so
         // prefer a non-sRGB surface; fall back to converting in the shader.
@@ -435,7 +445,12 @@ impl Renderer {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let shadows = Shadows::new(&device, &object_layout);
+        let shadows = Shadows::new(
+            &device,
+            &object_layout,
+            settings.sun_shadow,
+            settings.point_shadow,
+        );
         // Linear filtering on a comparison sampler compares four texels
         // and blends the results: soft shadow edges for free.
         let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -452,6 +467,7 @@ impl Renderer {
             &shadows.sun_view,
             &shadows.point_view,
             &shadow_sampler,
+            &settings,
         );
         let fog_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("fog"),
@@ -608,7 +624,7 @@ impl Renderer {
 
         let layout = ScaleLayout::new(
             [config.width, config.height],
-            scale::default_factor(config.height),
+            scale::factor_for_lines(config.height, settings.max_lines),
         );
         let targets = create_targets(&device, layout);
         let mut post = Post::new(&device, format);
@@ -656,6 +672,8 @@ impl Renderer {
             zone: None,
             started: Instant::now(),
             last_frame: Instant::now(),
+            quality,
+            timer,
         })
     }
 
@@ -990,6 +1008,16 @@ impl Renderer {
         ]
     }
 
+    pub fn quality(&self) -> Quality {
+        self.quality
+    }
+
+    /// Recent GPU milliseconds per stage (see `timings::STAGES`), if the
+    /// GPU can measure them.
+    pub fn gpu_times(&self) -> Option<[f32; timings::STAGES.len()]> {
+        self.timer.as_ref().map(|t| t.stages)
+    }
+
     /// Last frame: how many draws were in view, out of how many.
     pub fn drawn(&self) -> [usize; 2] {
         self.drawn
@@ -1042,9 +1070,10 @@ impl Renderer {
         let y = y.min(height - 1);
         let size = [w.clamp(1, width - x), h.clamp(1, height - y)];
         self.view_origin = [x, y];
+        let max_lines = self.quality.settings().max_lines;
         let factor = self
             .scale_override
-            .unwrap_or_else(|| scale::default_factor(size[1]));
+            .unwrap_or_else(|| scale::factor_for_lines(size[1], max_lines));
         let layout = ScaleLayout::new(size, factor);
         if layout.internal != self.layout.internal {
             self.targets = create_targets(&self.device, layout);
@@ -1123,7 +1152,7 @@ impl Renderer {
                 camera.position,
                 env.sun_direction,
                 radius,
-                shadows::SUN_SIZE,
+                self.shadows.sun_size,
             )
         });
         let uniform = FrameUniform {
@@ -1144,7 +1173,7 @@ impl Renderer {
                 1.0 / texture::GRID_METERS as f32,
                 surface_lights as f32,
                 time,
-                shadows::SUN_SIZE as f32,
+                self.shadows.sun_size as f32,
             ),
             shadow: Vec4::new(radii[0], radii[1], radii[2], 0.0),
             screen: Vec4::new(
@@ -1163,6 +1192,12 @@ impl Renderer {
                 label: Some("frame"),
             });
 
+        let mark = |encoder: &mut wgpu::CommandEncoder, timer: &Option<GpuTimer>, i| {
+            if let Some(t) = timer {
+                t.mark(encoder, i);
+            }
+        };
+        mark(&mut encoder, &self.timer, 0);
         let casters: Vec<Caster> = self
             .meshes
             .iter()
@@ -1187,6 +1222,7 @@ impl Renderer {
             &frame_lights,
         );
         drop(casters);
+        mark(&mut encoder, &self.timer, 1);
         if env.fog_distance > 0.0 {
             self.fog.render(
                 &self.queue,
@@ -1204,6 +1240,7 @@ impl Renderer {
             );
         }
 
+        mark(&mut encoder, &self.timer, 2);
         {
             let sky = env.ambient_sky.as_dvec3();
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1265,6 +1302,7 @@ impl Renderer {
             pass.draw(0..3, 0..1);
         }
 
+        mark(&mut encoder, &self.timer, 3);
         let x = (self.view_origin[0] + self.layout.origin[0]) as f32;
         let y = (self.view_origin[1] + self.layout.origin[1]) as f32;
         let [sw, sh] = self.layout.scaled().map(|v| v as f32);
@@ -1280,10 +1318,18 @@ impl Renderer {
             [x, y, sw, sh],
         );
 
+        mark(&mut encoder, &self.timer, 4);
+        if let Some(t) = &self.timer {
+            t.resolve(&mut encoder);
+        }
+
         overlay(&self.device, &self.queue, &mut encoder, &output);
 
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
+        if let Some(t) = &mut self.timer {
+            t.collect(&self.device);
+        }
     }
 }
 

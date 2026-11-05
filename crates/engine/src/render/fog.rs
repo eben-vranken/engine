@@ -1,6 +1,7 @@
 //! Volumetric fog in a froxel grid: a 3D grid that follows the camera's
-//! view, [`GRID`] cells across, with depth slices spaced exponentially out
-//! to `fog_distance` (thin slices near the camera, where detail shows).
+//! view (its size set by the quality preset), with depth slices spaced
+//! exponentially out to `fog_distance` (thin near the camera, where detail
+//! shows).
 //!
 //! Two compute passes per frame (see the shaders):
 //! 1. inject: per cell, fog density and the light it scatters toward the
@@ -17,9 +18,6 @@ use crate::scene::{Component, Environment, Fog, Scene};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 
-/// Cells across, down and deep. Fixed, so it costs the same at every
-/// window size; 192 × 108 matches 16:9, about 6–7 internal pixels per cell.
-pub const GRID: [u32; 3] = [192, 108, 96];
 /// Depth of the first slice (meters).
 pub const NEAR: f32 = 0.4;
 /// Most fog regions (zone volumes plus FogVolumes).
@@ -157,6 +155,11 @@ pub struct FogFrame<'a> {
 }
 
 pub struct VolumetricFog {
+    /// Cells across, down and deep (from the quality preset). Fixed per
+    /// run, so it costs the same at every window size.
+    grid: [u32; 3],
+    /// Samples per cell per frame.
+    samples: u32,
     /// The integrated grid, for the scene shader.
     pub integrated_view: wgpu::TextureView,
     inject_uniform: wgpu::Buffer,
@@ -181,15 +184,17 @@ impl VolumetricFog {
         sun_shadow: &wgpu::TextureView,
         point_shadows: &wgpu::TextureView,
         shadow_sampler: &wgpu::Sampler,
+        quality: &super::quality::Settings,
     ) -> Self {
+        let (grid, samples) = (quality.fog_grid, quality.fog_samples);
         let volume = |label| {
             device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
                     size: wgpu::Extent3d {
-                        width: GRID[0],
-                        height: GRID[1],
-                        depth_or_array_layers: GRID[2],
+                        width: grid[0],
+                        height: grid[1],
+                        depth_or_array_layers: grid[2],
                     },
                     mip_level_count: 1,
                     sample_count: 1,
@@ -386,6 +391,8 @@ impl VolumetricFog {
         );
 
         Self {
+            grid,
+            samples: samples.max(1),
             integrated_view,
             inject_uniform,
             integrate_uniform,
@@ -417,7 +424,7 @@ impl VolumetricFog {
         let env = f.env;
         let [forward, right, up] = ray_basis(f.camera, f.aspect);
         let far = env.fog_distance.max(NEAR * 2.0);
-        let depth = Vec4::new(NEAR, far, 0.0, 0.0);
+        let depth = Vec4::new(NEAR, far, 0.0, self.samples as f32);
         let weight = if self.prev_view_proj.is_some() {
             BLEND
         } else {
@@ -464,13 +471,13 @@ impl VolumetricFog {
         pass.set_pipeline(&self.inject);
         pass.set_bind_group(0, &self.inject_groups[parity], &[]);
         pass.dispatch_workgroups(
-            GRID[0].div_ceil(4),
-            GRID[1].div_ceil(4),
-            GRID[2].div_ceil(4),
+            self.grid[0].div_ceil(4),
+            self.grid[1].div_ceil(4),
+            self.grid[2].div_ceil(4),
         );
         pass.set_pipeline(&self.integrate);
         pass.set_bind_group(0, &self.integrate_groups[parity], &[]);
-        pass.dispatch_workgroups(GRID[0].div_ceil(8), GRID[1].div_ceil(8), 1);
+        pass.dispatch_workgroups(self.grid[0].div_ceil(8), self.grid[1].div_ceil(8), 1);
         drop(pass);
 
         self.prev_view_proj = Some(f.view_proj);

@@ -7,6 +7,8 @@
 //! `--game <path>` picks the game project folder (default: `sandbox`).
 //! `--scene <path>` opens another scene than the project's start scene
 //! (relative to the project folder, e.g. `scenes/hall.ron`).
+//! `--quality low` uses the low preset (for integrated graphics);
+//! `--perf-log` logs FPS and GPU times every couple of seconds.
 //! Game projects are content-only folders; they never contain engine code.
 
 use engine::project::Project;
@@ -22,12 +24,16 @@ struct Args {
     mode: Mode,
     game: PathBuf,
     scene: Option<PathBuf>,
+    quality: engine::render::quality::Quality,
+    perf_log: bool,
 }
 
 fn parse_args() -> Args {
     let mut mode = Mode::Play;
     let mut game = PathBuf::from("sandbox");
     let mut scene = None;
+    let mut quality = Default::default();
+    let mut perf_log = false;
     let mut args = std::env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -39,11 +45,23 @@ fn parse_args() -> Args {
                 }
             }
             "--scene" => scene = args.next().map(PathBuf::from),
+            "--quality" => match args.next().map(|q| q.parse()) {
+                Some(Ok(q)) => quality = q,
+                Some(Err(err)) => eprintln!("{err}"),
+                None => eprintln!("--quality needs high or low"),
+            },
+            "--perf-log" => perf_log = true,
             other => eprintln!("ignoring unknown argument: {other}"),
         }
     }
 
-    Args { mode, game, scene }
+    Args {
+        mode,
+        game,
+        scene,
+        quality,
+        perf_log,
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -84,6 +102,8 @@ fn main() -> anyhow::Result<()> {
         game_dir: project.dir,
         scene,
         editor,
+        quality: args.quality,
+        perf_log: args.perf_log,
     })?;
     Ok(())
 }
