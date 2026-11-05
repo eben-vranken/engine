@@ -154,6 +154,7 @@ fn sections(ui: &mut Ui, s: &mut PlayerSettings) {
             "°",
         );
         row(ui, "FOV KICK TIME", &mut c.fov_kick_time, 0.01..=2.0, "S");
+        row(ui, "STEP SMOOTHING", &mut c.step_smoothing, 0.0..=0.5, "S");
     });
 }
 

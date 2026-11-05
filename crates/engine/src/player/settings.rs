@@ -149,6 +149,8 @@ pub struct CameraFeel {
     pub sprint_fov_kick: f32,
     /// s: time to blend the FOV kick in and out.
     pub fov_kick_time: f32,
+    /// s: how long the view takes to catch up with steps and slope crests.
+    pub step_smoothing: f32,
 }
 
 impl Default for CameraFeel {
@@ -163,6 +165,7 @@ impl Default for CameraFeel {
             landing_dip_time: 0.09,
             sprint_fov_kick: 6.0,
             fov_kick_time: 0.25,
+            step_smoothing: 0.06,
         }
     }
 }

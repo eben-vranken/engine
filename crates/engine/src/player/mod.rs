@@ -10,9 +10,9 @@ use crate::camera::Camera;
 use crate::input::Input;
 use crate::physics::PhysicsWorld;
 use glam::{Vec2, Vec3, Vec3Swizzles};
-use rapier3d::control::{CharacterAutostep, CharacterLength, KinematicCharacterController};
+use rapier3d::control::{CharacterLength, KinematicCharacterController};
 use rapier3d::parry::query::ShapeCastOptions;
-use rapier3d::prelude::{Pose, SharedShape};
+use rapier3d::prelude::{Ball, Pose, Ray, SharedShape};
 use settings::PlayerSettings;
 use winit::keyboard::KeyCode;
 
@@ -45,6 +45,8 @@ pub struct Player {
     bob_weight: f32,
     dip_offset: f32,
     dip_velocity: f32,
+    /// View offset that eases out height changes from stairs and slopes.
+    step_offset: f32,
     fov_kick: f32,
 }
 
@@ -68,6 +70,7 @@ impl Player {
             dip_offset: 0.0,
             dip_velocity: 0.0,
             fov_kick: 0.0,
+            step_offset: 0.0,
         }
     }
 
@@ -189,69 +192,158 @@ impl Player {
             jump.fall_gravity_multiplier
         };
         let accel = -jump.gravity() * gravity_scale;
+        let was_grounded = self.grounded && !jumped_now;
+        let fall_speed = -self.velocity.y;
         // Exact for constant acceleration, so jump height doesn't depend on frame rate.
-        let mut dy = self.velocity.y * dt + 0.5 * accel * dt * dt;
-        self.velocity.y = (self.velocity.y + accel * dt).max(-jump.max_fall_speed);
-        if self.velocity.y <= -jump.max_fall_speed {
-            dy = dy.max(-jump.max_fall_speed * dt);
-        }
-
-        let desired = Vec3::new(horizontal.x * dt, dy, horizontal.y * dt);
-        let movement_result = {
-            let controller = KinematicCharacterController {
-                offset: CharacterLength::Absolute(0.01),
-                autostep: Some(CharacterAutostep {
-                    max_height: CharacterLength::Absolute(body.step_height),
-                    min_width: CharacterLength::Absolute(body.radius * 0.5),
-                    include_dynamic_bodies: false,
-                }),
-                max_slope_climb_angle: body.max_slope.to_radians(),
-                min_slope_slide_angle: body.max_slope.to_radians(),
-                snap_to_ground: (!jumped_now)
-                    .then_some(CharacterLength::Absolute(body.ground_snap)),
-                ..Default::default()
-            };
-            let shape = capsule(height, body.radius);
-            let queries = physics.queries();
-            controller.move_shape(
-                dt,
-                &queries,
-                shape.as_ref(),
-                &capsule_pose(self.feet, height),
-                desired,
-                |_| {},
-            )
-        };
-        let moved = movement_result.translation;
-        self.feet += moved;
-
-        // Walls and slopes take speed away; don't keep pushing into them.
-        let actual = moved.xz() / dt;
-        if actual.length() < horizontal.length() {
-            horizontal = actual;
-        }
-        // Bumped the ceiling.
-        if self.velocity.y > 0.0 && moved.y < dy - 1e-4 {
-            self.velocity.y = 0.0;
-        }
-
-        let was_grounded = self.grounded;
-        if movement_result.grounded && self.velocity.y <= 0.0 {
-            if !was_grounded {
-                self.land(-self.velocity.y, settings);
-            }
-            self.grounded = true;
-            self.jumped = false;
-            self.velocity.y = 0.0;
-            self.time_since_grounded = 0.0;
+        let dy = if was_grounded {
+            0.0
         } else {
-            self.grounded = false;
+            let dy = self.velocity.y * dt + 0.5 * accel * dt * dt;
+            self.velocity.y = (self.velocity.y + accel * dt).max(-jump.max_fall_speed);
+            dy.max(-jump.max_fall_speed * dt)
+        };
+
+        // 1. Horizontal: move the floating capsule, sliding along walls. The
+        // capsule never touches the ground, so any shortfall is a wall, and
+        // the velocity keeps only what the wall let through.
+        let wanted = Vec3::new(horizontal.x * dt, 0.0, horizontal.y * dt);
+        let moved = self.move_capsule(physics, settings, height, wanted);
+        self.feet += moved;
+        if moved.xz().length() < wanted.xz().length() - 1e-6 {
+            horizontal = moved.xz() / dt;
+        }
+
+        // 2. Vertical: follow the ground, or fall / rise through the air.
+        let walkable = body.max_slope.to_radians().cos();
+        let reach = if was_grounded {
+            body.ground_snap
+        } else {
+            (-dy).max(0.0)
+        };
+        let ground = if self.velocity.y > 0.0 || jumped_now {
+            None
+        } else {
+            self.probe_ground(physics, settings, height, reach + 0.01)
+        };
+        self.grounded = false;
+        match ground {
+            Some(ground) => {
+                let before = self.feet.y;
+                let follow = Vec3::Y * (ground.height - self.feet.y);
+                self.feet += self.move_capsule(physics, settings, height, follow);
+                self.velocity.y = 0.0;
+                if ground.normal.y >= walkable {
+                    if was_grounded {
+                        // Stairs and slope crests: smooth the view over the height change.
+                        self.step_offset -= self.feet.y - before;
+                    } else {
+                        self.land(fall_speed, settings);
+                    }
+                    self.grounded = true;
+                    self.jumped = false;
+                    self.time_since_grounded = 0.0;
+                } else {
+                    // Too steep: it holds you up, but you can't walk up it and you slide down.
+                    let downhill = ground.normal.xz().normalize_or_zero();
+                    let uphill_push = horizontal.dot(downhill);
+                    if uphill_push < 0.0 {
+                        horizontal -= downhill * uphill_push;
+                    }
+                    let slope_accel = jump.gravity()
+                        * jump.fall_gravity_multiplier
+                        * ground.normal.y
+                        * (1.0 - ground.normal.y * ground.normal.y).max(0.0).sqrt();
+                    horizontal += downhill * slope_accel * dt;
+                }
+            }
+            None => {
+                let moved = self.move_capsule(physics, settings, height, Vec3::Y * dy);
+                self.feet += moved;
+                // Bumped the ceiling, or came to rest on something the probe
+                // didn't count as ground.
+                if (dy > 0.0 && moved.y < dy - 1e-4) || (dy < 0.0 && moved.y > dy + 1e-4) {
+                    self.velocity.y = moved.y / dt;
+                }
+            }
+        }
+        if !self.grounded {
             self.time_since_grounded += dt;
         }
         self.velocity.x = horizontal.x;
         self.velocity.z = horizontal.y;
 
         self.update_camera_feel(settings, height, dt);
+    }
+
+    /// Moves the collision capsule, sliding along whatever it hits.
+    fn move_capsule(
+        &self,
+        physics: &PhysicsWorld,
+        settings: &PlayerSettings,
+        height: f32,
+        translation: Vec3,
+    ) -> Vec3 {
+        // Climbing is the ground probe's job, so every surface the capsule
+        // touches counts as a wall.
+        let controller = KinematicCharacterController {
+            offset: CharacterLength::Absolute(0.01),
+            autostep: None,
+            snap_to_ground: None,
+            max_slope_climb_angle: 0.0,
+            min_slope_slide_angle: 0.0,
+            ..Default::default()
+        };
+        let (shape, pose) = body_capsule(self.feet, height, &settings.body);
+        controller
+            .move_shape(
+                1.0,
+                &physics.queries(),
+                shape.as_ref(),
+                &pose,
+                translation,
+                |_| {},
+            )
+            .translation
+    }
+
+    /// Finds the ground under the player with a small sphere cast from the
+    /// bottom of the capsule down past the feet. Anything up to the step
+    /// height above the feet counts (that's how steps are climbed); `reach`
+    /// is how far below the feet to look.
+    fn probe_ground(
+        &self,
+        physics: &PhysicsWorld,
+        settings: &PlayerSettings,
+        height: f32,
+        reach: f32,
+    ) -> Option<Ground> {
+        let body = &settings.body;
+        let step = step_height(height, body);
+        let radius = body.radius * 0.5;
+        let start = self.feet + Vec3::Y * (step + radius);
+        let distance = step + reach;
+        let queries = physics.queries();
+        let (_, hit) = queries.cast_shape(
+            &Pose::from_translation(start),
+            Vec3::NEG_Y,
+            &Ball::new(radius),
+            ShapeCastOptions {
+                max_time_of_impact: distance,
+                target_distance: 0.0,
+                stop_at_penetration: true,
+                compute_impact_geometry_on_penetration: true,
+            },
+        )?;
+        // The sphere's normal is diagonal on edges; the surface right under
+        // the center decides whether the ground is walkable.
+        let ray = Ray::new(start, Vec3::NEG_Y);
+        let normal = queries
+            .cast_ray_and_get_normal(&ray, radius + distance, true)
+            .map_or(hit.normal1, |(_, ray_hit)| ray_hit.normal);
+        Some(Ground {
+            height: start.y - radius - hit.time_of_impact,
+            normal,
+        })
     }
 
     fn land(&mut self, impact_speed: f32, settings: &PlayerSettings) {
@@ -268,6 +360,8 @@ impl Player {
 
         let target_eye = height - settings.body.eye_offset;
         self.eye_height += (target_eye - self.eye_height) * (1.0 - (-14.0 * dt).exp());
+
+        self.step_offset *= (-dt / camera.step_smoothing.max(0.001)).exp();
 
         let omega = 1.0 / camera.landing_dip_time.max(0.01);
         let accel = -omega * omega * self.dip_offset - 2.0 * omega * self.dip_velocity;
@@ -299,11 +393,11 @@ impl Player {
     fn has_headroom(&self, settings: &PlayerSettings, physics: &PhysicsWorld) -> bool {
         let body = &settings.body;
         let rise = body.height - body.crouch_height;
-        let shape = capsule(body.crouch_height, body.radius);
+        let (shape, pose) = body_capsule(self.feet, body.crouch_height, body);
         physics
             .queries()
             .cast_shape(
-                &capsule_pose(self.feet, body.crouch_height),
+                &pose,
                 Vec3::Y,
                 shape.as_ref(),
                 ShapeCastOptions {
@@ -323,7 +417,8 @@ impl Player {
             * self.bob_weight
             * (0.5 - 0.5 * (self.bob_phase * std::f32::consts::TAU).cos());
         Camera {
-            position: self.feet + Vec3::Y * (self.eye_height - bob + self.dip_offset),
+            position: self.feet
+                + Vec3::Y * (self.eye_height - bob + self.dip_offset + self.step_offset),
             yaw: self.yaw,
             pitch: self.pitch,
             fov_y: camera.fov + camera.sprint_fov_kick * smoothstep(self.fov_kick),
@@ -333,13 +428,30 @@ impl Player {
     }
 }
 
-fn capsule(height: f32, radius: f32) -> SharedShape {
-    let radius = radius.min(height * 0.5);
-    SharedShape::capsule_y((height * 0.5 - radius).max(0.0), radius)
+struct Ground {
+    /// World height the feet should stand at.
+    height: f32,
+    /// Surface normal under the player's center.
+    normal: Vec3,
 }
 
-fn capsule_pose(feet: Vec3, height: f32) -> Pose {
-    Pose::from_translation(feet + Vec3::Y * (height * 0.5))
+/// How far the collision capsule floats above the feet: the step height,
+/// limited so the capsule always has room for its two half-spheres.
+fn step_height(height: f32, body: &settings::Body) -> f32 {
+    body.step_height
+        .clamp(0.0, (height - 2.0 * body.radius - 0.01).max(0.0))
+}
+
+/// The collision capsule floats `step_height` above the feet, so steps and
+/// small ledges pass underneath it and the ground probe lifts the feet onto
+/// them. Only things taller than a step touch it.
+fn body_capsule(feet: Vec3, height: f32, body: &settings::Body) -> (SharedShape, Pose) {
+    let bottom = step_height(height, body);
+    let length = height - bottom;
+    let radius = body.radius.min(length * 0.5);
+    let shape = SharedShape::capsule_y((length * 0.5 - radius).max(0.0), radius);
+    let pose = Pose::from_translation(feet + Vec3::Y * (bottom + length * 0.5));
+    (shape, pose)
 }
 
 fn move_towards(from: Vec2, to: Vec2, max_step: f32) -> Vec2 {
@@ -407,6 +519,21 @@ mod tests {
     }
 
     #[test]
+    fn stays_on_the_floor_at_any_frame_rate() {
+        let settings = PlayerSettings::default();
+        for fps in [30.0, 60.0, 120.0, 144.0, 165.0, 240.0, 1000.0] {
+            let world = flat_world();
+            let mut player = Player::new(spawn(), &settings);
+            let mut lowest = f32::MAX;
+            for _ in 0..(3.0 * fps) as usize {
+                player.update(&Input::default(), &settings, &world, 1.0 / fps);
+                lowest = lowest.min(player.feet.y);
+            }
+            assert!(lowest > -0.01, "{fps} fps: sank to {lowest}");
+        }
+    }
+
+    #[test]
     fn jump_height_is_independent_of_frame_rate() {
         let settings = PlayerSettings::default();
         for fps in [30.0, 60.0, 144.0, 500.0] {
@@ -442,5 +569,172 @@ mod tests {
         simulate(&mut player, &mut input, &world, 1.0, 120.0);
         assert!((player.horizontal_speed() - settings.movement.walk_speed).abs() < 0.01);
         assert!(player.feet.z < -3.0, "should have walked toward -Z");
+    }
+
+    fn world_with(mut objects: Vec<Object>) -> PhysicsWorld {
+        objects.push(Object::new(
+            Shape::Box {
+                size: Vec3::new(200.0, 1.0, 200.0),
+            },
+            Vec3::new(0.0, -0.5, 0.0),
+        ));
+        PhysicsWorld::from_scene(&Scene {
+            objects,
+            ..Default::default()
+        })
+    }
+
+    /// Holds `keys` for `seconds` and returns the lowest horizontal speed seen
+    /// after the first half second (once acceleration is done).
+    fn min_speed_while_holding(
+        player: &mut Player,
+        world: &PhysicsWorld,
+        keys: &[KeyCode],
+        seconds: f32,
+        fps: f32,
+    ) -> f32 {
+        let settings = PlayerSettings::default();
+        let mut input = Input::default();
+        simulate(player, &mut input, world, 0.5, fps); // settle on the ground
+        for &key in keys {
+            input.key_down(key);
+        }
+        let mut min_speed = f32::MAX;
+        let frames = (seconds * fps) as usize;
+        for frame in 0..frames {
+            player.update(&input, &settings, world, 1.0 / fps);
+            input.end_frame();
+            if frame as f32 > 0.5 * fps {
+                min_speed = min_speed.min(player.horizontal_speed());
+            }
+        }
+        min_speed
+    }
+
+    #[test]
+    fn sprint_speed_holds_at_high_frame_rates() {
+        let settings = PlayerSettings::default();
+        for fps in [60.0, 144.0, 2000.0] {
+            let world = flat_world();
+            let mut player = Player::new(spawn(), &settings);
+            let keys = [KeyCode::KeyW, KeyCode::ShiftLeft];
+            let min = min_speed_while_holding(&mut player, &world, &keys, 4.0, fps);
+            assert!(
+                min > settings.movement.sprint_speed * 0.99,
+                "{fps} fps: sprint dropped to {min} m/s"
+            );
+        }
+    }
+
+    #[test]
+    fn walking_up_a_walkable_slope_keeps_speed() {
+        let settings = PlayerSettings::default();
+        for angle in [15.0f32, 30.0, 45.0] {
+            let depth = 6.0 / angle.to_radians().tan();
+            let world = world_with(vec![Object::new(
+                Shape::Wedge {
+                    size: Vec3::new(4.0, 6.0, depth),
+                },
+                Vec3::new(0.0, 3.0, -1.0 - depth * 0.5),
+            )]);
+            let mut player = Player::new(spawn(), &settings);
+            let min = min_speed_while_holding(&mut player, &world, &[KeyCode::KeyW], 1.5, 144.0);
+            assert!(
+                min > settings.movement.walk_speed * 0.95,
+                "{angle}°: speed dropped to {min} m/s"
+            );
+            assert!(
+                player.feet.y > 0.5,
+                "{angle}°: did not climb (y = {})",
+                player.feet.y
+            );
+        }
+    }
+
+    #[test]
+    fn too_steep_slope_blocks() {
+        let settings = PlayerSettings::default();
+        let depth = 6.0 / 60f32.to_radians().tan();
+        let world = world_with(vec![Object::new(
+            Shape::Wedge {
+                size: Vec3::new(4.0, 6.0, depth),
+            },
+            Vec3::new(0.0, 3.0, -1.0 - depth * 0.5),
+        )]);
+        let mut player = Player::new(spawn(), &settings);
+        min_speed_while_holding(&mut player, &world, &[KeyCode::KeyW], 2.0, 144.0);
+        assert!(
+            player.feet.y < 1.0,
+            "climbed a 60° slope to y = {}",
+            player.feet.y
+        );
+    }
+
+    #[test]
+    fn climbs_stairs_without_losing_speed() {
+        let settings = PlayerSettings::default();
+        let mut objects: Vec<Object> = (0..10)
+            .map(|k| {
+                let height = 0.2 * (k + 1) as f32;
+                Object::new(
+                    Shape::Box {
+                        size: Vec3::new(3.0, height, 0.3),
+                    },
+                    Vec3::new(0.0, height * 0.5, -1.0 - 0.3 * (k as f32 + 0.5)),
+                )
+            })
+            .collect();
+        // Landing at the top.
+        objects.push(Object::new(
+            Shape::Box {
+                size: Vec3::new(3.0, 2.0, 10.0),
+            },
+            Vec3::new(0.0, 1.0, -9.0),
+        ));
+        let world = world_with(objects);
+        let mut player = Player::new(spawn(), &settings);
+        let start_z = player.feet.z;
+        let mut input = Input::default();
+        simulate(&mut player, &mut input, &world, 0.5, 144.0);
+        input.key_down(KeyCode::KeyW);
+        simulate(&mut player, &mut input, &world, 1.5, 144.0);
+        // 1.5 s at 4.5 m/s ≈ 6.75 m; allow a little for acceleration and steps.
+        let travelled = start_z - player.feet.z;
+        assert!(travelled > 6.0, "only travelled {travelled} m");
+        assert!(
+            player.feet.y > 1.9,
+            "did not reach the top (y = {})",
+            player.feet.y
+        );
+    }
+
+    #[test]
+    fn slides_along_a_wall_at_an_angle() {
+        let settings = PlayerSettings::default();
+        let world = world_with(vec![Object::new(
+            Shape::Box {
+                size: Vec3::new(40.0, 3.0, 0.5),
+            },
+            Vec3::new(0.0, 1.5, -2.0),
+        )]);
+        let mut player = Player::new(spawn(), &settings);
+        // Look 45° to the right of the wall's normal and walk into it.
+        player.yaw = 45f32.to_radians();
+        let mut input = Input::default();
+        simulate(&mut player, &mut input, &world, 0.5, 144.0);
+        input.key_down(KeyCode::KeyW);
+        simulate(&mut player, &mut input, &world, 2.0, 144.0);
+        // Pressed against the wall, sliding along +X at the tangential part
+        // of walk speed, with nothing left going into the wall.
+        let expected = settings.movement.walk_speed * 45f32.to_radians().cos();
+        assert!(
+            player.velocity.z.abs() < 0.01,
+            "still pushing into the wall"
+        );
+        assert!(
+            (player.velocity.x - expected).abs() < 0.1,
+            "sliding at {} m/s, expected {expected}",
+            player.velocity.x
+        );
     }
 }

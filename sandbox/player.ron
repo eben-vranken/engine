@@ -36,5 +36,6 @@
         landing_dip_time: 0.09,
         sprint_fov_kick: 6.0,
         fov_kick_time: 0.25,
+        step_smoothing: 0.06,
     ),
 )
