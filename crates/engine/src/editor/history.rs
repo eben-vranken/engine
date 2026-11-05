@@ -36,6 +36,8 @@ pub enum Change {
     Removed(usize),
     /// Anything may have changed, but no objects were added or removed.
     All,
+    /// Only zone settings (fog, grade) changed.
+    Zones,
 }
 
 impl Edit {

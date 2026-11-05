@@ -708,6 +708,7 @@ impl Running {
                 self.renderer
                     .update_object(&self.scene, index, &mut self.assets);
             }
+            Change::Zones => self.renderer.set_zones(&self.scene, &self.assets),
             Change::Added(_) | Change::Removed(_) | Change::All => {
                 let selected = self.editor.as_ref().and_then(|e| e.selected);
                 self.renderer.set_highlight(selected);

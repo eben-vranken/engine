@@ -44,6 +44,10 @@ pub struct Editor {
     history: History,
     /// An edit in progress: the object's index and how it was before.
     pending: Option<(usize, Object)>,
+    /// The zone shown in the inspector (instead of an object).
+    pub selected_zone: Option<String>,
+    /// A zone edit in progress: the scene before it.
+    zone_pending: Option<Box<Scene>>,
     pub gizmo: TransformGizmo,
     /// The scene is running in the viewport; editing is locked until Stop.
     pub playing: bool,
@@ -115,6 +119,8 @@ impl Editor {
             confirm: None,
             history: History::default(),
             pending: None,
+            selected_zone: None,
+            zone_pending: None,
             gizmo: TransformGizmo::default(),
             playing: false,
             renaming: None,
@@ -209,7 +215,9 @@ impl Editor {
 
     /// Unsaved changes, including an edit still in progress.
     pub fn is_dirty(&self) -> bool {
-        self.pending.is_some() || self.history.state() != self.saved_state
+        self.pending.is_some()
+            || self.zone_pending.is_some()
+            || self.history.state() != self.saved_state
     }
 
     /// Writes the scene to its file. Returns true if a pending edit was
@@ -319,6 +327,15 @@ impl Editor {
 
     /// Records the edit in progress, if any. Returns true if one was recorded.
     pub fn commit_pending(&mut self, scene: &Scene) -> bool {
+        if let Some(before) = self.zone_pending.take()
+            && *before != *scene
+        {
+            self.history.record(Edit::SetScene {
+                before,
+                after: Box::new(scene.clone()),
+            });
+            return true;
+        }
         let Some((index, before)) = self.pending.take() else {
             return false;
         };
@@ -362,7 +379,7 @@ impl Editor {
     /// added (or restored) object becomes the selection.
     fn follow(&mut self, change: Change) {
         match change {
-            Change::Modified(_) | Change::All => {}
+            Change::Modified(_) | Change::All | Change::Zones => {}
             Change::Added(index) => {
                 self.selected = Some(index);
                 self.reveal_selection = true;
@@ -594,6 +611,9 @@ impl Editor {
     pub fn select(&mut self, scene: &Scene, selected: Option<usize>) -> bool {
         let settled = self.commit_pending(scene);
         self.selected = selected;
+        if selected.is_some() {
+            self.selected_zone = None;
+        }
         settled
     }
 
@@ -711,36 +731,49 @@ impl Editor {
                 });
 
                 ui.add_space(12.0);
-                let baking = self.bake_status.starts_with("BAKING");
-                if ui
-                    .add_enabled(!baking, egui::Button::new("BAKE ACOUSTICS").small())
-                    .on_hover_text("REVERB PROBES IN EVERY ZONE VOLUME")
-                    .clicked()
-                {
-                    output.bake = true;
+                // Both bakes in one menu; the bar only says something when
+                // a bake is running or missing.
+                let bakes = [
+                    (
+                        "ACOUSTICS",
+                        "SOUND",
+                        &self.bake_status,
+                        "REVERB PROBES IN EVERY ZONE VOLUME",
+                    ),
+                    (
+                        "LIGHTING",
+                        "LIGHT",
+                        &self.light_status,
+                        "BOUNCE, SKY AND EMISSIVE LIGHT INTO LIGHTMAPS AND PROBES",
+                    ),
+                ];
+                let mut clicked = [false; 2];
+                ui.menu_button("BAKE", |ui| {
+                    for (i, (name, _, status, hint)) in bakes.iter().enumerate() {
+                        let busy = status.starts_with("BAKING");
+                        if ui
+                            .add_enabled(!busy, egui::Button::new(format!("{name}  {status}")))
+                            .on_hover_text(*hint)
+                            .clicked()
+                        {
+                            clicked[i] = true;
+                            ui.close();
+                        }
+                    }
+                });
+                output.bake |= clicked[0];
+                output.bake_lighting |= clicked[1];
+                let notes: Vec<String> = bakes
+                    .iter()
+                    .filter(|(_, _, status, _)| !status.is_empty() && status.as_str() != "BAKED")
+                    .map(|(_, short_name, status, _)| {
+                        let short = status.replace("BAKE OUTDATED", "OUTDATED");
+                        format!("{short_name} {short}")
+                    })
+                    .collect();
+                if !notes.is_empty() {
+                    ui.label(RichText::new(notes.join("  ")).small().color(theme::AMBER));
                 }
-                let color = if self.bake_status == "BAKED" {
-                    theme::AMBER_DIM
-                } else {
-                    theme::AMBER
-                };
-                ui.label(RichText::new(&self.bake_status).small().color(color));
-
-                ui.add_space(12.0);
-                let baking = self.light_status.starts_with("BAKING");
-                if ui
-                    .add_enabled(!baking, egui::Button::new("BAKE LIGHTING").small())
-                    .on_hover_text("BOUNCE, SKY AND EMISSIVE LIGHT INTO LIGHTMAPS AND PROBES")
-                    .clicked()
-                {
-                    output.bake_lighting = true;
-                }
-                let color = if self.light_status == "BAKED" {
-                    theme::AMBER_DIM
-                } else {
-                    theme::AMBER
-                };
-                ui.label(RichText::new(&self.light_status).small().color(color));
 
                 ui.add_space(12.0);
                 for (kind, text) in [
@@ -800,6 +833,7 @@ impl Editor {
         )));
         ui.add_space(4.0);
         let mut clicked = None;
+        let mut zone_clicked = None;
         let mut zone_action = None;
         egui::ScrollArea::vertical()
             .auto_shrink(false)
@@ -847,6 +881,9 @@ impl Editor {
                                 }
                             }
                         });
+                    if response.header_response.clicked() {
+                        zone_clicked = Some(zone.name.clone());
+                    }
                     response.header_response.context_menu(|ui| {
                         if ui.button("RENAME").clicked() {
                             zone_action = Some(ZoneAction::StartRename(zone.name.clone()));
@@ -866,6 +903,10 @@ impl Editor {
         self.reveal_selection = false;
         if let Some(index) = clicked {
             self.select(scene, Some(index));
+        }
+        if let Some(zone) = zone_clicked {
+            self.select(scene, None);
+            self.selected_zone = Some(zone);
         }
         let change = match zone_action {
             Some(ZoneAction::StartRename(name)) => {
@@ -897,12 +938,67 @@ impl Editor {
         }
     }
 
+    /// The selected zone's settings: its own fog and color grade, or the
+    /// environment's. Returns false if no zone is selected.
+    fn zone_inspector(
+        &mut self,
+        ui: &mut Ui,
+        scene: &mut Scene,
+        output: &mut EditorOutput,
+    ) -> bool {
+        let Some(name) = self.selected_zone.clone() else {
+            return false;
+        };
+        let Some(z) = scene.zones.iter().position(|z| z.name == name) else {
+            self.selected_zone = None;
+            return false;
+        };
+        let names = inspector::Names {
+            objects: Vec::new(),
+            zones: Vec::new(),
+        };
+        let before = scene.clone();
+        let env = scene.environment.clone();
+        let zone = &mut scene.zones[z];
+        egui::ScrollArea::vertical()
+            .auto_shrink(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    inspector::field_label(ui, "ZONE");
+                    ui.label(zone.name.to_uppercase());
+                });
+                ui.label(dim("WITHOUT ITS OWN, A ZONE USES THE ENVIRONMENT'S"));
+
+                section(ui, "FOG");
+                own_toggle(ui, "OWN FOG", &mut zone.fog, &env.fog);
+                if let Some(fog) = &mut zone.fog {
+                    inspector::fields(ui, fog, &names);
+                }
+
+                section(ui, "COLOR GRADE");
+                own_toggle(ui, "OWN GRADE", &mut zone.grade, &env.grade);
+                if let Some(grade) = &mut zone.grade {
+                    inspector::fields(ui, grade, &names);
+                }
+            });
+        if *scene != before {
+            if self.zone_pending.is_none() {
+                self.commit_pending(&before);
+                self.zone_pending = Some(Box::new(before));
+            }
+            output.changed.push(Change::Zones);
+        }
+        true
+    }
+
     fn inspector(&mut self, ui: &mut Ui, scene: &mut Scene, output: &mut EditorOutput) {
         ui.add_space(4.0);
         ui.label(RichText::new("INSPECTOR").strong());
         ui.add_space(4.0);
         let Some(index) = self.selected.filter(|&i| i < scene.objects.len()) else {
-            ui.label(dim("NOTHING SELECTED"));
+            if !self.zone_inspector(ui, scene, output) {
+                ui.label(dim("NOTHING SELECTED"));
+            }
             return;
         };
 
@@ -1143,6 +1239,20 @@ fn new_components() -> [(&'static str, Component); 10] {
     ]
 }
 
+/// [ON]/[OFF] for a zone setting: on starts from the environment's value.
+fn own_toggle<T: Clone>(ui: &mut Ui, label: &str, value: &mut Option<T>, fallback: &T) {
+    ui.horizontal(|ui| {
+        inspector::field_label(ui, label);
+        let text = if value.is_some() { "[ON] " } else { "[OFF]" };
+        if ui.small_button(text).clicked() {
+            *value = match value {
+                Some(_) => None,
+                None => Some(fallback.clone()),
+            };
+        }
+    });
+}
+
 /// A component's title with a REMOVE button; returns true if it was clicked.
 fn component_header(ui: &mut Ui, title: &str) -> bool {
     ui.add_space(10.0);
@@ -1251,6 +1361,24 @@ mod tests {
         editor.undo(&mut scene);
         assert_eq!(scene, original);
         assert_eq!(editor.selected, None);
+    }
+
+    #[test]
+    fn a_zone_fog_edit_is_one_undo_step() {
+        let mut scene = boxes(1);
+        let mut editor = editor();
+        editor.selected_zone = Some("test".into());
+        // As the zone inspector does: remember the scene, then edit live.
+        editor.zone_pending = Some(Box::new(scene.clone()));
+        scene.zones[0].fog = Some(crate::scene::Fog::default());
+        scene.zones[0].fog.as_mut().unwrap().density = 0.3;
+        assert!(editor.is_dirty());
+        assert!(editor.commit_pending(&scene));
+        editor.undo(&mut scene);
+        assert_eq!(scene.zones[0].fog, None);
+        // Selecting an object leaves the zone.
+        editor.select(&scene, Some(0));
+        assert_eq!(editor.selected_zone, None);
     }
 
     #[test]

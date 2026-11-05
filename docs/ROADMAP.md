@@ -113,17 +113,17 @@ Steam Audio in the engine, tested by walking through spaces in first person.
 - [x] Frustum culling, simulation radius
 - [x] Per-zone reverb probes
 
-## 9. Lighting ← current
-- [ ] Baked path-traced global illumination into lightmaps per zone ("bake lighting" button)
-- [ ] Volumetric fog at reduced resolution: light shafts, lantern halos, per-zone density/color/height; FogVolume behavior
-- [ ] Real-time shadows for dynamic lights and moving objects
-- [ ] Emissive surfaces lighting the bake and the fog
-- [ ] Post-processing: bloom, per-zone color grading (LUT), subtle grain
-- [ ] Temporal accumulation for live effects
+## 9. Lighting
+- [x] Baked path-traced global illumination into lightmaps per zone ("bake lighting" button)
+- [x] Volumetric fog at reduced resolution: light shafts, lantern halos, per-zone density/color/height; FogVolume behavior
+- [x] Real-time shadows for dynamic lights and moving objects
+- [x] Emissive surfaces lighting the bake and the fog
+- [x] Post-processing: bloom, per-zone color grading (LUT), subtle grain
+- [x] Temporal accumulation for live effects
 
 **Acceptance:** 60+ fps at 4K output with default render scale on an RTX 3060 Ti class GPU; a dark grey-box hall with one window and one lantern looks atmospheric to the user.
 
-## 10. Music system
+## 10. Music system ← current
 - [ ] Global key/scale/tempo, motifs quantized to the beat, instrument layers per zone
 
 ## 11. Gameplay systems

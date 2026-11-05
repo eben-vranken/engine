@@ -840,6 +840,16 @@ impl Renderer {
         }
     }
 
+    /// Only the zones' settings changed (fog, grade): updates those without
+    /// re-uploading every mesh.
+    pub fn set_zones(&mut self, scene: &Scene, assets: &Assets) {
+        self.environment = scene.environment.clone();
+        self.post
+            .set_grades(&self.device, &self.queue, scene, assets.root());
+        let regions = fog::regions(scene, |zone| self.zone_light(zone));
+        self.fog.set_regions(&self.queue, &regions);
+    }
+
     /// The zone the camera is in (index into `Scene::zones`), for its
     /// color grade.
     pub fn set_zone(&mut self, zone: Option<usize>) {
