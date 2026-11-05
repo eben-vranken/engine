@@ -118,3 +118,13 @@ Steam Audio in the engine, tested by walking through spaces in first person.
 
 ## 11. Gameplay systems
 - [ ] Abilities + gates, save system, map from zone data
+
+## 12. Stairs primitive
+A small step after the core milestones: stairs as an editor primitive, shaped from the inspector.
+
+- [ ] `Stairs` in the Add menu and the inspector's TYPE picker
+- [ ] Inspector fields to shape the flight: width, total height, number of steps, step depth (step height follows from height ÷ steps)
+- [ ] Curve: a turn angle over the whole flight (0° straight, 90° quarter turn, 360°+ spiral) and an inner radius (0 = around a central post)
+- [ ] Collision per step, so the player's step climbing works on every shape
+
+**Acceptance:** the user builds a straight flight, a curved flight and a spiral staircase from one primitive, and walks up each.
