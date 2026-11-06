@@ -616,6 +616,44 @@ pub enum SceneError {
 }
 
 impl Scene {
+    /// A new scene: one zone with a volume around a floor, and a Player Start.
+    pub fn starter() -> Scene {
+        let zone = "main".to_string();
+        let object = |name: &str, position: Vec3, component| Object {
+            name: name.into(),
+            zone: zone.clone(),
+            transform: Transform::at(position),
+            components: vec![component],
+        };
+        Scene {
+            zones: vec![Zone::new(zone.clone())],
+            objects: vec![
+                object(
+                    "floor",
+                    Vec3::new(0.0, -0.25, 0.0),
+                    Component::Primitive(Primitive {
+                        shape: Shape::Box {
+                            size: Vec3::new(20.0, 0.5, 20.0),
+                        },
+                        color: Vec3::splat(0.6),
+                        emissive: Vec3::ZERO,
+                        collision: true,
+                    }),
+                ),
+                object(
+                    "main volume",
+                    Vec3::new(0.0, 3.0, 0.0),
+                    Component::ZoneVolume(ZoneVolume {
+                        size: Vec3::new(20.0, 6.0, 20.0),
+                        ..Default::default()
+                    }),
+                ),
+                object("player start", Vec3::ZERO, Component::PlayerStart),
+            ],
+            ..Default::default()
+        }
+    }
+
     pub fn load(path: &Path) -> Result<Self, SceneError> {
         let text = std::fs::read_to_string(path).map_err(|source| SceneError::Read {
             path: path.to_owned(),
@@ -875,5 +913,15 @@ mod tests {
         let scene = sample();
         assert_eq!(scene.player_start().unwrap().rotation.y, 90.0);
         assert_eq!(scene.renderables().count(), 1);
+    }
+
+    #[test]
+    fn the_starter_scene_is_valid_and_has_a_player_start() {
+        let scene = Scene::starter();
+        let text = ron::ser::to_string_pretty(&scene, Default::default()).unwrap();
+        let back: Scene = ron::from_str(&text).unwrap();
+        assert_eq!(back, scene);
+        assert!(scene.player_start().is_some());
+        assert!(scene.objects.iter().all(|o| o.zone == scene.zones[0].name));
     }
 }

@@ -150,6 +150,8 @@ struct Running {
     assets: Assets,
     /// The editor confirmed closing; the event loop exits next.
     exit_requested: bool,
+    /// The render quality asked for (passed on when the editor reopens).
+    quality: crate::render::quality::Quality,
     /// Editor: playing in place; what Stop restores.
     play: Option<PlaySnapshot>,
     /// Running behaviors: always in play mode, in the editor while playing.
@@ -399,6 +401,7 @@ impl Running {
             dropped: Vec::new(),
             game_dir: config.game_dir.clone(),
             exit_requested: false,
+            quality: config.quality,
             play: None,
             behaviors: (!config.editor).then(|| Behaviors::start(&config.scene)),
             prompt: None,
@@ -669,6 +672,9 @@ impl Running {
             }
             if let Some(index) = output.close_tab {
                 self.close_tab(index);
+            }
+            if let Some(dir) = &output.open_project {
+                self.open_project(dir);
             }
             if let Some(path) = &output.open_model {
                 self.open_model(path.clone());

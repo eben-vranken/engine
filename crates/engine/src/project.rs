@@ -23,6 +23,72 @@ pub enum ProjectError {
     },
     #[error(transparent)]
     Scene(#[from] SceneError),
+    #[error("{0} has no game.ron, so it isn't a game project")]
+    NotAProject(PathBuf),
+    #[error("{0} already exists and isn't empty")]
+    NotEmpty(PathBuf),
+    #[error("\"{0}\" can't be a project name: use letters, digits, spaces, - and _ only")]
+    BadName(String),
+    #[error("{0}: {1}")]
+    Io(PathBuf, std::io::Error),
+}
+
+/// Whether `name` is usable for a project, scene or model: letters,
+/// digits, spaces, `-` and `_`, not blank.
+pub fn is_valid_name(name: &str) -> bool {
+    !name.trim().is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ' '))
+}
+
+/// The project a picked path belongs to: a folder with `game.ron` in it,
+/// or that `game.ron` itself.
+pub fn find(path: &Path) -> Result<PathBuf, ProjectError> {
+    let dir = if path.file_name().is_some_and(|n| n == "game.ron") {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+    if dir.join("game.ron").is_file() {
+        Ok(dir.to_owned())
+    } else {
+        Err(ProjectError::NotAProject(path.to_owned()))
+    }
+}
+
+/// Makes a new, content-only game project in `dir` (which must not exist
+/// yet, or be empty), named after the folder: `game.ron`, a starter
+/// `scenes/main.ron`, and empty `models/`, `textures/` and `audio/`.
+pub fn create(dir: &Path) -> Result<GameSettings, ProjectError> {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !is_valid_name(&name) {
+        return Err(ProjectError::BadName(name));
+    }
+    let io = |path: &Path| {
+        let path = path.to_owned();
+        move |err| ProjectError::Io(path, err)
+    };
+    if dir.exists() && std::fs::read_dir(dir).map_err(io(dir))?.next().is_some() {
+        return Err(ProjectError::NotEmpty(dir.to_owned()));
+    }
+    for folder in ["scenes", "models", "textures", "audio"] {
+        let path = dir.join(folder);
+        std::fs::create_dir_all(&path).map_err(io(&path))?;
+    }
+    let settings = GameSettings {
+        name: name.trim().to_owned(),
+        start_scene: PathBuf::from("scenes/main.ron"),
+    };
+    Scene::starter().save(&dir.join(&settings.start_scene))?;
+    let path = dir.join("game.ron");
+    let text = ron::ser::to_string_pretty(&settings, ron::ser::PrettyConfig::default())
+        .expect("game settings always serialize");
+    std::fs::write(&path, text).map_err(io(&path))?;
+    Ok(settings)
 }
 
 pub struct Project {
@@ -56,7 +122,7 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use super::*;
 
     /// The sandbox in this repo must always open and its start scene load.
     #[test]
@@ -68,5 +134,70 @@ mod tests {
             scene.player_start().is_some(),
             "start scene needs a PlayerStart"
         );
+    }
+
+    /// A fresh folder in the system temp folder, removed when dropped.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new(name: &str) -> Self {
+            let dir =
+                std::env::temp_dir().join(format!("engine-test-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn a_new_project_opens_and_plays() {
+        let temp = TempDir::new("create");
+        let dir = temp.0.join("My Game");
+        let settings = create(&dir).unwrap();
+        assert_eq!(settings.name, "My Game");
+        for folder in ["models", "textures", "audio"] {
+            assert!(dir.join(folder).is_dir(), "{folder}/");
+        }
+        assert!(!dir.join("player.ron").exists());
+        let project = Project::open(&dir).unwrap();
+        assert_eq!(project.settings, settings);
+        assert!(project.load_start_scene().unwrap().player_start().is_some());
+
+        // Not over an existing project, and not with a bad name.
+        assert!(matches!(create(&dir), Err(ProjectError::NotEmpty(_))));
+        assert!(matches!(
+            create(&temp.0.join("a/b?")),
+            Err(ProjectError::BadName(_))
+        ));
+        // An empty folder is fine.
+        let empty = temp.0.join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        assert!(create(&empty).is_ok());
+    }
+
+    #[test]
+    fn a_project_is_found_from_its_folder_or_its_game_ron() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sandbox");
+        assert_eq!(find(&dir).unwrap(), dir);
+        assert_eq!(find(&dir.join("game.ron")).unwrap(), dir);
+        assert!(matches!(
+            find(&dir.join("scenes")),
+            Err(ProjectError::NotAProject(_))
+        ));
+    }
+
+    #[test]
+    fn names_are_checked() {
+        assert!(is_valid_name("cellar 2"));
+        assert!(is_valid_name("my-game_2"));
+        assert!(!is_valid_name("  "));
+        assert!(!is_valid_name("../escape"));
+        assert!(!is_valid_name("a:b"));
     }
 }

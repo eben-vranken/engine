@@ -5,9 +5,26 @@ use super::Running;
 use crate::camera::Camera;
 use crate::editor::{Editor, import};
 use crate::physics::PhysicsWorld;
+use crate::render::quality::Quality;
 use glam::{Vec2, Vec3};
+use std::path::Path;
 
 impl Running {
+    /// Editor: leaves this project for the one in `dir` by starting the
+    /// editor again on it (with the same command-line options) and closing
+    /// this one. Unsaved changes were already dealt with.
+    pub(super) fn open_project(&mut self, dir: &Path) {
+        match start_editor(dir, self.quality, self.perf_log.is_some()) {
+            Ok(()) => self.exit_requested = true,
+            Err(err) => {
+                log::error!("{err}");
+                if let Some(editor) = &mut self.editor {
+                    editor.show_error(err);
+                }
+            }
+        }
+    }
+
     /// Editor: copies dropped model files into the project and places each
     /// on the surface under the drop point. Dropped WAV files are copied to
     /// `audio/steps/` and, while Player Start is selected, added to the
@@ -18,7 +35,7 @@ impl Running {
                 return;
             };
             if crate::package::is_package(&file) {
-                open_package_window(&file, editor);
+                open_package_window(&file, editor, self.quality, self.perf_log.is_some());
                 continue;
             }
             if import::is_sound(&file) {
@@ -101,19 +118,15 @@ impl Running {
 
 /// A package dropped on the editor: unpack it next to itself and open it in
 /// a second editor window (this one keeps its project).
-pub(super) fn open_package_window(file: &std::path::Path, editor: &mut Editor) {
+pub(super) fn open_package_window(
+    file: &Path,
+    editor: &mut Editor,
+    quality: Quality,
+    perf_log: bool,
+) {
     let opened = crate::package::unpack(file)
         .map_err(|e| e.to_string())
-        .and_then(|(dir, _)| {
-            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            std::process::Command::new(exe)
-                .arg("--editor")
-                .arg("--game")
-                .arg(&dir)
-                .spawn()
-                .map_err(|e| e.to_string())?;
-            Ok(dir)
-        });
+        .and_then(|(dir, _)| start_editor(&dir, quality, perf_log).map(|()| dir));
     match opened {
         Ok(dir) => editor.show_message(format!("UNPACKED INTO {}; OPENING IT", dir.display())),
         Err(err) => {
@@ -121,4 +134,22 @@ pub(super) fn open_package_window(file: &std::path::Path, editor: &mut Editor) {
             editor.show_error(err);
         }
     }
+}
+
+/// Starts another editor process on the project in `dir`.
+fn start_editor(dir: &Path, quality: Quality, perf_log: bool) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut command = std::process::Command::new(exe);
+    command
+        .arg("--editor")
+        .arg("--game")
+        .arg(dir)
+        .arg("--quality")
+        .arg(quality.name().to_lowercase());
+    if perf_log {
+        command.arg("--perf-log");
+    }
+    command.spawn().map_err(|e| e.to_string())?;
+    log::info!("opening {} in a new editor", dir.display());
+    Ok(())
 }

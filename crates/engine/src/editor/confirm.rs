@@ -12,6 +12,8 @@ pub(super) enum Confirm {
     CloseTab(usize),
     /// Close the editor (every tab).
     Close,
+    /// Leave this project for another one.
+    Project(super::projects::Switch),
 }
 
 impl Editor {
@@ -42,7 +44,7 @@ impl Editor {
             ui.label(RichText::new("UNSAVED CHANGES").strong());
             let names = match &confirm {
                 Confirm::CloseTab(index) => self.tab_label(*index),
-                Confirm::Close => self.dirty_paths().join(", "),
+                Confirm::Close | Confirm::Project(_) => self.dirty_paths().join(", "),
             };
             let verb = if names.contains(", ") { "HAVE" } else { "HAS" };
             ui.label(dim(&format!("{names} {verb} CHANGES THAT AREN'T SAVED.")));
@@ -68,7 +70,9 @@ impl Editor {
                 Confirm::CloseTab(index) => {
                     self.save_tab(*index, scene, player, &mut output.settled)
                 }
-                Confirm::Close => self.save_all(scene, player, &mut output.settled),
+                Confirm::Close | Confirm::Project(_) => {
+                    self.save_all(scene, player, &mut output.settled)
+                }
             };
             if !saved {
                 return; // saving failed; the error is in the status bar
@@ -77,6 +81,7 @@ impl Editor {
         match confirm {
             Confirm::CloseTab(index) => output.close_tab = Some(index),
             Confirm::Close => output.exit = true,
+            Confirm::Project(switch) => self.switch_project(switch, output),
         }
     }
 }

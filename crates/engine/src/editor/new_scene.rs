@@ -4,8 +4,7 @@
 use super::{Editor, EditorOutput, dim};
 use crate::modeler::mesh::EditMesh;
 use crate::player::settings::PlayerSettings;
-use crate::render::mesh::Shape;
-use crate::scene::{Component, Object, Primitive, Scene, Transform, Zone, ZoneVolume};
+use crate::scene::Scene;
 use egui::RichText;
 use glam::Vec3;
 use std::path::{Path, PathBuf};
@@ -41,44 +40,6 @@ pub(super) struct NameDialog {
     pub start: usize,
 }
 
-/// A new scene: one zone with a volume around a floor, and a Player Start.
-pub fn starter() -> Scene {
-    let zone = "main".to_string();
-    let object = |name: &str, position: Vec3, component| Object {
-        name: name.into(),
-        zone: zone.clone(),
-        transform: Transform::at(position),
-        components: vec![component],
-    };
-    Scene {
-        zones: vec![Zone::new(zone.clone())],
-        objects: vec![
-            object(
-                "floor",
-                Vec3::new(0.0, -0.25, 0.0),
-                Component::Primitive(Primitive {
-                    shape: Shape::Box {
-                        size: Vec3::new(20.0, 0.5, 20.0),
-                    },
-                    color: Vec3::splat(0.6),
-                    emissive: Vec3::ZERO,
-                    collision: true,
-                }),
-            ),
-            object(
-                "main volume",
-                Vec3::new(0.0, 3.0, 0.0),
-                Component::ZoneVolume(ZoneVolume {
-                    size: Vec3::new(20.0, 6.0, 20.0),
-                    ..Default::default()
-                }),
-            ),
-            object("player start", Vec3::ZERO, Component::PlayerStart),
-        ],
-        ..Default::default()
-    }
-}
-
 /// Checks a typed scene name; returns its file relative to the project
 /// (`scenes/<name>.ron`).
 pub fn scene_file(project_dir: &Path, name: &str) -> Result<PathBuf, String> {
@@ -98,10 +59,7 @@ fn project_file(
     if name.is_empty() {
         return Err("TYPE A NAME".into());
     }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ' '))
-    {
+    if !crate::project::is_valid_name(name) {
         return Err("USE LETTERS, DIGITS, SPACES, - AND _ ONLY".into());
     }
     let relative = Path::new(folder).join(format!("{name}.{extension}"));
@@ -221,7 +179,7 @@ impl Editor {
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        starter().save(&file).map_err(|e| e.to_string())?;
+        Scene::starter().save(&file).map_err(|e| e.to_string())?;
         log::info!("created {}", file.display());
         output.new_tab = Some(path.to_owned());
         Ok(())
@@ -259,16 +217,6 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_starter_scene_is_valid_and_has_a_player_start() {
-        let scene = starter();
-        let text = ron::ser::to_string_pretty(&scene, Default::default()).unwrap();
-        let back: Scene = ron::from_str(&text).unwrap();
-        assert_eq!(back, scene);
-        assert!(scene.player_start().is_some());
-        assert!(scene.objects.iter().all(|o| o.zone == scene.zones[0].name));
-    }
 
     #[test]
     fn scene_names_are_checked() {

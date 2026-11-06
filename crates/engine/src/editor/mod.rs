@@ -21,6 +21,7 @@ mod new_scene;
 mod object_panel;
 mod objects;
 mod player_panel;
+mod projects;
 mod settings_panel;
 mod status_bar;
 mod tabs;
@@ -39,7 +40,7 @@ pub use model_tab::{ModelDoc, stage};
 pub use objects::{NEW_OBJECT_DISTANCE, placement};
 pub use settings_panel::SettingsTarget;
 use std::path::PathBuf;
-use widgets::{dim, section};
+use widgets::{Side, collapsed_panel, dim, panel_header, section};
 
 pub struct Editor {
     /// Index into `Scene::objects`.
@@ -97,6 +98,8 @@ pub struct Editor {
     naming: Option<new_scene::NameDialog>,
     /// The open model, when the active tab is a model tab.
     pub model: Option<ModelDoc>,
+    /// The system's file dialog, while one is open.
+    file_dialog: Option<projects::FileDialog>,
 }
 
 /// Numbers for the status bar.
@@ -144,6 +147,9 @@ pub struct EditorOutput {
     pub close_tab: Option<usize>,
     /// Open this model (relative to the project) in a model tab.
     pub open_model: Option<PathBuf>,
+    /// Leave this project for the one in this folder (unsaved changes
+    /// already dealt with).
+    pub open_project: Option<PathBuf>,
 }
 
 impl Editor {
@@ -178,6 +184,7 @@ impl Editor {
             active_tab: 0,
             naming: None,
             model: None,
+            file_dialog: None,
         }
     }
 
@@ -206,7 +213,9 @@ impl Editor {
             new_tab: None,
             close_tab: None,
             open_model: None,
+            open_project: None,
         };
+        self.poll_file_dialog(&mut output);
         egui::Panel::top("editor_menu").show(ui, |ui| {
             self.menu_bar(ui, scene, player, blink, view, &mut output)
         });
@@ -230,8 +239,21 @@ impl Editor {
                 .default_size(260.0)
                 .min_size(220.0)
                 .show(ui, |ui| {
-                    ui.add_enabled_ui(!self.playing, |ui| self.hierarchy(ui, scene, &mut output));
+                    let playing = self.playing;
+                    let mut add_zone = false;
+                    self.show_scene = !panel_header(ui, "SCENE", Side::Left, "TAB", |ui| {
+                        add_zone = ui
+                            .add_enabled(!playing, egui::Button::new("+ ZONE").small())
+                            .clicked();
+                    });
+                    if add_zone {
+                        output.changed.push(self.add_zone(scene));
+                    }
+                    ui.add_enabled_ui(!playing, |ui| self.hierarchy(ui, scene, &mut output));
                 });
+        } else {
+            self.show_scene =
+                collapsed_panel(ui, "editor_scene_strip", Side::Left, "SCENE PANEL", "TAB");
         }
         if self.show_inspector {
             egui::Panel::right("editor_inspector")
@@ -240,10 +262,20 @@ impl Editor {
                 // Wide enough for its content, so selecting doesn't resize the viewport.
                 .min_size(340.0)
                 .show(ui, |ui| {
+                    self.show_inspector =
+                        !panel_header(ui, "INSPECTOR", Side::Right, "SHIFT+TAB", |_| {});
                     ui.add_enabled_ui(!self.playing, |ui| {
                         self.inspector(ui, scene, player, &mut output)
                     });
                 });
+        } else {
+            self.show_inspector = collapsed_panel(
+                ui,
+                "editor_inspector_strip",
+                Side::Right,
+                "INSPECTOR",
+                "SHIFT+TAB",
+            );
         }
         egui::Panel::top("editor_tabs").show(ui, |ui| self.tab_strip(ui, &mut output));
 

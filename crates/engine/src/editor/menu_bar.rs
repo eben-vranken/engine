@@ -5,6 +5,7 @@
 use super::gizmo::View;
 use super::new_scene::Naming;
 use super::objects::primitives;
+use super::projects::Purpose;
 use super::{Editor, EditorOutput, dim};
 use crate::player::settings::PlayerSettings;
 use crate::scene::Scene;
@@ -88,8 +89,25 @@ impl Editor {
     ) {
         let modeling = self.model.is_some();
         let mut naming = None;
+        let waiting = self.file_dialog_open();
+        let mut ask = None;
         ui.menu_button("PROJECT", |ui| {
             ui.set_min_width(MENU_WIDTH);
+            let hint = "A NEW, EMPTY GAME: PICK WHERE ITS FOLDER GOES AND NAME IT";
+            if item(ui, "NEW PROJECT…", "", !waiting)
+                .on_hover_text(hint)
+                .clicked()
+            {
+                ask = Some(Purpose::NewProject);
+            }
+            let hint = "ANOTHER GAME: PICK ITS GAME.RON";
+            if item(ui, "OPEN PROJECT…", "", !waiting)
+                .on_hover_text(hint)
+                .clicked()
+            {
+                ask = Some(Purpose::OpenProject);
+            }
+            ui.separator();
             if item(ui, "NEW SCENE…", "", true).clicked() {
                 naming = Some(Naming::New);
             }
@@ -120,6 +138,9 @@ impl Editor {
         });
         if let Some(purpose) = naming {
             self.ask_name(purpose);
+        }
+        if let Some(purpose) = ask {
+            self.ask_file(purpose);
         }
     }
 

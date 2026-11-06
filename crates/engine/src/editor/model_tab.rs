@@ -6,7 +6,7 @@
 use super::gizmo::View;
 use super::markers::{project, project_segment};
 use super::model_tools::Tool;
-use super::{Editor, EditorOutput, dim};
+use super::{Editor, EditorOutput, Side, collapsed_panel, dim, panel_header};
 use crate::modeler::glb;
 use crate::modeler::mesh::{Edge, EditMesh, edge};
 use crate::render::mesh::Shape;
@@ -496,17 +496,31 @@ impl Editor {
                 .resizable(true)
                 .default_size(220.0)
                 .min_size(200.0)
-                .show(ui, |ui| self.model_panel(ui));
+                .show(ui, |ui| {
+                    self.show_scene = !panel_header(ui, "MODEL", Side::Left, "TAB", |_| {});
+                    self.model_panel(ui);
+                });
+        } else {
+            self.show_scene =
+                collapsed_panel(ui, "editor_scene_strip", Side::Left, "MODEL PANEL", "TAB");
         }
-        if self.show_inspector
-            && let Some(model) = &mut self.model
-        {
+        if !self.show_inspector {
+            self.show_inspector = collapsed_panel(
+                ui,
+                "editor_inspector_strip",
+                Side::Right,
+                "TOOLS PANEL",
+                "SHIFT+TAB",
+            );
+        } else if let Some(model) = &mut self.model {
             let project_dir = &self.project_dir;
+            let show = &mut self.show_inspector;
             egui::Panel::right("editor_inspector")
                 .resizable(true)
                 .default_size(300.0)
                 .min_size(280.0)
                 .show(ui, |ui| {
+                    *show = !panel_header(ui, "TOOLS", Side::Right, "SHIFT+TAB", |_| {});
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         let (tool, _) = model.tools_panel(ui, project_dir);
                         run = tool.or(run.take());

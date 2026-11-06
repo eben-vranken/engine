@@ -9,15 +9,6 @@ use egui::{Align, Layout, RichText, Ui};
 
 impl Editor {
     pub(super) fn hierarchy(&mut self, ui: &mut Ui, scene: &mut Scene, output: &mut EditorOutput) {
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("SCENE").strong());
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button("+ ZONE").clicked() {
-                    output.changed.push(self.add_zone(scene));
-                }
-            });
-        });
         ui.label(dim(&format!(
             "{} OBJECTS IN {} ZONES  (RIGHT-CLICK A ZONE)",
             scene.objects.len(),

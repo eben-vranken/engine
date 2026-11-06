@@ -20,9 +20,6 @@ impl Editor {
         player: &mut PlayerSettings,
         output: &mut EditorOutput,
     ) {
-        ui.add_space(4.0);
-        ui.label(RichText::new("INSPECTOR").strong());
-        ui.add_space(4.0);
         let Some(index) = self.selected.filter(|&i| i < scene.objects.len()) else {
             if !self.settings_inspector(ui, scene, output) {
                 ui.label(dim("NOTHING SELECTED"));
