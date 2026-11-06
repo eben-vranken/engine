@@ -134,18 +134,18 @@ Surfaces that read as stone, wood, plaster, wet floor or metal, and glossy ones 
 
 **Acceptance:** in the hall, a polished marble floor reflects the window and the lantern in the right places, a stone wall stays matte, and the frame rate on the laptop (Iris Xe) stays above 60 fps on HIGH.
 
-## 10.1 Scene tabs ← current
+## 10.1 Scene tabs
 Several scenes open at once in the editor, one tab each.
 
-- [ ] A tab strip above the viewport: one tab per open scene, named after its file, marked when it has unsaved changes
-- [ ] `+` opens a scene from the project in a new tab (or switches to it if it's already open); the scene picker keeps replacing the current tab's scene
-- [ ] Each tab keeps its own undo history, selection, camera, bakes and unsaved state; switching back restores them
-- [ ] Closing a tab with unsaved changes asks SAVE / DISCARD / CANCEL; closing the window asks for every unsaved tab
-- [ ] Tabs can't be switched or closed while playing
+- [x] A tab strip above the viewport: one tab per open scene, named after its file, marked when it has unsaved changes
+- [x] `+` opens a scene from the project in a new tab (or switches to it if it's already open); the scene picker keeps replacing the current tab's scene
+- [x] Each tab keeps its own undo history, selection, camera, bakes and unsaved state; switching back restores them
+- [x] Closing a tab with unsaved changes asks SAVE / DISCARD / CANCEL; closing the window asks for every unsaved tab
+- [x] Tabs can't be switched or closed while playing
 
 **Acceptance:** the user opens the hall and the test level side by side, edits both, undoes in each separately, switches back and forth, and is asked before losing changes when closing a tab or the window.
 
-## 10.2 Project package
+## 10.2 Project package ← current
 One file that holds a whole game project for the editor, to hand to someone else. It is not a build of the game: it opens in the editor exactly as the project was.
 
 - [ ] A single-file package format for game projects: `game.ron`, `player.ron`, scenes, bakes, models, textures and audio, plus a small manifest (engine version, project name)
@@ -155,7 +155,16 @@ One file that holds a whole game project for the editor, to hand to someone else
 
 **Acceptance:** the user exports the sandbox, copies the file to the laptop, opens it there, and the editor shows the same scenes, materials, sounds and bakes.
 
-## 10.3 Modeler
+## 10.3 New scenes
+Make scenes from the editor instead of writing RON files by hand.
+
+- [ ] NEW SCENE: name it, and it's created in the project's `scenes/` with a starting point (one zone, a floor, a Player Start, the default environment) and opened in a new tab
+- [ ] SAVE AS: save the current scene under a new name (a copy to branch from)
+- [ ] Names that are empty, taken or not valid file names are refused with a message
+
+**Acceptance:** the user makes a new scene from the editor, builds in it, saves it, closes the editor, and finds it again in the scene picker and `+` menu next time.
+
+## 10.4 Modeler
 A small, simplified modeler inside the editor for very low-poly, PS1-style models. Not Blender: just enough to build and shape props and pieces cleanly, and drop them into a scene.
 
 - [ ] A model tab next to the scene tabs (`+` → NEW MODEL, or open a model from the project) with its own viewport, drawn by the same renderer
