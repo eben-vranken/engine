@@ -50,7 +50,8 @@ pub struct Fog {
     /// Drifting wisps in the fog: 0 = even (and cheapest), 1 = strong
     /// swirls.
     pub wisps: f32,
-    /// Size of the wisps (meters).
+    /// Size of the wisps (meters). About 0.5–1.5 reads as smoke in a light
+    /// beam; much bigger than the beam and it only dims or brightens it.
     pub wisp_size: f32,
     /// How fast they drift (meters per second).
     pub wisp_speed: f32,
@@ -75,7 +76,7 @@ impl Default for Fog {
             // Off by default: the noise costs about 4 ms of fog time on
             // integrated graphics.
             wisps: 0.0,
-            wisp_size: 2.0,
+            wisp_size: 1.0,
             wisp_speed: 0.15,
             dust: 0.0,
             dust_size: 1.0,
