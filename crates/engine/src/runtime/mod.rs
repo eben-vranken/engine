@@ -64,6 +64,8 @@ pub struct RunConfig {
     /// Open the editor instead of playing.
     pub editor: bool,
     pub quality: crate::render::quality::Quality,
+    /// The render scale to start at (`game.ron`); `None` = automatic.
+    pub render_scale: Option<u32>,
     /// Log FPS and GPU times every couple of seconds (for measuring on
     /// machines you can't watch).
     pub perf_log: bool,
@@ -335,6 +337,7 @@ impl Running {
             )?,
         );
         let mut renderer = Renderer::new(window.clone(), config.quality)?;
+        renderer.set_render_scale(config.render_scale);
         let mut assets = Assets::new(config.game_dir.clone());
         renderer.set_scene(&config.scene, &mut assets);
         let overlay = Overlay::new(&window, renderer.device(), renderer.surface_format());
@@ -552,6 +555,7 @@ impl Running {
             gpu_ms: hud.gpu_times.map(|t| t.iter().sum()),
             internal: hud.internal,
             factor: hud.factor,
+            scale_override: self.renderer.render_scale_override(),
             zone,
             active_zones,
             drawn: hud.drawn,
@@ -683,6 +687,13 @@ impl Running {
             }
             if let Some(index) = output.close_tab {
                 self.close_tab(index);
+            }
+            if let Some(scale) = output.render_scale {
+                self.renderer.set_render_scale(scale);
+            }
+            if let Some(name) = &output.rename {
+                self.window
+                    .set_title(&format!("{name} — {} editor", crate::NAME));
             }
             if let Some(dir) = &output.open_project {
                 self.open_project(dir);

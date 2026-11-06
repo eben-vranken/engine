@@ -23,6 +23,7 @@ mod name_dialog;
 mod object_panel;
 mod objects;
 mod player_panel;
+mod project_settings;
 mod selection;
 mod settings_panel;
 mod status_bar;
@@ -110,6 +111,10 @@ pub struct Editor {
     /// Each model in the scene's parts and their centers, by path (kept
     /// up to date by the runtime).
     pub model_parts: ModelParts,
+    /// PROJECT SETTINGS, while open.
+    project_settings: Option<project_settings::SettingsDialog>,
+    /// PROJECT SETTINGS was picked in the menu (opens next).
+    want_project_settings: bool,
     /// The system's file dialog, while one is open.
     file_dialog: Option<file_dialogs::FileDialog>,
 }
@@ -125,6 +130,9 @@ pub struct EditorStats {
     pub gpu_ms: Option<f32>,
     pub internal: [u32; 2],
     pub factor: u32,
+    /// The render scale set by hand (`[` / `]`, or the project's); `None`
+    /// = automatic.
+    pub scale_override: Option<u32>,
     /// The zone the camera is in.
     pub zone: Option<String>,
     /// The simulation radius: current zone and neighbours; empty = all.
@@ -162,6 +170,10 @@ pub struct EditorOutput {
     pub close_tab: Option<usize>,
     /// Open this model (relative to the project) in a model tab.
     pub open_model: Option<PathBuf>,
+    /// Use this render scale now (`None` = automatic).
+    pub render_scale: Option<Option<u32>>,
+    /// The game was renamed (the window title follows).
+    pub rename: Option<String>,
     /// Leave this project for the one in this folder (unsaved changes
     /// already dealt with).
     pub open_project: Option<PathBuf>,
@@ -184,6 +196,8 @@ impl EditorOutput {
             close_tab: None,
             open_model: None,
             open_project: None,
+            render_scale: None,
+            rename: None,
         }
     }
 }
@@ -222,6 +236,8 @@ impl Editor {
             naming: None,
             model: None,
             file_dialog: None,
+            project_settings: None,
+            want_project_settings: false,
             selected_part: None,
             also: Vec::new(),
             model_parts: ModelParts::new(),
@@ -245,6 +261,7 @@ impl Editor {
             self.menu_bar(ui, scene, player, blink, view, &mut output)
         });
         egui::Panel::bottom("editor_status").show(ui, |ui| self.status_bar(ui, stats));
+        self.project_settings_dialog(ui, stats, &mut output);
         if self.model.is_some() {
             self.model_ui(ui, scene, player, view, &mut output);
             return output;

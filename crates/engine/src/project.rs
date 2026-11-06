@@ -10,6 +10,21 @@ pub struct GameSettings {
     pub name: String,
     /// Scene loaded at start, relative to the project folder.
     pub start_scene: PathBuf,
+    /// The render scale the game starts at: output pixels per internal
+    /// pixel (the `[` / `]` keys still change it). `None` = automatic
+    /// (internal height about 720 lines or less).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub render_scale: Option<u32>,
+}
+
+impl GameSettings {
+    /// Writes `game.ron` in the project folder `dir`.
+    pub fn save(&self, dir: &Path) -> Result<(), ProjectError> {
+        let path = dir.join("game.ron");
+        let text = ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
+            .expect("game settings always serialize");
+        std::fs::write(&path, text).map_err(|err| ProjectError::Io(path, err))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -82,12 +97,10 @@ pub fn create(dir: &Path) -> Result<GameSettings, ProjectError> {
     let settings = GameSettings {
         name: name.trim().to_owned(),
         start_scene: PathBuf::from("scenes/main.ron"),
+        render_scale: None,
     };
     Scene::starter().save(&dir.join(&settings.start_scene))?;
-    let path = dir.join("game.ron");
-    let text = ron::ser::to_string_pretty(&settings, ron::ser::PrettyConfig::default())
-        .expect("game settings always serialize");
-    std::fs::write(&path, text).map_err(io(&path))?;
+    settings.save(dir)?;
     Ok(settings)
 }
 
@@ -190,6 +203,20 @@ mod tests {
             find(&dir.join("scenes")),
             Err(ProjectError::NotAProject(_))
         ));
+    }
+
+    #[test]
+    fn settings_save_and_load_with_a_render_scale() {
+        let temp = TempDir::new("settings");
+        let dir = temp.0.join("game");
+        let mut settings = create(&dir).unwrap();
+        assert_eq!(settings.render_scale, None);
+        let text = std::fs::read_to_string(dir.join("game.ron")).unwrap();
+        assert!(!text.contains("render_scale"), "auto isn't written");
+        settings.render_scale = Some(5);
+        settings.name = "Renamed".into();
+        settings.save(&dir).unwrap();
+        assert_eq!(Project::open(&dir).unwrap().settings, settings);
     }
 
     #[test]

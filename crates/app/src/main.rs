@@ -116,6 +116,7 @@ fn main() -> anyhow::Result<()> {
         scene,
         editor,
         quality: args.quality,
+        render_scale: project.settings.render_scale,
         perf_log: args.perf_log,
     })?;
     Ok(())

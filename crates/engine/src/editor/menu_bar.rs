@@ -142,6 +142,14 @@ impl Editor {
                 naming = Some(Naming::Model);
             }
             ui.separator();
+            let hint = "THE GAME'S NAME, START SCENE AND RENDER SCALE";
+            if item(ui, "PROJECT SETTINGS…", "", true)
+                .on_hover_text(hint)
+                .clicked()
+            {
+                self.want_project_settings = true;
+            }
+            ui.separator();
             if item(ui, "QUIT", "", true).clicked() && self.request_close() {
                 output.exit = true;
             }
