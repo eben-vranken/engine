@@ -8,8 +8,6 @@ Crisp HD output. Very low-poly worlds. Strong light and real volumetric fog. Sou
 
 https://github.com/eben-vranken/engine/blob/main/preview.mp4
 
-*A dark grey-box hall. Sunlight cuts through a window as a shaft in the fog; a lantern glows at the far end.*
-
 ## About
 
 **Working name.** Games made with the engine are content-only project folders that live outside this repository. The editor is the game with a UI on top.
