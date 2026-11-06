@@ -1,0 +1,226 @@
+//! NEW SCENE and SAVE AS: naming a scene file and the scene a new one
+//! starts as.
+
+use super::{Editor, EditorOutput, dim};
+use crate::player::settings::PlayerSettings;
+use crate::render::mesh::Shape;
+use crate::scene::{Component, Object, Primitive, Scene, Transform, Zone, ZoneVolume};
+use egui::RichText;
+use glam::Vec3;
+use std::path::{Path, PathBuf};
+
+/// What the name being typed is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Naming {
+    New,
+    SaveAs,
+}
+
+/// The name dialog's state.
+pub(super) struct NameDialog {
+    pub purpose: Naming,
+    pub text: String,
+    /// Why the last name was refused.
+    pub error: Option<String>,
+}
+
+/// A new scene: one zone with a volume around a floor, and a Player Start.
+pub fn starter() -> Scene {
+    let zone = "main".to_string();
+    let object = |name: &str, position: Vec3, component| Object {
+        name: name.into(),
+        zone: zone.clone(),
+        transform: Transform::at(position),
+        components: vec![component],
+    };
+    Scene {
+        zones: vec![Zone::new(zone.clone())],
+        objects: vec![
+            object(
+                "floor",
+                Vec3::new(0.0, -0.25, 0.0),
+                Component::Primitive(Primitive {
+                    shape: Shape::Box {
+                        size: Vec3::new(20.0, 0.5, 20.0),
+                    },
+                    color: Vec3::splat(0.6),
+                    emissive: Vec3::ZERO,
+                    collision: true,
+                }),
+            ),
+            object(
+                "main volume",
+                Vec3::new(0.0, 3.0, 0.0),
+                Component::ZoneVolume(ZoneVolume {
+                    size: Vec3::new(20.0, 6.0, 20.0),
+                    ..Default::default()
+                }),
+            ),
+            object("player start", Vec3::ZERO, Component::PlayerStart),
+        ],
+        ..Default::default()
+    }
+}
+
+/// Checks a typed scene name; returns its file relative to the project
+/// (`scenes/<name>.ron`).
+pub fn scene_file(project_dir: &Path, name: &str) -> Result<PathBuf, String> {
+    let name = name.trim();
+    let name = name.strip_suffix(".ron").unwrap_or(name);
+    if name.is_empty() {
+        return Err("TYPE A NAME".into());
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | ' '))
+    {
+        return Err("USE LETTERS, DIGITS, SPACES, - AND _ ONLY".into());
+    }
+    let relative = Path::new("scenes").join(format!("{name}.ron"));
+    if project_dir.join(&relative).exists() {
+        return Err(format!("{} ALREADY EXISTS", relative.display()).to_uppercase());
+    }
+    Ok(relative)
+}
+
+impl Editor {
+    pub(super) fn ask_name(&mut self, purpose: Naming) {
+        self.naming = Some(NameDialog {
+            purpose,
+            text: String::new(),
+            error: None,
+        });
+    }
+
+    /// The name dialog, while one is open.
+    pub(super) fn name_dialog(
+        &mut self,
+        ui: &egui::Ui,
+        scene: &Scene,
+        player: &PlayerSettings,
+        output: &mut EditorOutput,
+    ) {
+        let Some(dialog) = &mut self.naming else {
+            return;
+        };
+        let (title, hint) = match dialog.purpose {
+            Naming::New => ("NEW SCENE", "CREATED IN SCENES/ AND OPENED IN A NEW TAB"),
+            Naming::SaveAs => (
+                "SAVE AS",
+                "A COPY OF THIS SCENE (AND ITS BAKES); THE TAB SWITCHES TO IT",
+            ),
+        };
+        let mut accept = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::unique("scene_name")).show(ui.ctx(), |ui| {
+            ui.label(RichText::new(title).strong());
+            ui.label(dim(hint));
+            ui.add_space(6.0);
+            let field = ui.add(egui::TextEdit::singleline(&mut dialog.text).hint_text("NAME"));
+            field.request_focus();
+            if field.changed() {
+                dialog.error = None;
+            }
+            if let Some(error) = &dialog.error {
+                ui.label(RichText::new(error).small().color(crate::ui::theme::ALERT));
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                accept = ui.button("OK").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter));
+                cancel =
+                    ui.button("CANCEL").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape));
+            });
+        });
+        if cancel {
+            self.naming = None;
+            return;
+        }
+        if !accept {
+            return;
+        }
+        let purpose = dialog.purpose;
+        let result = scene_file(&self.project_dir, &dialog.text).and_then(|path| match purpose {
+            Naming::New => self.create_scene(&path, output),
+            Naming::SaveAs => self.save_as(&path, scene, player, output),
+        });
+        match result {
+            Ok(()) => self.naming = None,
+            Err(error) => {
+                if let Some(dialog) = &mut self.naming {
+                    dialog.error = Some(error);
+                }
+            }
+        }
+    }
+
+    /// Writes a starter scene to `path` and opens it in a new tab.
+    fn create_scene(&mut self, path: &Path, output: &mut EditorOutput) -> Result<(), String> {
+        let file = self.project_dir.join(path);
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        starter().save(&file).map_err(|e| e.to_string())?;
+        log::info!("created {}", file.display());
+        output.new_tab = Some(path.to_owned());
+        Ok(())
+    }
+
+    /// Saves the scene under `path` (copying its bakes along) and makes the
+    /// tab edit that file from now on.
+    fn save_as(
+        &mut self,
+        path: &Path,
+        scene: &Scene,
+        player: &PlayerSettings,
+        output: &mut EditorOutput,
+    ) -> Result<(), String> {
+        let old = self.project_dir.join(&self.scene_path);
+        let new = self.project_dir.join(path);
+        let previous = std::mem::replace(&mut self.scene_path, path.to_owned());
+        output.settled |= self.save(scene, player);
+        if self.is_dirty() {
+            self.scene_path = previous;
+            return Err(self.message.clone().map(|(m, _)| m).unwrap_or_default());
+        }
+        for path_for in [crate::lightmap::path_for, crate::audio::bake::path_for] {
+            let from = path_for(&old);
+            if from.exists()
+                && let Err(err) = std::fs::copy(&from, path_for(&new))
+            {
+                log::error!("{}: {err}", from.display());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_starter_scene_is_valid_and_has_a_player_start() {
+        let scene = starter();
+        let text = ron::ser::to_string_pretty(&scene, Default::default()).unwrap();
+        let back: Scene = ron::from_str(&text).unwrap();
+        assert_eq!(back, scene);
+        assert!(scene.player_start().is_some());
+        assert!(scene.objects.iter().all(|o| o.zone == scene.zones[0].name));
+    }
+
+    #[test]
+    fn scene_names_are_checked() {
+        let sandbox = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sandbox");
+        assert_eq!(
+            scene_file(&sandbox, " cellar 2 ").unwrap(),
+            Path::new("scenes").join("cellar 2.ron")
+        );
+        assert_eq!(
+            scene_file(&sandbox, "cellar.ron").unwrap(),
+            Path::new("scenes").join("cellar.ron")
+        );
+        assert!(scene_file(&sandbox, "  ").is_err());
+        assert!(scene_file(&sandbox, "../escape").is_err());
+        assert!(scene_file(&sandbox, "hall").is_err(), "taken");
+    }
+}

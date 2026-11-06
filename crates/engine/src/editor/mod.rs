@@ -11,6 +11,7 @@ pub mod history;
 pub mod import;
 pub mod inspector;
 pub mod markers;
+mod new_scene;
 mod tabs;
 
 use crate::player::settings::{Footsteps, PlayerSettings, RandomOrder};
@@ -76,6 +77,8 @@ pub struct Editor {
     /// the live state above).
     tabs: Vec<Option<tabs::Parked>>,
     active_tab: usize,
+    /// NEW SCENE / SAVE AS: the name being typed.
+    naming: Option<new_scene::NameDialog>,
 }
 
 /// What to do once unsaved changes are dealt with.
@@ -163,6 +166,7 @@ impl Editor {
             probes: Vec::new(),
             tabs: vec![None],
             active_tab: 0,
+            naming: None,
         }
     }
 
@@ -269,6 +273,7 @@ impl Editor {
         }
 
         self.confirm_dialog(ui, scene, player, &mut output);
+        self.name_dialog(ui, scene, player, &mut output);
 
         output.viewport = ui.available_rect_before_wrap();
         hints(ui, output.viewport, self.playing);
@@ -888,7 +893,17 @@ impl Editor {
                 });
                 output.bake |= clicked[0];
                 output.bake_lighting |= clicked[1];
+                let mut naming = None;
                 ui.menu_button("PROJECT", |ui| {
+                    if ui.button("NEW SCENE").clicked() {
+                        naming = Some(new_scene::Naming::New);
+                        ui.close();
+                    }
+                    if ui.button("SAVE SCENE AS").clicked() {
+                        naming = Some(new_scene::Naming::SaveAs);
+                        ui.close();
+                    }
+                    ui.separator();
                     let hint = "THE WHOLE PROJECT FOLDER IN ONE .GAMEPACK FILE NEXT TO IT,                                 TO OPEN IN ANOTHER EDITOR (SAVED FILES ONLY)";
                     if ui.button("EXPORT PACKAGE").on_hover_text(hint).clicked() {
                         output.export_package = true;
@@ -905,6 +920,9 @@ impl Editor {
                     .collect();
                 if !notes.is_empty() {
                     ui.label(RichText::new(notes.join("  ")).small().color(theme::AMBER));
+                }
+                if let Some(purpose) = naming {
+                    self.ask_name(purpose);
                 }
 
                 ui.add_space(12.0);
