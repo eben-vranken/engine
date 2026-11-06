@@ -14,7 +14,7 @@ egui = { version = "0.37.0", features = ["default_fonts"] }
 egui-wgpu = "0.37.0"
 egui-winit = "0.37.0"
 glam = { version = "0.33", features = ["bytemuck", "serde"] }
-gltf = "1.4.1"
+gltf = { version = "1.4.1", features = ["extras"] }
 hound = "3.5.1"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 log = "0.4.35"
@@ -22,6 +22,7 @@ pollster = "1.0.1"
 rapier3d = "0.36.1"
 ron = "0.12.3"
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 thiserror = "2.0.21"
 transform-gizmo = "0.11.0"
 wgpu = "30.0.1"

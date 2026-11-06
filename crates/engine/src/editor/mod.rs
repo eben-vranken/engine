@@ -11,6 +11,7 @@ pub mod history;
 pub mod import;
 pub mod inspector;
 pub mod markers;
+mod model_tab;
 mod new_scene;
 mod tabs;
 
@@ -26,6 +27,7 @@ use egui::{Align, Layout, Rect, RichText, Ui};
 use gizmo::{TransformGizmo, View};
 use glam::{Vec2, Vec3};
 use history::{Change, Edit, History};
+pub use model_tab::{ModelDoc, model_files, stage};
 use std::path::{Path, PathBuf};
 use transform_gizmo::config::GizmoModeKind;
 
@@ -79,6 +81,8 @@ pub struct Editor {
     active_tab: usize,
     /// NEW SCENE / SAVE AS: the name being typed.
     naming: Option<new_scene::NameDialog>,
+    /// The open model, when the active tab is a model tab.
+    pub model: Option<ModelDoc>,
 }
 
 /// What to do once unsaved changes are dealt with.
@@ -136,6 +140,8 @@ pub struct EditorOutput {
     pub new_tab: Option<PathBuf>,
     /// Close this tab (unsaved changes already dealt with).
     pub close_tab: Option<usize>,
+    /// Open this model (relative to the project) in a model tab.
+    pub open_model: Option<PathBuf>,
 }
 
 impl Editor {
@@ -167,6 +173,7 @@ impl Editor {
             tabs: vec![None],
             active_tab: 0,
             naming: None,
+            model: None,
         }
     }
 
@@ -195,7 +202,12 @@ impl Editor {
             switch_tab: None,
             new_tab: None,
             close_tab: None,
+            open_model: None,
         };
+        if self.model.is_some() {
+            self.model_ui(ui, scene, player, blink, view, &mut output);
+            return output;
+        }
         // H: zone markers (not while typing in a field). Tab and Shift+Tab
         // (the side panels) are handled by the runtime, before egui.
         if !ui.ctx().memory(|m| m.focused().is_some()) {
@@ -282,7 +294,8 @@ impl Editor {
 
     /// Unsaved changes, including an edit still in progress.
     pub fn is_dirty(&self) -> bool {
-        self.pending.is_some()
+        self.model.as_ref().is_some_and(|m| m.is_dirty())
+            || self.pending.is_some()
             || self.zone_pending.is_some()
             || self.player_pending.is_some()
             || self.history.state() != self.saved_state
@@ -292,6 +305,10 @@ impl Editor {
     /// project's `player.ron` if they differ from it. Returns true if a
     /// pending edit was committed first (collision needs a rebuild).
     pub fn save(&mut self, scene: &Scene, player: &PlayerSettings) -> bool {
+        if self.model.is_some() {
+            self.save_model();
+            return false;
+        }
         let settled = self.commit_pending(scene);
         let path = self.project_dir.join(&self.scene_path);
         let saved = scene
@@ -474,6 +491,10 @@ impl Editor {
 
     /// Undoes the last edit.
     pub fn undo(&mut self, scene: &mut Scene, player: &mut PlayerSettings) -> Option<Change> {
+        if let Some(model) = &mut self.model {
+            model.undo();
+            return None;
+        }
         self.commit_pending(scene);
         let change = self.history.undo(scene, player)?;
         self.follow(change);
@@ -482,6 +503,10 @@ impl Editor {
 
     /// Redoes the last undone edit.
     pub fn redo(&mut self, scene: &mut Scene, player: &mut PlayerSettings) -> Option<Change> {
+        if let Some(model) = &mut self.model {
+            model.redo();
+            return None;
+        }
         self.commit_pending(scene);
         let change = self.history.redo(scene, player)?;
         self.follow(change);
@@ -706,6 +731,9 @@ impl Editor {
 
     /// Removes the selected object.
     pub fn delete_selected(&mut self, scene: &mut Scene) -> Option<Change> {
+        if self.model.is_some() {
+            return None;
+        }
         let index = self.selected.filter(|&i| i < scene.objects.len())?;
         // Commit first so undo restores the object with its latest edit.
         self.commit_pending(scene);
@@ -716,6 +744,9 @@ impl Editor {
     /// Copies the selected object in place, right after it in the list, and
     /// selects the copy (move it with the gizmo).
     pub fn duplicate_selected(&mut self, scene: &mut Scene) -> Option<Change> {
+        if self.model.is_some() {
+            return None;
+        }
         let index = self.selected.filter(|&i| i < scene.objects.len())?;
         let mut object = scene.objects[index].clone();
         object.name = unique_name(scene, &object.name);
@@ -730,6 +761,10 @@ impl Editor {
 
     /// Changes the selection, finishing any edit on the previous one.
     pub fn select(&mut self, scene: &Scene, selected: Option<usize>) -> bool {
+        if let Some(model) = &mut self.model {
+            model.clear_selection();
+            return false;
+        }
         let settled = self.commit_pending(scene);
         self.selected = selected;
         if selected.is_some() {
@@ -1809,6 +1844,11 @@ fn hints(ui: &Ui, viewport: Rect, playing: bool) {
     } else {
         "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+D DUPLICATE  DEL DELETE  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE  F5 PLAY  TAB/SHIFT+TAB PANELS  H ZONES"
     };
+    hint_line(ui, viewport, text);
+}
+
+/// A line of key hints along the bottom of the viewport.
+fn hint_line(ui: &Ui, viewport: Rect, text: &str) {
     egui::Area::new(egui::Id::unique("editor_hints"))
         // Anchored at the bottom, so wrapped lines grow upward.
         .pivot(egui::Align2::LEFT_BOTTOM)

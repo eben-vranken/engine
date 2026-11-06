@@ -21,6 +21,7 @@ mod cursor;
 pub mod editor;
 pub mod input;
 pub mod lightmap;
+pub mod modeler;
 pub mod package;
 pub mod physics;
 pub mod player;

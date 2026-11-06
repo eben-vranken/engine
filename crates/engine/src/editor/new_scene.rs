@@ -2,6 +2,7 @@
 //! starts as.
 
 use super::{Editor, EditorOutput, dim};
+use crate::modeler::mesh::EditMesh;
 use crate::player::settings::PlayerSettings;
 use crate::render::mesh::Shape;
 use crate::scene::{Component, Object, Primitive, Scene, Transform, Zone, ZoneVolume};
@@ -14,6 +15,20 @@ use std::path::{Path, PathBuf};
 pub(super) enum Naming {
     New,
     SaveAs,
+    /// A new model in `models/`.
+    Model,
+}
+
+/// What a new model starts as.
+const STARTS: [&str; 4] = ["BOX", "PLANE", "CYLINDER", "SPHERE"];
+
+fn start_mesh(index: usize) -> EditMesh {
+    match index {
+        1 => EditMesh::plane(glam::Vec2::ONE),
+        2 => EditMesh::cylinder(0.5, 1.0, 8),
+        3 => EditMesh::sphere(0.5, 8, 6),
+        _ => EditMesh::cube(Vec3::ONE),
+    }
 }
 
 /// The name dialog's state.
@@ -22,6 +37,8 @@ pub(super) struct NameDialog {
     pub text: String,
     /// Why the last name was refused.
     pub error: Option<String>,
+    /// New models: which of `STARTS`.
+    pub start: usize,
 }
 
 /// A new scene: one zone with a volume around a floor, and a Player Start.
@@ -65,8 +82,19 @@ pub fn starter() -> Scene {
 /// Checks a typed scene name; returns its file relative to the project
 /// (`scenes/<name>.ron`).
 pub fn scene_file(project_dir: &Path, name: &str) -> Result<PathBuf, String> {
+    project_file(project_dir, "scenes", "ron", name)
+}
+
+/// Checks a typed name for a new file `<folder>/<name>.<extension>` in the
+/// project; returns that path, relative to the project.
+fn project_file(
+    project_dir: &Path,
+    folder: &str,
+    extension: &str,
+    name: &str,
+) -> Result<PathBuf, String> {
     let name = name.trim();
-    let name = name.strip_suffix(".ron").unwrap_or(name);
+    let name = name.strip_suffix(&format!(".{extension}")).unwrap_or(name);
     if name.is_empty() {
         return Err("TYPE A NAME".into());
     }
@@ -76,7 +104,7 @@ pub fn scene_file(project_dir: &Path, name: &str) -> Result<PathBuf, String> {
     {
         return Err("USE LETTERS, DIGITS, SPACES, - AND _ ONLY".into());
     }
-    let relative = Path::new("scenes").join(format!("{name}.ron"));
+    let relative = Path::new(folder).join(format!("{name}.{extension}"));
     if project_dir.join(&relative).exists() {
         return Err(format!("{} ALREADY EXISTS", relative.display()).to_uppercase());
     }
@@ -89,6 +117,7 @@ impl Editor {
             purpose,
             text: String::new(),
             error: None,
+            start: 0,
         });
     }
 
@@ -109,6 +138,7 @@ impl Editor {
                 "SAVE AS",
                 "A COPY OF THIS SCENE (AND ITS BAKES); THE TAB SWITCHES TO IT",
             ),
+            Naming::Model => ("NEW MODEL", "CREATED IN MODELS/ AND OPENED IN A NEW TAB"),
         };
         let mut accept = false;
         let mut cancel = false;
@@ -120,6 +150,16 @@ impl Editor {
             field.request_focus();
             if field.changed() {
                 dialog.error = None;
+            }
+            if dialog.purpose == Naming::Model {
+                ui.horizontal(|ui| {
+                    ui.label(dim("START FROM"));
+                    for (i, start) in STARTS.iter().enumerate() {
+                        if ui.selectable_label(dialog.start == i, *start).clicked() {
+                            dialog.start = i;
+                        }
+                    }
+                });
             }
             if let Some(error) = &dialog.error {
                 ui.label(RichText::new(error).small().color(crate::ui::theme::ALERT));
@@ -138,11 +178,15 @@ impl Editor {
         if !accept {
             return;
         }
-        let purpose = dialog.purpose;
-        let result = scene_file(&self.project_dir, &dialog.text).and_then(|path| match purpose {
-            Naming::New => self.create_scene(&path, output),
-            Naming::SaveAs => self.save_as(&path, scene, player, output),
-        });
+        let (purpose, start) = (dialog.purpose, dialog.start);
+        let result = match purpose {
+            Naming::Model => project_file(&self.project_dir, "models", "glb", &dialog.text)
+                .and_then(|path| self.create_model(&path, start, output)),
+            _ => scene_file(&self.project_dir, &dialog.text).and_then(|path| match purpose {
+                Naming::SaveAs => self.save_as(&path, scene, player, output),
+                _ => self.create_scene(&path, output),
+            }),
+        };
         match result {
             Ok(()) => self.naming = None,
             Err(error) => {
@@ -151,6 +195,23 @@ impl Editor {
                 }
             }
         }
+    }
+
+    /// Writes a new model to `path` and opens it in a model tab.
+    fn create_model(
+        &mut self,
+        path: &Path,
+        start: usize,
+        output: &mut EditorOutput,
+    ) -> Result<(), String> {
+        let file = self.project_dir.join(path);
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        crate::modeler::glb::save(&file, &start_mesh(start)).map_err(|e| e.to_string())?;
+        log::info!("created {}", file.display());
+        output.open_model = Some(path.to_owned());
+        Ok(())
     }
 
     /// Writes a starter scene to `path` and opens it in a new tab.

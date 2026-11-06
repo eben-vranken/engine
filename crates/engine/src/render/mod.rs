@@ -1132,6 +1132,16 @@ impl Renderer {
         }
     }
 
+    /// Re-uploads one object's mesh even though its geometry key is the
+    /// same (a model replaced in the asset cache under the same key).
+    pub fn reload_object(&mut self, scene: &Scene, index: usize, assets: &mut Assets) {
+        for draw in self.draws.iter_mut().filter(|d| d.object == index) {
+            // A key no object has, so `update_object` rebuilds the mesh.
+            draw.geometry = GeometryKey::Model(String::new());
+        }
+        self.update_object(scene, index, assets);
+    }
+
     /// Highlights the given scene object (by index) as selected.
     pub fn set_highlight(&mut self, selected: Option<usize>) {
         self.highlighted = selected;

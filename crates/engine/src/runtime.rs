@@ -168,6 +168,8 @@ struct Running {
     baked_signature: Option<u64>,
     /// A light bake running in the background.
     light_job: Option<lightmap::BakeJob>,
+    /// Models opened in model tabs so far (names their cache keys).
+    models_opened: usize,
     /// The loaded light bake's signature (`None` = no bake).
     light_signature: Option<u64>,
 }
@@ -404,6 +406,7 @@ impl Running {
             baked_signature: None,
             light_job: None,
             light_signature: None,
+            models_opened: 0,
         })
     }
 
@@ -683,6 +686,9 @@ impl Running {
     /// Editor: Play runs the scene from its PlayerStart; Stop puts back the
     /// scene and the editor camera as they were.
     fn toggle_play(&mut self) {
+        if self.editor.as_ref().is_some_and(|e| e.model.is_some()) {
+            return; // nothing to play in a model tab
+        }
         if self.play.is_some() {
             self.stop_play();
         } else {
@@ -841,6 +847,40 @@ impl Running {
             Err(err) => {
                 log::error!("{err}");
                 editor.show_error(err.to_string());
+            }
+        }
+    }
+
+    /// Editor: opens a model from the project in a new model tab.
+    fn open_model(&mut self, path: PathBuf) {
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        if let Some(index) = editor.tab_of(&path) {
+            self.switch_tab(index);
+            return;
+        }
+        match crate::modeler::glb::load(&self.game_dir.join(&path)) {
+            Ok(mesh) => {
+                self.models_opened += 1;
+                // A cache key that is no file's path: the model as edited.
+                let key = format!("<modeler {}>", self.models_opened);
+                self.assets.insert_model(&key, mesh.to_model());
+                let doc = crate::editor::ModelDoc::new(mesh, key.clone());
+                let stage = crate::editor::stage(&key);
+                editor.open_model_tab(path, doc, stage, &mut self.scene, &self.fly);
+                // Look at the model from the front, a little above.
+                let eye = Vec3::new(1.8, 1.6, 2.6);
+                let forward = -eye.normalize();
+                let camera = &mut self.fly.camera;
+                camera.position = eye;
+                camera.yaw = forward.x.atan2(-forward.z);
+                camera.pitch = forward.y.asin();
+                self.scene_swapped();
+            }
+            Err(err) => {
+                log::error!("{err}");
+                editor.show_error(err.to_string().to_uppercase());
             }
         }
     }
@@ -1344,7 +1384,9 @@ impl Running {
         }
 
         // A click in the viewport selects what's under it, unless it was on a gizmo handle.
-        let on_gizmo = editor_output.as_ref().is_some_and(|o| o.gizmo_hovered);
+        // (Model tabs pick their own vertices, edges and faces.)
+        let on_gizmo = editor_output.as_ref().is_some_and(|o| o.gizmo_hovered)
+            || self.editor.as_ref().is_some_and(|e| e.model.is_some());
         if let (Some(editor), Some(cursor)) = (&mut self.editor, self.pending_pick.take())
             && !on_gizmo
         {
@@ -1403,6 +1445,18 @@ impl Running {
             if let Some(index) = output.close_tab {
                 self.close_tab(index);
             }
+            if let Some(path) = &output.open_model {
+                self.open_model(path.clone());
+            }
+        }
+        // A model tab's mesh was edited: redraw it.
+        if let Some(model) = self.editor.as_mut().and_then(|e| e.model.as_mut())
+            && model.changed
+        {
+            model.changed = false;
+            self.assets.insert_model(&model.key, model.mesh.to_model());
+            self.renderer
+                .reload_object(&self.scene, 0, &mut self.assets);
         }
 
         // The editor's viewport, from egui points to window pixels.

@@ -270,14 +270,14 @@ const BOX_EDGES: [(usize, usize); 12] = [
 const FRAME_EDGES: [(usize, usize); 4] = [(0, 1), (1, 2), (2, 3), (3, 0)];
 
 /// A world point on screen (egui points); `None` if it's behind the camera.
-fn project(view: &View, point: Vec3) -> Option<Pos2> {
+pub(super) fn project(view: &View, point: Vec3) -> Option<Pos2> {
     let clip = clip_space(view) * point.extend(1.0);
     (clip.w > view.camera.near).then(|| to_screen(view, clip))
 }
 
 /// A world line on screen, cut off where it passes behind the camera (so
 /// the edges of a box around the camera still show).
-fn project_segment(view: &View, a: Vec3, b: Vec3) -> Option<[Pos2; 2]> {
+pub(super) fn project_segment(view: &View, a: Vec3, b: Vec3) -> Option<[Pos2; 2]> {
     let matrix = clip_space(view);
     let (mut a, mut b) = (matrix * a.extend(1.0), matrix * b.extend(1.0));
     let near = view.camera.near;
