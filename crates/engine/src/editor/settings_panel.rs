@@ -3,8 +3,8 @@
 
 use super::history::Change;
 use super::{Editor, EditorOutput, dim, inspector, section};
-use crate::scene::Scene;
-use egui::{RichText, Ui};
+use crate::scene::{Component, Scene};
+use egui::{Align, Layout, RichText, Ui};
 use glam::Vec3;
 
 impl Editor {
@@ -45,6 +45,8 @@ impl Editor {
                 };
                 let env = scene.environment.clone();
                 let zone = &mut scene.zones[z];
+                let objects = &mut scene.objects;
+                let mut pick = None;
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
                     .show(ui, |ui| {
@@ -53,6 +55,40 @@ impl Editor {
                             ui.label(zone.name.to_uppercase());
                         });
                         ui.label(dim("WITHOUT ITS OWN, A ZONE USES THE ENVIRONMENT'S"));
+
+                        // The zone's space is its volume objects.
+                        section(ui, "VOLUME");
+                        let mut any = false;
+                        for (index, object) in objects
+                            .iter_mut()
+                            .enumerate()
+                            .filter(|(_, o)| o.zone == zone.name)
+                        {
+                            let Some(volume) = object.components.iter_mut().find_map(|c| match c {
+                                Component::ZoneVolume(v) => Some(v),
+                                _ => None,
+                            }) else {
+                                continue;
+                            };
+                            any = true;
+                            ui.horizontal(|ui| {
+                                ui.label(object.name.to_uppercase());
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui
+                                        .small_button("SELECT")
+                                        .on_hover_text("MOVE, TURN OR SCALE IT WITH THE GIZMO")
+                                        .clicked()
+                                    {
+                                        pick = Some(index);
+                                    }
+                                });
+                            });
+                            inspector::fields(ui, volume, &names);
+                            ui.add_space(4.0);
+                        }
+                        if !any {
+                            ui.label(dim("NONE: ADD ▸ ZONE VOLUME GIVES THE ZONE ITS SPACE"));
+                        }
 
                         section(ui, "FOG");
                         own_toggle(ui, "OWN FOG", &mut zone.fog, &env.fog);
@@ -66,6 +102,10 @@ impl Editor {
                             inspector::fields(ui, grade, &names);
                         }
                     });
+                if let Some(index) = pick {
+                    self.select(scene, Some(index));
+                    self.reveal_selection = true;
+                }
             }
         }
         if *scene != before {

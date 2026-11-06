@@ -95,7 +95,6 @@ impl Editor {
                         }
                         continue;
                     }
-                    let empty = total == 0;
                     let chosen = self.settings == Some(SettingsTarget::Zone(zone.name.clone()));
                     let response = egui::CollapsingHeader::new(picked(&header, chosen))
                         .id_salt(&zone.name)
@@ -121,11 +120,7 @@ impl Editor {
                             zone_action = Some(ZoneAction::StartRename(zone.name.clone()));
                             ui.close();
                         }
-                        if ui
-                            .add_enabled(empty, egui::Button::new("DELETE"))
-                            .on_disabled_hover_text("ONLY EMPTY ZONES")
-                            .clicked()
-                        {
+                        if ui.button("DELETE").clicked() {
                             zone_action = Some(ZoneAction::Delete(zone.name.clone()));
                             ui.close();
                         }
@@ -144,6 +139,7 @@ impl Editor {
                 }
             });
         self.reveal_selection = false;
+        self.zone_delete_dialog(ui, scene, output);
         if let Some(index) = clicked {
             self.select(scene, Some(index));
         }
@@ -172,7 +168,20 @@ impl Editor {
                     None
                 }
             }
-            Some(ZoneAction::Delete(name)) => self.delete_zone(scene, &name),
+            Some(ZoneAction::Delete(name)) => {
+                if scene.objects.iter().any(|o| o.zone == name) {
+                    let target = scene
+                        .zones
+                        .iter()
+                        .map(|z| z.name.clone())
+                        .find(|z| *z != name)
+                        .unwrap_or_default();
+                    self.zone_delete = Some((name, target));
+                    None
+                } else {
+                    self.delete_zone(scene, &name, None)
+                }
+            }
             None => None,
         };
         if let Some(change) = change {
@@ -224,14 +233,111 @@ impl Editor {
         Some(self.push_scene(scene, after))
     }
 
-    /// Removes a zone with no objects in it.
-    pub(super) fn delete_zone(&mut self, scene: &mut Scene, name: &str) -> Option<Change> {
-        if scene.objects.iter().any(|o| o.zone == name) {
+    /// Removes a zone. Its objects move to `move_to` (and portals into it
+    /// lead there instead), or are deleted with it if that is `None`.
+    /// `None` if either zone doesn't exist or they are the same.
+    pub(super) fn delete_zone(
+        &mut self,
+        scene: &mut Scene,
+        name: &str,
+        move_to: Option<&str>,
+    ) -> Option<Change> {
+        let exists = |zone: &str| scene.zones.iter().any(|z| z.name == zone);
+        if !exists(name) || move_to.is_some_and(|to| to == name || !exists(to)) {
             return None;
         }
         let mut after = scene.clone();
         after.zones.retain(|z| z.name != name);
+        match move_to {
+            Some(to) => {
+                for object in &mut after.objects {
+                    if object.zone == name {
+                        object.zone = to.to_owned();
+                    }
+                    for component in &mut object.components {
+                        if let Component::Portal(portal) = component
+                            && portal.to.0 == name
+                        {
+                            portal.to.0 = to.to_owned();
+                        }
+                    }
+                }
+            }
+            None => after.objects.retain(|o| o.zone != name),
+        }
+        self.selected = None;
+        if self.settings == Some(SettingsTarget::Zone(name.to_owned())) {
+            self.settings = None;
+        }
         Some(self.push_scene(scene, after))
+    }
+
+    /// Asks what happens to a zone's objects before deleting it: delete
+    /// them too, or move them to another zone.
+    fn zone_delete_dialog(&mut self, ui: &Ui, scene: &mut Scene, output: &mut EditorOutput) {
+        let Some((zone, target)) = &mut self.zone_delete else {
+            return;
+        };
+        let members: Vec<&Object> = scene.objects.iter().filter(|o| o.zone == *zone).collect();
+        let has_start = members
+            .iter()
+            .any(|o| o.components.contains(&Component::PlayerStart));
+        let others: Vec<String> = scene
+            .zones
+            .iter()
+            .map(|z| z.name.clone())
+            .filter(|z| z != zone)
+            .collect();
+        let mut decision = None;
+        egui::Modal::new(egui::Id::unique("delete_zone")).show(ui.ctx(), |ui| {
+            ui.label(RichText::new(format!("DELETE ZONE {}", zone.to_uppercase())).strong());
+            let count = members.len();
+            let objects = if count == 1 { "OBJECT" } else { "OBJECTS" };
+            ui.label(dim(&format!("IT HOLDS {count} {objects}.")));
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let moved = ui
+                    .add_enabled(!others.is_empty(), egui::Button::new("MOVE THEM TO"))
+                    .on_disabled_hover_text("THERE IS NO OTHER ZONE")
+                    .clicked();
+                if moved {
+                    decision = Some(Some(target.clone()));
+                }
+                egui::ComboBox::from_id_salt("delete_zone_target")
+                    .selected_text(target.to_uppercase())
+                    .show_ui(ui, |ui| {
+                        for other in &others {
+                            ui.selectable_value(target, other.clone(), other.to_uppercase());
+                        }
+                    });
+            });
+            if ui.button("DELETE THEM TOO").clicked() {
+                decision = Some(None);
+            }
+            if has_start {
+                ui.label(
+                    RichText::new("THE PLAYER START IS ONE OF THEM")
+                        .small()
+                        .color(theme::ALERT),
+                );
+            }
+            ui.add_space(8.0);
+            if ui.button("CANCEL").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                decision = Some(Some(String::new())); // cancelled below
+            }
+        });
+        let Some(move_to) = decision else {
+            return;
+        };
+        let zone = zone.clone();
+        self.zone_delete = None;
+        if move_to.as_deref() == Some("") {
+            return; // cancelled
+        }
+        if let Some(change) = self.delete_zone(scene, &zone, move_to.as_deref()) {
+            output.changed.push(change);
+            output.settled = true;
+        }
     }
 
     /// Replaces the whole scene as one undo step.
@@ -320,16 +426,64 @@ mod tests {
                 to: crate::scene::ZoneRef("cellar".into())
             })
         );
-        assert!(
-            editor.delete_zone(&mut scene, "cellar").is_none(),
-            "not empty"
-        );
         editor.undo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(scene, original);
 
         editor.add_zone(&mut scene);
         assert_eq!(scene.zones.last().unwrap().name, "zone");
-        assert!(editor.delete_zone(&mut scene, "zone").is_some());
+        assert!(editor.delete_zone(&mut scene, "zone", None).is_some());
+        assert_eq!(scene, original);
+    }
+
+    #[test]
+    fn deleting_a_zone_moves_or_deletes_its_objects() {
+        let mut scene = boxes(3);
+        scene.zones.push(crate::scene::Zone::new("hall"));
+        scene.objects[1].zone = "hall".into();
+        scene.objects[2].components = vec![Component::Portal(Portal {
+            to: crate::scene::ZoneRef("hall".into()),
+        })];
+        let original = scene.clone();
+        let mut editor = editor();
+        editor.selected = Some(1);
+
+        assert!(
+            editor
+                .delete_zone(&mut scene, "hall", Some("hall"))
+                .is_none()
+        );
+        assert!(
+            editor
+                .delete_zone(&mut scene, "hall", Some("nowhere"))
+                .is_none()
+        );
+
+        // Moved: every object stays, the portal now leads to "test".
+        assert!(
+            editor
+                .delete_zone(&mut scene, "hall", Some("test"))
+                .is_some()
+        );
+        assert_eq!(scene.zones.len(), 1);
+        assert_eq!(scene.objects.len(), 3);
+        assert!(scene.objects.iter().all(|o| o.zone == "test"));
+        assert_eq!(
+            scene.objects[2].components[0],
+            Component::Portal(Portal {
+                to: crate::scene::ZoneRef("test".into())
+            })
+        );
+        assert_eq!(editor.selected, None);
+        editor.undo(&mut scene, &mut PlayerSettings::default());
+        assert_eq!(scene, original);
+
+        // Deleted with it: only its objects go, even the last zone can go.
+        assert!(editor.delete_zone(&mut scene, "hall", None).is_some());
+        assert_eq!(scene.objects.len(), 2);
+        assert!(editor.delete_zone(&mut scene, "test", None).is_some());
+        assert!(scene.zones.is_empty() && scene.objects.is_empty());
+        editor.undo(&mut scene, &mut PlayerSettings::default());
+        editor.undo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(scene, original);
     }
 }

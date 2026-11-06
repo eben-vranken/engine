@@ -82,6 +82,9 @@ pub struct Editor {
     /// A zone being renamed in the hierarchy: its name, and the new name
     /// typed so far.
     renaming: Option<(String, String)>,
+    /// A zone with objects in it being deleted: its name, and the zone its
+    /// objects would move to.
+    zone_delete: Option<(String, String)>,
     /// Text typed in the hierarchy's search bar.
     search: String,
     /// The reverb bake's state for the BAKE menu (set by the runtime).
@@ -176,6 +179,7 @@ impl Editor {
             gizmo: TransformGizmo::default(),
             playing: false,
             renaming: None,
+            zone_delete: None,
             search: String::new(),
             bake_status: String::new(),
             light_status: String::new(),
