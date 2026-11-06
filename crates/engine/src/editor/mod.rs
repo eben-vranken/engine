@@ -18,7 +18,7 @@ pub mod markers;
 mod menu_bar;
 mod model_tab;
 mod model_tools;
-mod new_scene;
+mod name_dialog;
 mod object_panel;
 mod objects;
 mod player_panel;
@@ -31,8 +31,7 @@ use crate::player::settings::PlayerSettings;
 use crate::scene::{Object, Scene};
 use confirm::Confirm;
 use egui::{Rect, Ui};
-pub use files::model_files;
-use files::scene_files;
+use files::{model_files, scene_files};
 use gizmo::{TransformGizmo, View};
 use glam::Vec3;
 use history::{Change, Edit, History};
@@ -40,7 +39,7 @@ pub use model_tab::{ModelDoc, stage};
 pub use objects::{NEW_OBJECT_DISTANCE, placement};
 pub use settings_panel::SettingsTarget;
 use std::path::PathBuf;
-use widgets::{Side, collapsed_panel, dim, panel_header, section};
+use widgets::{Side, collapsed_panel, dialog_heading, dim, panel_header, section};
 
 pub struct Editor {
     /// Index into `Scene::objects`.
@@ -98,7 +97,7 @@ pub struct Editor {
     tabs: Vec<Option<tabs::Parked>>,
     active_tab: usize,
     /// NEW SCENE / SAVE AS: the name being typed.
-    naming: Option<new_scene::NameDialog>,
+    naming: Option<name_dialog::NameDialog>,
     /// The open model, when the active tab is a model tab.
     pub model: Option<ModelDoc>,
     /// The system's file dialog, while one is open.

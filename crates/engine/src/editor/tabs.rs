@@ -4,7 +4,7 @@
 //! in when their tab is picked.
 
 use super::history::History;
-use super::{Confirm, Editor, EditorOutput, SettingsTarget, dim, scene_files};
+use super::{Confirm, Editor, EditorOutput, SettingsTarget, dim, model_files, scene_files};
 use crate::camera::FlyCamera;
 use crate::player::settings::PlayerSettings;
 use crate::scene::Scene;
@@ -268,7 +268,7 @@ impl Editor {
                     }
                     if closable
                         && ui
-                            .small_button("x")
+                            .small_button("X")
                             .on_hover_text("CLOSE THIS TAB")
                             .clicked()
                     {
@@ -293,7 +293,7 @@ impl Editor {
                         }
                     }
                     ui.separator();
-                    for path in super::model_files(&self.project_dir) {
+                    for path in model_files(&self.project_dir) {
                         let open = self.tab_of(&path);
                         let mut text = path.display().to_string().to_uppercase();
                         if open.is_some() {

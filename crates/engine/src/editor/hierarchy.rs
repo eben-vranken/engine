@@ -2,7 +2,7 @@
 //! (add, rename, delete).
 
 use super::history::{Change, Edit};
-use super::{Editor, EditorOutput, SettingsTarget, dim, inspector};
+use super::{Editor, EditorOutput, SettingsTarget, dialog_heading, dim, inspector};
 use crate::scene::{Component, Object, Scene, Zone};
 use crate::ui::theme;
 use egui::{Align, Layout, RichText, Ui};
@@ -290,11 +290,13 @@ impl Editor {
             .collect();
         let mut decision = None;
         egui::Modal::new(egui::Id::unique("delete_zone")).show(ui.ctx(), |ui| {
-            ui.label(RichText::new(format!("DELETE ZONE {}", zone.to_uppercase())).strong());
             let count = members.len();
             let objects = if count == 1 { "OBJECT" } else { "OBJECTS" };
-            ui.label(dim(&format!("IT HOLDS {count} {objects}.")));
-            ui.add_space(8.0);
+            dialog_heading(
+                ui,
+                &format!("DELETE ZONE {}", zone.to_uppercase()),
+                &format!("IT HOLDS {count} {objects}."),
+            );
             ui.horizontal(|ui| {
                 let moved = ui
                     .add_enabled(!others.is_empty(), egui::Button::new("MOVE THEM TO"))

@@ -5,14 +5,30 @@ use crate::modeler::glb;
 use std::path::{Path, PathBuf};
 
 /// Scene files in the project's `scenes/` folder, relative to the project.
-pub(super) fn scene_files(project_dir: &std::path::Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(project_dir.join("scenes")) else {
+pub(super) fn scene_files(project_dir: &Path) -> Vec<PathBuf> {
+    files_in(project_dir, "scenes", "ron")
+}
+
+/// Models in the project's `models/` folder that the modeler can open.
+pub(super) fn model_files(project_dir: &Path) -> Vec<PathBuf> {
+    let mut files = files_in(project_dir, "models", "glb");
+    files.retain(|p| glb::is_editable(&project_dir.join(p)));
+    files
+}
+
+/// The `.<extension>` files directly in `<project>/<folder>`, relative to
+/// the project, sorted.
+fn files_in(project_dir: &Path, folder: &str, extension: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(project_dir.join(folder)) else {
         return Vec::new();
     };
     let mut files: Vec<PathBuf> = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "ron"))
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case(extension))
+        })
         .filter_map(|p| p.strip_prefix(project_dir).ok().map(PathBuf::from))
         .collect();
     files.sort();
@@ -48,20 +64,4 @@ pub(super) fn sound_files(project_dir: &Path) -> Vec<String> {
     }
     found.sort();
     found
-}
-
-/// Models in the project's `models/` folder that the modeler can open.
-pub fn model_files(project_dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(project_dir.join("models")) else {
-        return Vec::new();
-    };
-    let mut files: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("glb")))
-        .filter(|p| glb::is_editable(p))
-        .filter_map(|p| p.strip_prefix(project_dir).ok().map(PathBuf::from))
-        .collect();
-    files.sort();
-    files
 }

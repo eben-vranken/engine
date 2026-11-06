@@ -1,9 +1,9 @@
 //! Asking about unsaved changes before they would be lost.
 
-use super::{Editor, EditorOutput, dim};
+use super::{Editor, EditorOutput, dialog_heading};
 use crate::player::settings::PlayerSettings;
 use crate::scene::Scene;
-use egui::{RichText, Ui};
+use egui::Ui;
 
 /// What to do once unsaved changes are dealt with.
 #[derive(Debug, Clone)]
@@ -41,14 +41,13 @@ impl Editor {
         };
         let mut decision = None;
         egui::Modal::new(egui::Id::unique("unsaved_changes")).show(ui.ctx(), |ui| {
-            ui.label(RichText::new("UNSAVED CHANGES").strong());
             let names = match &confirm {
                 Confirm::CloseTab(index) => self.tab_label(*index),
                 Confirm::Close | Confirm::Project(_) => self.dirty_paths().join(", "),
             };
             let verb = if names.contains(", ") { "HAVE" } else { "HAS" };
-            ui.label(dim(&format!("{names} {verb} CHANGES THAT AREN'T SAVED.")));
-            ui.add_space(8.0);
+            let text = format!("{names} {verb} CHANGES THAT AREN'T SAVED.");
+            dialog_heading(ui, "UNSAVED CHANGES", &text);
             ui.horizontal(|ui| {
                 if ui.button("SAVE").clicked() {
                     decision = Some(true);

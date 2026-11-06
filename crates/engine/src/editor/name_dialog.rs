@@ -1,7 +1,7 @@
 //! NEW SCENE and NEW MODEL: naming the new file in the editor. Also SAVE
 //! SCENE AS once its file is picked.
 
-use super::{Editor, EditorOutput, dim};
+use super::{Editor, EditorOutput, dialog_heading, dim};
 use crate::modeler::mesh::EditMesh;
 use crate::player::settings::PlayerSettings;
 use crate::scene::Scene;
@@ -90,9 +90,7 @@ impl Editor {
         let mut accept = false;
         let mut cancel = false;
         egui::Modal::new(egui::Id::unique("scene_name")).show(ui.ctx(), |ui| {
-            ui.label(RichText::new(title).strong());
-            ui.label(dim(hint));
-            ui.add_space(6.0);
+            dialog_heading(ui, title, hint);
             let field = ui.add(egui::TextEdit::singleline(&mut dialog.text).hint_text("NAME"));
             field.request_focus();
             if field.changed() {

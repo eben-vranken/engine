@@ -4,7 +4,7 @@
 
 use super::file_dialogs::Purpose;
 use super::gizmo::View;
-use super::new_scene::Naming;
+use super::name_dialog::Naming;
 use super::objects::primitives;
 use super::{Editor, EditorOutput, dim};
 use crate::player::settings::PlayerSettings;

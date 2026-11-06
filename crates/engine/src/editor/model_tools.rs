@@ -86,7 +86,7 @@ impl ModelDoc {
         }
     }
 
-    /// Runs `tool` as one undo step. Returns a message for the top bar.
+    /// Runs `tool` as one undo step. Returns a message for the status bar.
     pub fn apply(&mut self, tool: Tool) -> Option<String> {
         if !self.can(&tool) {
             return None;

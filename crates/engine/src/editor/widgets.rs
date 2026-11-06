@@ -89,3 +89,10 @@ pub(super) fn collapsed_panel(ui: &mut Ui, id: &str, side: Side, title: &str, ke
         })
         .inner
 }
+
+/// A dialog's title and the line under it.
+pub(super) fn dialog_heading(ui: &mut Ui, title: &str, text: &str) {
+    ui.label(RichText::new(title).strong());
+    ui.label(dim(text));
+    ui.add_space(8.0);
+}
