@@ -5,6 +5,7 @@
 
 use super::gizmo::View;
 use super::markers::{project, project_segment};
+use super::model_tools::Tool;
 use super::{Editor, EditorOutput, dim};
 use crate::modeler::glb;
 use crate::modeler::mesh::{Edge, EditMesh, edge};
@@ -34,26 +35,33 @@ enum Element {
 
 /// Screen distance (points) within which a vertex or edge is picked.
 const PICK_RADIUS: f32 = 10.0;
+/// How far (points) the pointer moves before a press becomes a box
+/// selection instead of a click.
+const BOX_THRESHOLD: f32 = 4.0;
 
 /// An open model.
 pub struct ModelDoc {
     pub mesh: EditMesh,
     /// The mesh as last saved (or opened).
-    saved: EditMesh,
-    undo: Vec<EditMesh>,
-    redo: Vec<EditMesh>,
+    pub(super) saved: EditMesh,
+    pub(super) undo: Vec<EditMesh>,
+    pub(super) redo: Vec<EditMesh>,
     pub mode: SelectMode,
-    verts: BTreeSet<u32>,
-    edges: BTreeSet<Edge>,
-    faces: BTreeSet<usize>,
+    pub(super) verts: BTreeSet<u32>,
+    pub(super) edges: BTreeSet<Edge>,
+    pub(super) faces: BTreeSet<usize>,
     /// A gizmo drag in progress: the mesh before it, the pivot where it
     /// started and where it is now.
-    drag: Option<(EditMesh, Transform, Transform)>,
+    pub(super) drag: Option<(EditMesh, Transform, Transform)>,
     /// What the stage's model object is drawn from in the asset cache: a
     /// name of its own, so scenes using the file don't see unsaved edits.
     pub key: String,
     /// The mesh changed since it was last handed to the renderer.
     pub changed: bool,
+    /// The tools' settings.
+    pub(super) tools: super::model_tools::ToolSettings,
+    /// Where a box selection started (egui points).
+    box_start: Option<Pos2>,
 }
 
 impl ModelDoc {
@@ -70,6 +78,8 @@ impl ModelDoc {
             drag: None,
             key,
             changed: true,
+            tools: Default::default(),
+            box_start: None,
         }
     }
 
@@ -82,7 +92,7 @@ impl ModelDoc {
     }
 
     /// Records `before` as an undo step (the mesh has already changed).
-    fn record(&mut self, before: EditMesh) {
+    pub(super) fn record(&mut self, before: EditMesh) {
         if before != self.mesh {
             self.undo.push(before);
             self.redo.clear();
@@ -108,7 +118,7 @@ impl ModelDoc {
 
     /// The mesh was swapped for another version: drop selections that no
     /// longer exist.
-    fn after_history(&mut self) {
+    pub(super) fn after_history(&mut self) {
         let (verts, faces) = (self.mesh.positions.len() as u32, self.mesh.faces.len());
         let edges: BTreeSet<Edge> = self.mesh.edges().into_iter().collect();
         self.verts.retain(|&v| v < verts);
@@ -117,13 +127,13 @@ impl ModelDoc {
         self.changed = true;
     }
 
-    fn finish_drag(&mut self) {
+    pub(super) fn finish_drag(&mut self) {
         if let Some((before, _, _)) = self.drag.take() {
             self.record(before);
         }
     }
 
-    pub fn clear_selection(&mut self) {
+    pub(super) fn clear_selection(&mut self) {
         self.verts.clear();
         self.edges.clear();
         self.faces.clear();
@@ -136,7 +146,7 @@ impl ModelDoc {
         }
     }
 
-    fn selection_count(&self) -> usize {
+    pub(super) fn selection_count(&self) -> usize {
         match self.mode {
             SelectMode::Vertex => self.verts.len(),
             SelectMode::Edge => self.edges.len(),
@@ -252,6 +262,44 @@ impl ModelDoc {
                 self.mesh
                     .pick_face(origin, direction)
                     .map(|(f, _)| Element::Face(f))
+            }
+        }
+    }
+
+    /// Selects (or with `add`, adds) what lies inside `rect` and can be
+    /// seen.
+    fn box_select(&mut self, view: &View, rect: egui::Rect, add: bool) {
+        if !add {
+            self.clear_selection();
+        }
+        let inside = |p: Vec3| project(view, p).is_some_and(|at| rect.contains(at));
+        match self.mode {
+            SelectMode::Vertex => {
+                for (i, &p) in self.mesh.positions.iter().enumerate() {
+                    if inside(p) && self.visible(view, p) {
+                        self.verts.insert(i as u32);
+                    }
+                }
+            }
+            SelectMode::Edge => {
+                for e in self.mesh.edges() {
+                    let (a, b) = (
+                        self.mesh.positions[e[0] as usize],
+                        self.mesh.positions[e[1] as usize],
+                    );
+                    if inside(a) && inside(b) && self.visible(view, (a + b) / 2.0) {
+                        self.edges.insert(e);
+                    }
+                }
+            }
+            SelectMode::Face => {
+                for f in 0..self.mesh.faces.len() {
+                    // Just off the surface, so the face doesn't hide itself.
+                    let center = self.mesh.face_center(f) + self.mesh.face_normal(f) * 1e-3;
+                    if inside(center) && self.visible(view, center) {
+                        self.faces.insert(f);
+                    }
+                }
             }
         }
     }
@@ -428,6 +476,7 @@ impl Editor {
         output: &mut EditorOutput,
     ) {
         let typing = ui.ctx().memory(|m| m.focused().is_some());
+        let mut run = None;
         if let Some(model) = &mut self.model
             && !typing
             && !view.looking
@@ -445,6 +494,17 @@ impl Editor {
                 if i.consume_key(egui::Modifiers::NONE, egui::Key::A) {
                     model.toggle_all();
                 }
+                for (modifiers, key, tool) in [
+                    (egui::Modifiers::CTRL, egui::Key::E, Tool::Extrude),
+                    (egui::Modifiers::NONE, egui::Key::I, Tool::Inset),
+                    (egui::Modifiers::NONE, egui::Key::X, Tool::Delete),
+                    (egui::Modifiers::NONE, egui::Key::M, Tool::Merge),
+                    (egui::Modifiers::CTRL, egui::Key::R, Tool::LoopCut),
+                ] {
+                    if i.consume_key(modifiers, key) {
+                        run = Some(tool);
+                    }
+                }
             });
         }
 
@@ -457,6 +517,27 @@ impl Editor {
                 .default_size(220.0)
                 .min_size(200.0)
                 .show(ui, |ui| self.model_panel(ui));
+        }
+        if self.show_inspector
+            && let Some(model) = &mut self.model
+        {
+            let project_dir = &self.project_dir;
+            egui::Panel::right("editor_inspector")
+                .resizable(true)
+                .default_size(300.0)
+                .min_size(280.0)
+                .show(ui, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let (tool, _) = model.tools_panel(ui, project_dir);
+                        run = tool.or(run.take());
+                    });
+                });
+        }
+        if let Some(tool) = run
+            && let Some(model) = &mut self.model
+            && let Some(message) = model.apply(tool)
+        {
+            self.message = Some((message, false));
         }
         egui::Panel::top("editor_tabs").show(ui, |ui| self.tab_strip(ui, output));
 
@@ -497,10 +578,41 @@ impl Editor {
             .filter(|_| over_viewport && !modal && !view.looking && !output.gizmo_hovered)
             .and_then(|p| model.pick(view, p));
         model.draw(ui, view, hovered);
-        let clicked = ui.input(|i| i.pointer.primary_clicked());
-        if clicked && over_viewport && !modal && !view.looking && !output.gizmo_hovered {
-            let shift = ui.input(|i| i.modifiers.shift);
-            model.click(hovered, shift);
+
+        // Click selects what's under the pointer; dragging from empty space
+        // or anything selects what's inside the box.
+        let free = over_viewport && !modal && !view.looking && !output.gizmo_hovered;
+        let (pressed, released, shift) = ui.input(|i| {
+            (
+                i.pointer.primary_pressed(),
+                i.pointer.primary_released(),
+                i.modifiers.shift,
+            )
+        });
+        if pressed && free {
+            model.box_start = pointer;
+        }
+        if let (Some(start), Some(now)) = (model.box_start, pointer) {
+            let rect = egui::Rect::from_two_pos(start, now);
+            let dragged = rect.size().max_elem() > BOX_THRESHOLD;
+            if dragged {
+                let painter = ui.painter().with_clip_rect(view.image);
+                painter.rect_filled(rect, 0.0, Color32::from_rgba_unmultiplied(255, 158, 44, 20));
+                painter.rect_stroke(
+                    rect,
+                    0.0,
+                    Stroke::new(1.0, theme::AMBER),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if released {
+                model.box_start = None;
+                if dragged {
+                    model.box_select(view, rect, shift);
+                } else if !output.gizmo_hovered {
+                    model.click(hovered, shift);
+                }
+            }
         }
 
         self.confirm_dialog(ui, scene, player, output);
@@ -509,7 +621,7 @@ impl Editor {
         super::hint_line(
             ui,
             viewport,
-            "CLICK SELECT  SHIFT+CLICK ADD  1/2/3 VERTEX/EDGE/FACE  A ALL  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE  TAB PANEL",
+            "CLICK/DRAG SELECT  SHIFT ADD  1/2/3 VERTEX/EDGE/FACE  A ALL  W/E/R GIZMO  CTRL SNAP  CTRL+E EXTRUDE  I INSET  CTRL+R LOOP CUT  M MERGE  X DELETE  RMB+WASD FLY  CTRL+Z/Y UNDO  CTRL+S SAVE  TAB/SHIFT+TAB PANELS",
         );
     }
 
@@ -590,7 +702,7 @@ impl Editor {
         };
         model.finish_drag();
         let path = self.project_dir.join(&self.scene_path);
-        match glb::save(&path, &model.mesh) {
+        match glb::save(&path, &model.mesh, &self.project_dir) {
             Ok(()) => {
                 model.mark_saved();
                 log::info!("saved {}", path.display());

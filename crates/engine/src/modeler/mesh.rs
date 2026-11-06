@@ -1,6 +1,6 @@
 //! The modeler's editable mesh: shared corner positions and polygon faces
 //! (quads mostly), the way a modeler thinks about a mesh. It's turned into
-//! flat-shaded triangles to draw or save.
+//! triangles to draw or save.
 
 use crate::assets::{ModelData, Part};
 use crate::render::mesh::{MeshData, Vertex};
@@ -13,6 +13,9 @@ use std::f32::consts::{PI, TAU};
 pub struct EditMesh {
     pub positions: Vec<Vec3>,
     pub faces: Vec<Face>,
+    /// The model's one texture, relative to the project (`None` = plain).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture: Option<String>,
 }
 
 /// A polygon: indices into `positions`, counter-clockwise seen from the
@@ -20,6 +23,35 @@ pub struct EditMesh {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Face {
     pub verts: Vec<u32>,
+    /// Texture coordinates per corner (1 = the whole texture); empty =
+    /// projected automatically, one texture per meter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uvs: Vec<Vec2>,
+    /// Linear RGB per corner, multiplied into the texture; empty =
+    /// unpainted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub colors: Vec<Vec3>,
+    /// Smooth shading: normals blend with neighbouring smooth faces.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub smooth: bool,
+}
+
+impl Face {
+    pub fn new(verts: Vec<u32>) -> Self {
+        Self {
+            verts,
+            uvs: Vec::new(),
+            colors: Vec::new(),
+            smooth: false,
+        }
+    }
+
+    /// Reverses the winding (and so the side it faces).
+    pub fn reverse(&mut self) {
+        self.verts.reverse();
+        self.uvs.reverse();
+        self.colors.reverse();
+    }
 }
 
 /// An edge between two corners, smaller index first.
@@ -29,10 +61,18 @@ pub fn edge(a: u32, b: u32) -> Edge {
     if a < b { [a, b] } else { [b, a] }
 }
 
-/// The color models from the modeler have until they get their own.
-const CLAY: [u8; 4] = [204, 204, 204, 255];
+/// The color of unpainted corners on a model without a texture: clay.
+pub const CLAY: Vec3 = Vec3::splat(0.6);
 
 impl EditMesh {
+    fn from_faces(positions: Vec<Vec3>, faces: Vec<Vec<u32>>) -> Self {
+        Self {
+            positions,
+            faces: faces.into_iter().map(Face::new).collect(),
+            texture: None,
+        }
+    }
+
     /// A box centered on the origin; `size` is its full extents.
     pub fn cube(size: Vec3) -> Self {
         let h = size / 2.0;
@@ -45,38 +85,30 @@ impl EditMesh {
                 )
             })
             .collect();
-        let faces = [
-            [0, 4, 6, 2], // -X
-            [1, 3, 7, 5], // +X
-            [0, 1, 5, 4], // -Y
-            [2, 6, 7, 3], // +Y
-            [0, 2, 3, 1], // -Z
-            [4, 5, 7, 6], // +Z
+        let faces = vec![
+            vec![0, 4, 6, 2], // -X
+            vec![1, 3, 7, 5], // +X
+            vec![0, 1, 5, 4], // -Y
+            vec![2, 6, 7, 3], // +Y
+            vec![0, 2, 3, 1], // -Z
+            vec![4, 5, 7, 6], // +Z
         ];
-        Self {
-            positions,
-            faces: faces.iter().map(|f| Face { verts: f.to_vec() }).collect(),
-        }
+        Self::from_faces(positions, faces)
     }
 
     /// A horizontal quad facing up.
     pub fn plane(size: Vec2) -> Self {
         let (x, z) = (size.x / 2.0, size.y / 2.0);
-        Self {
-            positions: vec![
-                Vec3::new(-x, 0.0, -z),
-                Vec3::new(-x, 0.0, z),
-                Vec3::new(x, 0.0, z),
-                Vec3::new(x, 0.0, -z),
-            ],
-            faces: vec![Face {
-                verts: vec![0, 1, 2, 3],
-            }],
-        }
+        let positions = vec![
+            Vec3::new(-x, 0.0, -z),
+            Vec3::new(-x, 0.0, z),
+            Vec3::new(x, 0.0, z),
+            Vec3::new(x, 0.0, -z),
+        ];
+        Self::from_faces(positions, vec![vec![0, 1, 2, 3]])
     }
 
-    /// An upright cylinder with `segments` sides, standing on the origin's
-    /// level centered on it.
+    /// An upright cylinder with `segments` sides, centered on the origin.
     pub fn cylinder(radius: f32, height: f32, segments: u32) -> Self {
         let n = segments.max(3);
         let h = height / 2.0;
@@ -87,21 +119,15 @@ impl EditMesh {
                 positions.push(Vec3::new(a.cos() * radius, y, -a.sin() * radius));
             }
         }
-        let mut faces: Vec<Face> = (0..n)
+        let mut faces: Vec<Vec<u32>> = (0..n)
             .map(|i| {
                 let j = (i + 1) % n;
-                Face {
-                    verts: vec![i, j, n + j, n + i],
-                }
+                vec![i, j, n + j, n + i]
             })
             .collect();
-        faces.push(Face {
-            verts: (0..n).rev().collect(),
-        });
-        faces.push(Face {
-            verts: (n..2 * n).collect(),
-        });
-        Self { positions, faces }
+        faces.push((0..n).rev().collect());
+        faces.push((n..2 * n).collect());
+        Self::from_faces(positions, faces)
     }
 
     /// A UV sphere: `segments` around, `rings` from pole to pole.
@@ -121,28 +147,22 @@ impl EditMesh {
         let at = |ring: u32, i: u32| 1 + ring * n + i % n;
         let mut faces = Vec::new();
         for i in 0..n {
-            faces.push(Face {
-                verts: vec![0, at(0, i + 1), at(0, i)],
-            });
+            faces.push(vec![0, at(0, i + 1), at(0, i)]);
         }
         for ring in 0..rings - 2 {
             for i in 0..n {
-                faces.push(Face {
-                    verts: vec![
-                        at(ring, i),
-                        at(ring, i + 1),
-                        at(ring + 1, i + 1),
-                        at(ring + 1, i),
-                    ],
-                });
+                faces.push(vec![
+                    at(ring, i),
+                    at(ring, i + 1),
+                    at(ring + 1, i + 1),
+                    at(ring + 1, i),
+                ]);
             }
         }
         for i in 0..n {
-            faces.push(Face {
-                verts: vec![at(rings - 2, i), at(rings - 2, i + 1), top],
-            });
+            faces.push(vec![at(rings - 2, i), at(rings - 2, i + 1), top]);
         }
-        Self { positions, faces }
+        Self::from_faces(positions, faces)
     }
 
     /// The face's corner positions.
@@ -153,8 +173,9 @@ impl EditMesh {
             .map(|&v| self.positions[v as usize])
     }
 
-    /// The face's normal (Newell's method, which works for any polygon).
-    pub fn face_normal(&self, face: usize) -> Vec3 {
+    /// The face's normal times twice its area (Newell's method, which works
+    /// for any polygon).
+    fn area_normal(&self, face: usize) -> Vec3 {
         let corners: Vec<Vec3> = self.corners(face).collect();
         let mut normal = Vec3::ZERO;
         for (i, a) in corners.iter().enumerate() {
@@ -165,7 +186,11 @@ impl EditMesh {
                 (a.x - b.x) * (a.y + b.y),
             );
         }
-        normal.normalize_or_zero()
+        normal
+    }
+
+    pub fn face_normal(&self, face: usize) -> Vec3 {
+        self.area_normal(face).normalize_or_zero()
     }
 
     pub fn face_center(&self, face: usize) -> Vec3 {
@@ -173,34 +198,59 @@ impl EditMesh {
         self.corners(face).sum::<Vec3>() / n
     }
 
+    /// The face's edges, in winding order.
+    pub fn face_edges(&self, face: usize) -> impl Iterator<Item = Edge> + '_ {
+        let v = &self.faces[face].verts;
+        (0..v.len()).map(move |i| edge(v[i], v[(i + 1) % v.len()]))
+    }
+
     /// Every edge once, in a stable order.
     pub fn edges(&self) -> Vec<Edge> {
-        let mut edges: Vec<Edge> = self
-            .faces
-            .iter()
-            .flat_map(|f| {
-                let n = f.verts.len();
-                (0..n).map(move |i| edge(f.verts[i], f.verts[(i + 1) % n]))
-            })
+        let mut edges: Vec<Edge> = (0..self.faces.len())
+            .flat_map(|f| self.face_edges(f))
             .collect();
         edges.sort_unstable();
         edges.dedup();
         edges
     }
 
-    /// The face's triangles as corner positions (a fan; faces are convex).
-    fn triangles(&self, face: usize) -> impl Iterator<Item = [Vec3; 3]> + '_ {
-        let verts = &self.faces[face].verts;
-        let p = |i: usize| self.positions[verts[i] as usize];
-        (1..verts.len().saturating_sub(1)).map(move |i| [p(0), p(i), p(i + 1)])
+    /// Corner `i` of `face`'s texture coordinate: its own, or projected.
+    pub fn corner_uv(&self, face: usize, i: usize) -> Vec2 {
+        let f = &self.faces[face];
+        match f.uvs.get(i) {
+            Some(&uv) => uv,
+            None => box_uv(self.positions[f.verts[i] as usize], self.face_normal(face)),
+        }
+    }
+
+    /// Corner `i` of `face`'s color, unpainted corners as `unpainted`.
+    pub fn corner_color(&self, face: usize, i: usize, unpainted: Vec3) -> Vec3 {
+        self.faces[face].colors.get(i).copied().unwrap_or(unpainted)
+    }
+
+    /// The color unpainted corners show (white over a texture).
+    pub fn unpainted(&self) -> Vec3 {
+        if self.texture.is_some() {
+            Vec3::ONE
+        } else {
+            CLAY
+        }
+    }
+
+    /// The face's triangles as corner numbers (a fan; faces are convex).
+    fn fan(&self, face: usize) -> impl Iterator<Item = [usize; 3]> + use<> {
+        let n = self.faces[face].verts.len();
+        (1..n.saturating_sub(1)).map(|i| [0, i, i + 1])
     }
 
     /// The nearest face the ray hits, and how far along the ray.
     pub fn pick_face(&self, origin: Vec3, direction: Vec3) -> Option<(usize, f32)> {
         let mut best: Option<(usize, f32)> = None;
         for face in 0..self.faces.len() {
-            for [a, b, c] in self.triangles(face) {
-                if let Some(t) = ray_triangle(origin, direction, a, b, c)
+            let verts = &self.faces[face].verts;
+            let p = |i: usize| self.positions[verts[i] as usize];
+            for [a, b, c] in self.fan(face) {
+                if let Some(t) = ray_triangle(origin, direction, p(a), p(b), p(c))
                     && best.is_none_or(|(_, d)| t < d)
                 {
                     best = Some((face, t));
@@ -210,47 +260,71 @@ impl EditMesh {
         best
     }
 
-    /// Flat-shaded triangles to draw or save: every face has its own
-    /// corners and normal. UVs are in meters, projected along the face's
-    /// main axis, like the engine's primitives.
-    pub fn to_model(&self) -> ModelData {
+    /// Per position, the blended normal of the smooth faces around it.
+    fn smooth_normals(&self) -> Vec<Vec3> {
+        let mut normals = vec![Vec3::ZERO; self.positions.len()];
+        for face in 0..self.faces.len() {
+            if self.faces[face].smooth {
+                // Weighted by area, so slivers don't bend the shading.
+                let n = self.area_normal(face);
+                for &v in &self.faces[face].verts {
+                    normals[v as usize] += n;
+                }
+            }
+        }
+        normals.iter().map(|n| n.normalize_or_zero()).collect()
+    }
+
+    /// Triangles to draw or save: every face has its own corners, with the
+    /// face's normal (or the blended one where smooth), UV and color.
+    /// `texture` is the model's texture image, if it has one.
+    pub fn to_model(&self, texture: Option<&Image>) -> ModelData {
+        let smooth = self.smooth_normals();
+        let unpainted = self.unpainted();
         let mut mesh = MeshData::default();
         for face in 0..self.faces.len() {
-            let normal = self.face_normal(face);
-            for [a, b, c] in self.triangles(face) {
+            let f = &self.faces[face];
+            let flat = self.face_normal(face);
+            for corners in self.fan(face) {
                 let base = mesh.vertices.len() as u32;
-                for p in [a, b, c] {
+                for i in corners {
+                    let v = f.verts[i] as usize;
+                    let normal = if f.smooth { smooth[v] } else { flat };
                     mesh.vertices.push(Vertex {
-                        position: p.into(),
+                        position: self.positions[v].into(),
                         normal: normal.into(),
-                        uv: box_uv(p, normal).into(),
+                        uv: self.corner_uv(face, i).into(),
+                        color: self.corner_color(face, i, unpainted).extend(1.0).into(),
                     });
                 }
                 mesh.indices.extend([base, base + 1, base + 2]);
             }
         }
         let count = mesh.indices.len() as u32;
+        let image = texture
+            .cloned()
+            .unwrap_or_else(|| Image::new(1, 1, vec![255; 4]));
         ModelData {
             mesh,
             parts: vec![Part {
                 indices: 0..count,
                 image: 0,
             }],
-            images: vec![Image::new(1, 1, CLAY.to_vec())],
+            images: vec![image],
             ..Default::default()
         }
     }
 }
 
-/// Planar UVs along the normal's dominant axis, in meters.
-fn box_uv(p: Vec3, normal: Vec3) -> Vec2 {
+/// Planar UVs along the normal's dominant axis, one texture per meter.
+pub fn box_uv(p: Vec3, normal: Vec3) -> Vec2 {
     let a = normal.abs();
     if a.x >= a.y && a.x >= a.z {
-        Vec2::new(p.z, -p.y)
+        Vec2::new(p.z * -normal.x.signum(), -p.y)
     } else if a.y >= a.z {
-        Vec2::new(p.x, p.z)
+        Vec2::new(p.x, p.z * normal.y.signum())
     } else {
-        Vec2::new(p.x, -p.y)
+        Vec2::new(p.x * normal.z.signum(), -p.y)
     }
 }
 
@@ -278,27 +352,23 @@ fn ray_triangle(origin: Vec3, direction: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Opt
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Every face's normal points away from the center, and every edge is
     /// shared by exactly two faces (the surface is closed).
-    fn assert_closed_and_outward(mesh: &EditMesh) {
+    pub(crate) fn assert_closed_and_outward(mesh: &EditMesh) {
+        let center = mesh.positions.iter().sum::<Vec3>() / mesh.positions.len() as f32;
         for face in 0..mesh.faces.len() {
-            let out = mesh.face_center(face).normalize_or_zero();
+            let out = (mesh.face_center(face) - center).normalize_or_zero();
             assert!(
                 mesh.face_normal(face).dot(out) > 0.0,
                 "face {face} faces inward"
             );
         }
         for e in mesh.edges() {
-            let uses = mesh
-                .faces
-                .iter()
-                .filter(|f| {
-                    let n = f.verts.len();
-                    (0..n).any(|i| edge(f.verts[i], f.verts[(i + 1) % n]) == e)
-                })
+            let uses = (0..mesh.faces.len())
+                .filter(|&f| mesh.face_edges(f).any(|x| x == e))
                 .count();
             assert_eq!(uses, 2, "edge {e:?}");
         }
@@ -332,8 +402,38 @@ mod tests {
 
     #[test]
     fn triangles_cover_every_face() {
-        let model = EditMesh::cylinder(0.5, 1.0, 6).to_model();
+        let model = EditMesh::cylinder(0.5, 1.0, 6).to_model(None);
         // 6 quads (2 triangles each) and two hexagons (4 each).
         assert_eq!(model.mesh.indices.len(), (6 * 2 + 2 * 4) * 3);
+    }
+
+    #[test]
+    fn smooth_faces_blend_normals_and_flat_ones_dont() {
+        let mut mesh = EditMesh::cube(Vec3::ONE);
+        let flat = mesh.to_model(None);
+        assert!(flat.mesh.vertices.iter().all(|v| {
+            let n = Vec3::from(v.normal);
+            n.abs().max_element() > 0.999
+        }));
+        for f in &mut mesh.faces {
+            f.smooth = true;
+        }
+        let smooth = mesh.to_model(None);
+        // Every corner of a smooth cube points diagonally out.
+        assert!(smooth.mesh.vertices.iter().all(|v| {
+            let n = Vec3::from(v.normal);
+            n.abs().abs_diff_eq(Vec3::splat(1.0 / 3f32.sqrt()), 1e-5)
+        }));
+    }
+
+    #[test]
+    fn colors_default_to_clay_or_white_over_a_texture() {
+        let mut mesh = EditMesh::plane(Vec2::ONE);
+        let color = |m: &EditMesh| Vec3::from_slice(&m.to_model(None).mesh.vertices[0].color[..3]);
+        assert_eq!(color(&mesh), CLAY);
+        mesh.texture = Some("textures/stone.png".into());
+        assert_eq!(color(&mesh), Vec3::ONE);
+        mesh.faces[0].colors = vec![Vec3::X; 4];
+        assert_eq!(color(&mesh), Vec3::X);
     }
 }

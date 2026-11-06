@@ -670,7 +670,7 @@ impl Renderer {
                     Some(wgpu::VertexBufferLayout {
                         array_stride: size_of::<mesh::Vertex>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2],
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 4 => Float32x4],
                     }),
                     Some(wgpu::VertexBufferLayout {
                         array_stride: 8,

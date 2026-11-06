@@ -1,9 +1,10 @@
 //! Saving and opening the modeler's models as binary glTF (`.glb`).
 //!
-//! The file is an ordinary glTF any tool can read: flat-shaded triangles
-//! with normals and UVs, and one matte material. The editable polygons are
-//! kept in the mesh's `extras` (glTF's slot for app data), so the modeler
-//! can open the file again with its quads intact.
+//! The file is an ordinary glTF any tool can read: triangles with normals,
+//! UVs and vertex colors, one material, and the model's texture embedded
+//! (point-sampled). The editable polygons are kept in the mesh's `extras`
+//! (glTF's slot for app data), so the modeler can open the file again with
+//! its quads, UVs and colors intact.
 
 use super::mesh::EditMesh;
 use serde::{Deserialize, Serialize};
@@ -38,10 +39,21 @@ struct MeshExtras {
     modeler: Extras,
 }
 
-/// Writes `mesh` to `path` as a `.glb`.
-pub fn save(path: &Path, mesh: &EditMesh) -> Result<(), GlbError> {
+/// Writes `mesh` to `path` as a `.glb`, embedding its texture (a path in
+/// `project_dir`) so the file stands on its own.
+pub fn save(path: &Path, mesh: &EditMesh, project_dir: &Path) -> Result<(), GlbError> {
     let io = |err| GlbError::Io(path.to_owned(), err);
-    let bytes = encode(mesh);
+    let texture = match &mesh.texture {
+        Some(texture) => {
+            let file = project_dir.join(texture);
+            let bytes = std::fs::read(&file).map_err(|e| GlbError::Io(file.clone(), e))?;
+            let lower = texture.to_ascii_lowercase();
+            let jpeg = lower.ends_with(".jpg") || lower.ends_with(".jpeg");
+            Some((bytes, if jpeg { "image/jpeg" } else { "image/png" }))
+        }
+        None => None,
+    };
+    let bytes = encode(mesh, texture);
     // Write next to it, then replace: the engine's hot reload never sees
     // half a file.
     let partial = path.with_extension("glb.partial");
@@ -61,22 +73,26 @@ pub fn load(path: &Path) -> Result<EditMesh, GlbError> {
     Ok(extras.modeler.mesh)
 }
 
-/// Whether the modeler can open the file (cheap check: reads only the
-/// JSON part).
+/// Whether the modeler can open the file.
 pub fn is_editable(path: &Path) -> bool {
     load(path).is_ok()
 }
 
-fn encode(mesh: &EditMesh) -> Vec<u8> {
-    let model = mesh.to_model();
+/// The GLB bytes: `texture` is the image file's bytes and media type.
+fn encode(mesh: &EditMesh, texture: Option<(Vec<u8>, &str)>) -> Vec<u8> {
+    let model = mesh.to_model(None);
     let vertices = &model.mesh.vertices;
     let indices = &model.mesh.indices;
     let (min, max) = model.mesh.bounds();
     let count = vertices.len();
 
-    // The binary buffer: positions, normals, UVs, then indices.
+    // The binary buffer: positions, normals, UVs, colors, indices, image.
     let mut bin: Vec<u8> = Vec::new();
     let view = |bin: &mut Vec<u8>, data: &[u8]| {
+        // Every view starts 4-byte aligned, as glTF wants.
+        while !bin.len().is_multiple_of(4) {
+            bin.push(0);
+        }
         let offset = bin.len();
         bin.extend_from_slice(data);
         (offset, data.len())
@@ -90,6 +106,7 @@ fn encode(mesh: &EditMesh) -> Vec<u8> {
     let positions = view(&mut bin, &pick(|v| &v.position));
     let normals = view(&mut bin, &pick(|v| &v.normal));
     let uvs = view(&mut bin, &pick(|v| &v.uv));
+    let colors = view(&mut bin, &pick(|v| &v.color));
     let index_bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
     let index_view = view(&mut bin, &index_bytes);
 
@@ -97,55 +114,81 @@ fn encode(mesh: &EditMesh) -> Vec<u8> {
     const ELEMENT_ARRAY_BUFFER: u32 = 34963;
     const FLOAT: u32 = 5126;
     const UNSIGNED_INT: u32 = 5125;
-    let buffer_view = |(offset, length): (usize, usize), target| json!({"buffer": 0, "byteOffset": offset, "byteLength": length, "target": target});
+    const NEAREST: u32 = 9728;
+    const REPEAT: u32 = 10497;
+    let buffer_view = |(offset, length): (usize, usize), target: Option<u32>| {
+        let mut v = json!({"buffer": 0, "byteOffset": offset, "byteLength": length});
+        if let Some(target) = target {
+            v["target"] = json!(target);
+        }
+        v
+    };
+    let mut buffer_views = vec![
+        buffer_view(positions, Some(ARRAY_BUFFER)),
+        buffer_view(normals, Some(ARRAY_BUFFER)),
+        buffer_view(uvs, Some(ARRAY_BUFFER)),
+        buffer_view(colors, Some(ARRAY_BUFFER)),
+        buffer_view(index_view, Some(ELEMENT_ARRAY_BUFFER)),
+    ];
+    let mut material = json!({
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
+            "metallicFactor": 0.0,
+            "roughnessFactor": 1.0,
+        },
+    });
+    let mut images = Vec::new();
+    if let Some((bytes, mime)) = &texture {
+        let image = view(&mut bin, bytes);
+        buffer_views.push(buffer_view(image, None));
+        images.push(json!({"bufferView": buffer_views.len() - 1, "mimeType": mime}));
+        material["pbrMetallicRoughness"]["baseColorTexture"] = json!({"index": 0});
+    }
+
     let extras = Extras {
         version: VERSION,
         mesh: mesh.clone(),
     };
-    let document = json!({
+    let mut document = json!({
         "asset": {"version": "2.0", "generator": format!("{} modeler {}", crate::NAME, crate::VERSION)},
         "scene": 0,
         "scenes": [{"nodes": [0]}],
         "nodes": [{"mesh": 0}],
         "meshes": [{
             "primitives": [{
-                "attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2},
-                "indices": 3,
+                "attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2, "COLOR_0": 3},
+                "indices": 4,
                 "material": 0,
             }],
             "extras": {EXTRAS_KEY: extras},
         }],
-        "materials": [{
-            "pbrMetallicRoughness": {
-                "baseColorFactor": [0.6, 0.6, 0.6, 1.0],
-                "metallicFactor": 0.0,
-                "roughnessFactor": 1.0,
-            },
-        }],
+        "materials": [material],
         "accessors": [
             {"bufferView": 0, "componentType": FLOAT, "count": count, "type": "VEC3",
              "min": [min.x, min.y, min.z], "max": [max.x, max.y, max.z]},
             {"bufferView": 1, "componentType": FLOAT, "count": count, "type": "VEC3"},
             {"bufferView": 2, "componentType": FLOAT, "count": count, "type": "VEC2"},
-            {"bufferView": 3, "componentType": UNSIGNED_INT, "count": indices.len(), "type": "SCALAR"},
+            {"bufferView": 3, "componentType": FLOAT, "count": count, "type": "VEC4"},
+            {"bufferView": 4, "componentType": UNSIGNED_INT, "count": indices.len(), "type": "SCALAR"},
         ],
-        "bufferViews": [
-            buffer_view(positions, ARRAY_BUFFER),
-            buffer_view(normals, ARRAY_BUFFER),
-            buffer_view(uvs, ARRAY_BUFFER),
-            buffer_view(index_view, ELEMENT_ARRAY_BUFFER),
-        ],
-        "buffers": [{"byteLength": bin.len()}],
+        "bufferViews": buffer_views,
     });
+    if !images.is_empty() {
+        document["images"] = json!(images);
+        document["samplers"] =
+            json!([{"magFilter": NEAREST, "minFilter": NEAREST, "wrapS": REPEAT, "wrapT": REPEAT}]);
+        document["textures"] = json!([{"source": 0, "sampler": 0}]);
+    }
 
     // GLB: a 12-byte header, then a JSON chunk and a binary chunk, each
     // padded to 4 bytes (JSON with spaces, binary with zeros).
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    document["buffers"] = json!([{"byteLength": bin.len()}]);
     let mut text = serde_json::to_vec(&document).expect("the document serializes");
     while !text.len().is_multiple_of(4) {
         text.push(b' ');
-    }
-    while !bin.len().is_multiple_of(4) {
-        bin.push(0);
     }
     let total = 12 + 8 + text.len() + 8 + bin.len();
     let mut out = Vec::with_capacity(total);
@@ -164,20 +207,53 @@ fn encode(mesh: &EditMesh) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
+
+    fn temp(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("engine-glb-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
     #[test]
     fn saved_models_open_in_the_engine_and_the_modeler() {
-        let dir = std::env::temp_dir().join(format!("engine-glb-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = temp("plain");
         let path = dir.join("pillar.glb");
-        let mesh = EditMesh::cylinder(0.3, 2.0, 6);
-        save(&path, &mesh).unwrap();
+        let mut mesh = EditMesh::cylinder(0.3, 2.0, 6);
+        mesh.faces[0].colors = vec![Vec3::new(1.0, 0.0, 0.0); 4];
+        save(&path, &mesh, &dir).unwrap();
 
         assert_eq!(load(&path).unwrap(), mesh);
         let model = crate::assets::load_gltf(&path).unwrap();
-        assert_eq!(model.mesh.indices.len(), mesh.to_model().mesh.indices.len());
+        assert_eq!(
+            model.mesh.indices.len(),
+            mesh.to_model(None).mesh.indices.len()
+        );
         let (min, max) = model.mesh.bounds();
         assert!((max.y - min.y - 2.0).abs() < 1e-5);
+        assert!(
+            model
+                .mesh
+                .vertices
+                .iter()
+                .any(|v| v.color == [1.0, 0.0, 0.0, 1.0])
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_texture_is_embedded() {
+        let sandbox = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sandbox");
+        let dir = temp("textured");
+        let path = dir.join("crate.glb");
+        let mut mesh = EditMesh::cube(Vec3::ONE);
+        mesh.texture = Some("textures/stone.png".into());
+        save(&path, &mesh, &sandbox).unwrap();
+        let model = crate::assets::load_gltf(&path).unwrap();
+        assert!(
+            model.images[0].width > 1,
+            "the stone texture, not a plain texel"
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -186,7 +186,7 @@ impl Editor {
         };
         let path = self.project_dir.join(&parked.doc.scene_path);
         let saved = match &parked.doc.model {
-            Some(model) => crate::modeler::glb::save(&path, &model.mesh)
+            Some(model) => crate::modeler::glb::save(&path, &model.mesh, &self.project_dir)
                 .map(|()| false)
                 .map_err(|e| e.to_string()),
             None => parked

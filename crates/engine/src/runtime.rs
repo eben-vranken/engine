@@ -865,7 +865,8 @@ impl Running {
                 self.models_opened += 1;
                 // A cache key that is no file's path: the model as edited.
                 let key = format!("<modeler {}>", self.models_opened);
-                self.assets.insert_model(&key, mesh.to_model());
+                let data = crate::modeler::model_data(&mesh, &mut self.assets);
+                self.assets.insert_model(&key, data);
                 let doc = crate::editor::ModelDoc::new(mesh, key.clone());
                 let stage = crate::editor::stage(&key);
                 editor.open_model_tab(path, doc, stage, &mut self.scene, &self.fly);
@@ -1454,7 +1455,8 @@ impl Running {
             && model.changed
         {
             model.changed = false;
-            self.assets.insert_model(&model.key, model.mesh.to_model());
+            let data = crate::modeler::model_data(&model.mesh, &mut self.assets);
+            self.assets.insert_model(&model.key, data);
             self.renderer
                 .reload_object(&self.scene, 0, &mut self.assets);
         }

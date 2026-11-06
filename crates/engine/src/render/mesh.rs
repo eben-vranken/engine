@@ -15,7 +15,12 @@ pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub uv: [f32; 2],
+    /// Linear RGBA, multiplied into the surface color (white = none).
+    pub color: [f32; 4],
 }
+
+/// No vertex color.
+pub const WHITE: [f32; 4] = [1.0; 4];
 
 /// A primitive shape. Sizes are full extents in meters.
 #[derive(
@@ -150,6 +155,7 @@ impl MeshData {
                 position: (center + u * a + v * b).into(),
                 normal: normal.into(),
                 uv: [(a + 1.0) * len_u, (1.0 - b) * len_v],
+                color: WHITE,
             });
         }
         self.indices
@@ -169,6 +175,7 @@ impl MeshData {
                 position: p.into(),
                 normal: normal.into(),
                 uv: uv.into(),
+                color: WHITE,
             });
         }
         self.indices.extend([base, base + 1, base + 2]);

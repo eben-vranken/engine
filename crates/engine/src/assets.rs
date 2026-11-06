@@ -1,7 +1,7 @@
 //! Assets loaded from the game project: glTF models for now. Paths are
 //! relative to the project folder and loaded once, then cached.
 
-use crate::render::mesh::{MeshData, Shape, Vertex};
+use crate::render::mesh::{MeshData, Shape, Vertex, WHITE};
 use crate::render::texture::{Image, linear_to_srgb, srgb_to_linear};
 use crate::scene::Geometry;
 use glam::{Mat3, Mat4, Vec3};
@@ -258,6 +258,15 @@ impl Loader<'_> {
                 });
                 let uvs: Option<Vec<[f32; 2]>> =
                     reader.read_tex_coords(0).map(|t| t.into_f32().collect());
+                let colors: Option<Vec<[f32; 4]>> =
+                    reader.read_colors(0).map(|c| c.into_rgba_f32().collect());
+                let color = |i: usize| {
+                    colors
+                        .as_ref()
+                        .and_then(|c| c.get(i))
+                        .copied()
+                        .unwrap_or(WHITE)
+                };
                 let indices: Vec<u32> = match reader.read_indices() {
                     Some(i) => i.into_u32().collect(),
                     None => (0..positions.len() as u32).collect(),
@@ -275,6 +284,7 @@ impl Loader<'_> {
                                     .and_then(|u| u.get(i))
                                     .copied()
                                     .unwrap_or_default(),
+                                color: color(i),
                             });
                         }
                         mesh.indices.extend(indices.iter().map(|i| base + i));
@@ -294,6 +304,7 @@ impl Loader<'_> {
                                         .and_then(|u| u.get(i as usize))
                                         .copied()
                                         .unwrap_or_default(),
+                                    color: color(i as usize),
                                 });
                             }
                         }

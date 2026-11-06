@@ -12,6 +12,7 @@ pub mod import;
 pub mod inspector;
 pub mod markers;
 mod model_tab;
+mod model_tools;
 mod new_scene;
 mod tabs;
 
@@ -731,7 +732,8 @@ impl Editor {
 
     /// Removes the selected object.
     pub fn delete_selected(&mut self, scene: &mut Scene) -> Option<Change> {
-        if self.model.is_some() {
+        if let Some(model) = &mut self.model {
+            model.apply(model_tools::Tool::Delete);
             return None;
         }
         let index = self.selected.filter(|&i| i < scene.objects.len())?;

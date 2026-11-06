@@ -90,6 +90,7 @@ struct VertexOut {
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) lightmap_uv: vec2<f32>,
+    @location(4) color: vec3<f32>,
 };
 
 @vertex
@@ -98,6 +99,7 @@ fn vs_main(
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) lightmap_uv: vec2<f32>,
+    @location(4) color: vec4<f32>,
 ) -> VertexOut {
     let world = object.model * vec4<f32>(position, 1.0);
     var out: VertexOut;
@@ -106,6 +108,7 @@ fn vs_main(
     out.normal = (object.normal_matrix * vec4<f32>(normal, 0.0)).xyz;
     out.uv = uv;
     out.lightmap_uv = lightmap_uv;
+    out.color = color.rgb;
     return out;
 }
 
@@ -293,7 +296,7 @@ fn reflectance(f0: vec3<f32>, roughness: f32, ndv: f32) -> vec3<f32> {
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let n = normalize(in.normal);
     let uv = in.uv * object.highlight.y;
-    let albedo = textureSample(albedo_texture, albedo_sampler, uv).rgb * object.color.rgb;
+    let albedo = textureSample(albedo_texture, albedo_sampler, uv).rgb * object.color.rgb * in.color;
     let roughness = object.surface.x;
     let metalness = object.surface.y;
     let to_camera = normalize(frame.camera_pos.xyz - in.world);

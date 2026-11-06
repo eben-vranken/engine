@@ -208,7 +208,8 @@ impl Editor {
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
-        crate::modeler::glb::save(&file, &start_mesh(start)).map_err(|e| e.to_string())?;
+        crate::modeler::glb::save(&file, &start_mesh(start), &self.project_dir)
+            .map_err(|e| e.to_string())?;
         log::info!("created {}", file.display());
         output.open_model = Some(path.to_owned());
         Ok(())
