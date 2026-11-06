@@ -145,26 +145,26 @@ Several scenes open at once in the editor, one tab each.
 
 **Acceptance:** the user opens the hall and the test level side by side, edits both, undoes in each separately, switches back and forth, and is asked before losing changes when closing a tab or the window.
 
-## 10.2 Project package ← current
+## 10.2 Project package
 One file that holds a whole game project for the editor, to hand to someone else. It is not a build of the game: it opens in the editor exactly as the project was.
 
-- [ ] A single-file package format for game projects: `game.ron`, `player.ron`, scenes, bakes, models, textures and audio, plus a small manifest (engine version, project name)
-- [ ] Editor: EXPORT PROJECT writes the open project to a package file
-- [ ] Opening a package (`--game <file>` or from the editor) unpacks it into a project folder and opens it in the editor
-- [ ] Engine-generated junk (caches, editor-only temp files) stays out of the package
+- [x] A single-file package format for game projects: `game.ron`, `player.ron`, scenes, bakes, models, textures and audio, plus a small manifest (engine version, project name)
+- [x] Editor: EXPORT PROJECT writes the open project to a package file
+- [x] Opening a package (`--game <file>` or from the editor) unpacks it into a project folder and opens it in the editor
+- [x] Engine-generated junk (caches, editor-only temp files) stays out of the package
 
 **Acceptance:** the user exports the sandbox, copies the file to the laptop, opens it there, and the editor shows the same scenes, materials, sounds and bakes.
 
 ## 10.3 New scenes
 Make scenes from the editor instead of writing RON files by hand.
 
-- [ ] NEW SCENE: name it, and it's created in the project's `scenes/` with a starting point (one zone, a floor, a Player Start, the default environment) and opened in a new tab
-- [ ] SAVE AS: save the current scene under a new name (a copy to branch from)
-- [ ] Names that are empty, taken or not valid file names are refused with a message
+- [x] NEW SCENE: name it, and it's created in the project's `scenes/` with a starting point (one zone, a floor, a Player Start, the default environment) and opened in a new tab
+- [x] SAVE AS: save the current scene under a new name (a copy to branch from)
+- [x] Names that are empty, taken or not valid file names are refused with a message
 
 **Acceptance:** the user makes a new scene from the editor, builds in it, saves it, closes the editor, and finds it again in the scene picker and `+` menu next time.
 
-## 10.4 Modeler
+## 10.4 Modeler ← current
 A small, simplified modeler inside the editor for very low-poly, PS1-style models. Not Blender: just enough to build and shape props and pieces cleanly, and drop them into a scene.
 
 - [ ] A model tab next to the scene tabs (`+` → NEW MODEL, or open a model from the project) with its own viewport, drawn by the same renderer
