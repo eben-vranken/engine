@@ -814,18 +814,74 @@ impl Running {
         match Scene::load(&self.game_dir.join(&path)) {
             Ok(scene) => {
                 self.scene = scene;
-                self.renderer.set_scene(&self.scene, &mut self.assets);
-                self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
-                self.zone.reset();
                 editor.scene_loaded(path);
-                self.load_bake();
-                self.load_lightmaps();
+                self.scene_swapped();
             }
             Err(err) => {
                 log::error!("{err}");
                 editor.show_error(err.to_string());
             }
         }
+    }
+
+    /// Editor: opens a scene from the project in a new tab.
+    fn open_tab(&mut self, path: PathBuf) {
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        match Scene::load(&self.game_dir.join(&path)) {
+            Ok(loaded) => {
+                editor.open_tab(path, loaded, &mut self.scene, &self.fly);
+                self.scene_swapped();
+            }
+            Err(err) => {
+                log::error!("{err}");
+                editor.show_error(err.to_string());
+            }
+        }
+    }
+
+    /// Editor: makes another tab the active one.
+    fn switch_tab(&mut self, index: usize) {
+        if let Some(editor) = &mut self.editor
+            && editor.switch_tab(index, &mut self.scene, &mut self.fly)
+        {
+            self.scene_swapped();
+        }
+    }
+
+    /// Editor: closes a tab (its unsaved changes were already dealt with);
+    /// closing the active one moves to its neighbour first.
+    fn close_tab(&mut self, index: usize) {
+        let Some(editor) = &self.editor else {
+            return;
+        };
+        if editor.tab_count() < 2 {
+            return;
+        }
+        if index == editor.active_tab() {
+            let next = if index + 1 < editor.tab_count() {
+                index + 1
+            } else {
+                index - 1
+            };
+            self.switch_tab(next);
+        }
+        if let Some(editor) = &mut self.editor {
+            editor.remove_tab(index);
+        }
+    }
+
+    /// A different scene is now in `self.scene`: rebuild what is made from
+    /// it and load its bakes.
+    fn scene_swapped(&mut self) {
+        self.renderer.set_scene(&self.scene, &mut self.assets);
+        self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
+        self.zone.reset();
+        self.highlighted = None;
+        self.renderer.set_highlight(None);
+        self.load_bake();
+        self.load_lightmaps();
     }
 
     /// Hot reload: picks up `player.ron` and model files changed on disk.
@@ -1303,6 +1359,16 @@ impl Running {
             }
             if output.settled {
                 self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
+            }
+            // Last: these swap in another scene.
+            if let Some(path) = &output.new_tab {
+                self.open_tab(path.clone());
+            }
+            if let Some(index) = output.switch_tab {
+                self.switch_tab(index);
+            }
+            if let Some(index) = output.close_tab {
+                self.close_tab(index);
             }
         }
 

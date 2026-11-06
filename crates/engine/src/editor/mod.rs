@@ -11,6 +11,7 @@ pub mod history;
 pub mod import;
 pub mod inspector;
 pub mod markers;
+mod tabs;
 
 use crate::player::settings::{Footsteps, PlayerSettings, RandomOrder};
 use crate::player::tuning;
@@ -71,12 +72,19 @@ pub struct Editor {
     pub light_status: String,
     /// Where the loaded bake's probes are (set by the runtime).
     pub probes: Vec<Vec3>,
+    /// Open scenes, in tab order; the active one is `None` (its state is
+    /// the live state above).
+    tabs: Vec<Option<tabs::Parked>>,
+    active_tab: usize,
 }
 
 /// What to do once unsaved changes are dealt with.
 #[derive(Debug, Clone)]
 enum Confirm {
     Open(PathBuf),
+    /// Close this tab.
+    CloseTab(usize),
+    /// Close the editor (every tab).
     Close,
 }
 
@@ -117,6 +125,12 @@ pub struct EditorOutput {
     pub bake: bool,
     /// BAKE LIGHTING was clicked.
     pub bake_lighting: bool,
+    /// Make this tab the active one.
+    pub switch_tab: Option<usize>,
+    /// Open this scene in a new tab.
+    pub new_tab: Option<PathBuf>,
+    /// Close this tab (unsaved changes already dealt with).
+    pub close_tab: Option<usize>,
 }
 
 impl Editor {
@@ -145,6 +159,8 @@ impl Editor {
             bake_status: String::new(),
             light_status: String::new(),
             probes: Vec::new(),
+            tabs: vec![None],
+            active_tab: 0,
         }
     }
 
@@ -169,6 +185,9 @@ impl Editor {
             toggle_play: false,
             bake: false,
             bake_lighting: false,
+            switch_tab: None,
+            new_tab: None,
+            close_tab: None,
         };
         // H: zone markers (not while typing in a field). Tab and Shift+Tab
         // (the side panels) are handled by the runtime, before egui.
@@ -203,6 +222,7 @@ impl Editor {
                     });
                 });
         }
+        egui::Panel::top("editor_tabs").show(ui, |ui| self.tab_strip(ui, &mut output));
 
         if let Some(index) = self
             .selected
@@ -308,7 +328,7 @@ impl Editor {
     /// The window wants to close. Returns true if it may close now;
     /// otherwise asks about unsaved changes first.
     pub fn request_close(&mut self) -> bool {
-        if self.is_dirty() {
+        if self.any_dirty() {
             self.confirm = Some(Confirm::Close);
             false
         } else {
@@ -321,6 +341,7 @@ impl Editor {
         self.message = Some((format!("OPENED {}", scene_path.display()), false));
         self.scene_path = scene_path;
         self.selected = None;
+        self.settings = None;
         self.pending = None;
         self.history = History::default();
         self.saved_state = None;
@@ -335,7 +356,9 @@ impl Editor {
     }
 
     fn open_scene(&mut self, path: PathBuf, output: &mut EditorOutput) {
-        if self.is_dirty() {
+        if let Some(index) = self.tab_of(&path) {
+            output.switch_tab = Some(index); // already open in another tab
+        } else if self.is_dirty() {
             self.confirm = Some(Confirm::Open(path));
         } else {
             output.open = Some(path);
@@ -356,10 +379,13 @@ impl Editor {
         let mut decision = None;
         egui::Modal::new(egui::Id::unique("unsaved_changes")).show(ui.ctx(), |ui| {
             ui.label(RichText::new("UNSAVED CHANGES").strong());
-            ui.label(dim(&format!(
-                "{} HAS CHANGES THAT AREN'T SAVED.",
-                self.scene_path.display().to_string().to_uppercase()
-            )));
+            let names = match &confirm {
+                Confirm::Open(_) => self.scene_path.display().to_string().to_uppercase(),
+                Confirm::CloseTab(index) => self.tab_label(*index),
+                Confirm::Close => self.dirty_paths().join(", "),
+            };
+            let verb = if names.contains(", ") { "HAVE" } else { "HAS" };
+            ui.label(dim(&format!("{names} {verb} CHANGES THAT AREN'T SAVED.")));
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 if ui.button("SAVE").clicked() {
@@ -378,13 +404,22 @@ impl Editor {
         };
         self.confirm = None;
         if save {
-            output.settled |= self.save(scene, player);
-            if self.is_dirty() {
+            let saved = match &confirm {
+                Confirm::Open(_) => {
+                    self.save_tab(self.active_tab, scene, player, &mut output.settled)
+                }
+                Confirm::CloseTab(index) => {
+                    self.save_tab(*index, scene, player, &mut output.settled)
+                }
+                Confirm::Close => self.save_all(scene, player, &mut output.settled),
+            };
+            if !saved {
                 return; // saving failed; the error is in the top bar
             }
         }
         match confirm {
             Confirm::Open(path) => output.open = Some(path),
+            Confirm::CloseTab(index) => output.close_tab = Some(index),
             Confirm::Close => output.exit = true,
         }
     }

@@ -134,7 +134,42 @@ Surfaces that read as stone, wood, plaster, wet floor or metal, and glossy ones 
 
 **Acceptance:** in the hall, a polished marble floor reflects the window and the lantern in the right places, a stone wall stays matte, and the frame rate on the laptop (Iris Xe) stays above 60 fps on HIGH.
 
-## 11. Gameplay systems ← current
+## 10.1 Scene tabs ← current
+Several scenes open at once in the editor, one tab each.
+
+- [ ] A tab strip above the viewport: one tab per open scene, named after its file, marked when it has unsaved changes
+- [ ] `+` opens a scene from the project in a new tab (or switches to it if it's already open); the scene picker keeps replacing the current tab's scene
+- [ ] Each tab keeps its own undo history, selection, camera, bakes and unsaved state; switching back restores them
+- [ ] Closing a tab with unsaved changes asks SAVE / DISCARD / CANCEL; closing the window asks for every unsaved tab
+- [ ] Tabs can't be switched or closed while playing
+
+**Acceptance:** the user opens the hall and the test level side by side, edits both, undoes in each separately, switches back and forth, and is asked before losing changes when closing a tab or the window.
+
+## 10.2 Project package
+One file that holds a whole game project for the editor, to hand to someone else. It is not a build of the game: it opens in the editor exactly as the project was.
+
+- [ ] A single-file package format for game projects: `game.ron`, `player.ron`, scenes, bakes, models, textures and audio, plus a small manifest (engine version, project name)
+- [ ] Editor: EXPORT PROJECT writes the open project to a package file
+- [ ] Opening a package (`--game <file>` or from the editor) unpacks it into a project folder and opens it in the editor
+- [ ] Engine-generated junk (caches, editor-only temp files) stays out of the package
+
+**Acceptance:** the user exports the sandbox, copies the file to the laptop, opens it there, and the editor shows the same scenes, materials, sounds and bakes.
+
+## 10.3 Modeler
+A small, simplified modeler inside the editor for very low-poly, PS1-style models. Not Blender: just enough to build and shape props and pieces cleanly, and drop them into a scene.
+
+- [ ] A model tab next to the scene tabs (`+` → NEW MODEL, or open a model from the project) with its own viewport, drawn by the same renderer
+- [ ] Start from a primitive (box, plane, cylinder, sphere) with a small number of segments
+- [ ] Select vertices, edges or faces (click, shift-click, box select); move, rotate and scale the selection with the gizmo, with snapping
+- [ ] Basic tools: extrude, inset, delete, merge vertices, split an edge / loop cut, flip normals, mirror
+- [ ] Flat or smooth shading per face; vertex colors
+- [ ] One texture per model from the project, point-sampled; simple UVs (planar / box projection per selection) and moving / scaling UVs
+- [ ] Every edit is an undo step
+- [ ] Save as glTF into the project's `models/`; scenes using the model update live (the existing hot reload)
+
+**Acceptance:** the user builds a simple prop (a table or a lantern) from a box, colors and textures it, saves it, places it in the hall, then edits it again and sees the hall update.
+
+## 11. Gameplay systems
 - [ ] Abilities + gates, save system, map from zone data
 
 ## 12. Stairs primitive
