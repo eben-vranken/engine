@@ -3,7 +3,8 @@
 
 use super::history::Change;
 use super::{Editor, EditorOutput, dim, inspector, section};
-use crate::scene::{Component, Scene};
+use crate::scene::{Component, Environment, Scene};
+use crate::ui::theme;
 use egui::{Align, Layout, RichText, Ui};
 use glam::Vec3;
 
@@ -27,15 +28,48 @@ impl Editor {
         match target {
             SettingsTarget::Environment => {
                 let env = &mut scene.environment;
+                let light_status = self.light_status.as_str();
                 egui::ScrollArea::vertical()
                     .auto_shrink(false)
                     .show(ui, |ui| {
                         ui.label(RichText::new("ENVIRONMENT").strong());
                         ui.label(dim("THE WHOLE SCENE; ZONES CAN OVERRIDE FOG AND GRADE"));
+                        bake_note(ui, light_status);
+
                         section(ui, "SUN");
-                        sun_angles(ui, &mut env.sun_direction);
-                        section(ui, "LIGHT, FOG AND LOOK");
-                        inspector::fields_except(ui, env, &names, &["sun_direction"]);
+                        let mut on = env.sun_color != Vec3::ZERO;
+                        if on_off(ui, "SUN", &mut on) {
+                            env.sun_color = if on {
+                                Environment::default().sun_color
+                            } else {
+                                Vec3::ZERO
+                            };
+                        }
+                        if on {
+                            sun_angles(ui, &mut env.sun_direction);
+                            vec3_row(ui, "COLOR", &mut env.sun_color);
+                            ui.label(dim("LINEAR RGB × STRENGTH; HIGHER = BRIGHTER"));
+                        }
+
+                        section(ui, "SKY LIGHT");
+                        vec3_row(ui, "SKY", &mut env.ambient_sky);
+                        vec3_row(ui, "GROUND", &mut env.ambient_ground);
+                        ui.label(dim(
+                            "LIGHT FROM ALL AROUND: THE SKY ABOVE, THE GROUND BELOW. 0 0 0 = NONE",
+                        ));
+
+                        section(ui, "FOG AND LOOK");
+                        inspector::fields_except(
+                            ui,
+                            env,
+                            &names,
+                            &[
+                                "sun_direction",
+                                "sun_color",
+                                "ambient_sky",
+                                "ambient_ground",
+                            ],
+                        );
                     });
             }
             SettingsTarget::Zone(name) => {
@@ -165,6 +199,41 @@ pub(super) fn own_toggle<T: Clone>(ui: &mut Ui, label: &str, value: &mut Option<
             };
         }
     });
+}
+
+/// A light bake keeps the sky, sun and bounce light it was made with;
+/// says so while one is loaded.
+fn bake_note(ui: &mut Ui, status: &str) {
+    if status.is_empty() || status == "NOT BAKED" {
+        return;
+    }
+    let text = "THE LIGHT BAKE KEEPS THE SKY AND SUN LIGHT IT WAS MADE WITH:                 BAKE ▸ LIGHTING AGAIN TO SEE CHANGES TO THEM";
+    let color = if status.contains("OUTDATED") {
+        theme::ALERT
+    } else {
+        theme::AMBER_DIM
+    };
+    ui.label(RichText::new(text).small().color(color));
+}
+
+/// A row of three numbers (a color or direction).
+fn vec3_row(ui: &mut Ui, label: &str, value: &mut Vec3) {
+    ui.horizontal(|ui| {
+        inspector::field_label(ui, label);
+        for axis in 0..3 {
+            let mut v = value[axis];
+            if inspector::drag(ui, &mut v, 0.01, 0.1) {
+                value[axis] = v.max(0.0);
+            }
+        }
+    });
+}
+
+/// [ON]/[OFF] row; returns true if it was flipped.
+fn on_off(ui: &mut Ui, label: &str, value: &mut bool) -> bool {
+    let before = *value;
+    super::widgets::on_off(ui, label, value);
+    *value != before
 }
 
 #[cfg(test)]
