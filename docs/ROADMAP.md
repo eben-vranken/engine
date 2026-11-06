@@ -215,12 +215,12 @@ Select several things at once and edit them together.
 
 **Acceptance:** the user opens several candles in the scene panel, shift-clicks every flame, gives them all a glow and a flickering light in one go, moves three candles together with the gizmo, and undoes each step.
 
-## 10.7 Project settings ← current
+## 10.7 Project settings
 The game's own settings, edited from the editor instead of by hand in `game.ron`.
 
-- [ ] PROJECT ▸ PROJECT SETTINGS: the game's name, start scene and render scale (AUTO or a fixed ×1–×8)
-- [ ] The render scale previews live while the dialog is open; OK saves `game.ron`, CANCEL puts it back
-- [ ] The editor and the game start at the project's render scale; `[` / `]` still change it while running
+- [x] PROJECT ▸ PROJECT SETTINGS: the game's name, start scene and render scale (AUTO or a fixed ×1–×8)
+- [x] The render scale previews live while the dialog is open; OK saves `game.ron`, CANCEL puts it back
+- [x] The editor and the game start at the project's render scale; `[` / `]` still change it while running
 
 **Acceptance:** the user sets their game to ×5, restarts the editor and plays, and both start at ×5 while the sandbox still starts on AUTO.
 
