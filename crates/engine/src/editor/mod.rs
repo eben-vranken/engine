@@ -947,19 +947,23 @@ impl Editor {
             scene.zones.len()
         )));
         ui.add_space(4.0);
+        // Right to left: the X first, the field fills what's left (never
+        // negative: the panel can be very narrow on its first frame).
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("SEARCH NAME, ZONE OR COMPONENT")
-                    .desired_width(ui.available_width() - 28.0),
-            );
-            if ui
-                .add_enabled(!self.search.is_empty(), egui::Button::new("X").small())
-                .on_hover_text("CLEAR THE SEARCH")
-                .clicked()
-            {
-                self.search.clear();
-            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui
+                    .add_enabled(!self.search.is_empty(), egui::Button::new("X").small())
+                    .on_hover_text("CLEAR THE SEARCH")
+                    .clicked()
+                {
+                    self.search.clear();
+                }
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.search)
+                        .hint_text("SEARCH NAME, ZONE OR COMPONENT")
+                        .desired_width(ui.available_width().max(0.0)),
+                );
+            });
         });
         let query = self.search.trim().to_lowercase();
         let searching = !query.is_empty();
