@@ -125,6 +125,8 @@ pub struct EditorOutput {
     pub bake: bool,
     /// BAKE LIGHTING was clicked.
     pub bake_lighting: bool,
+    /// EXPORT PACKAGE was clicked.
+    pub export_package: bool,
     /// Make this tab the active one.
     pub switch_tab: Option<usize>,
     /// Open this scene in a new tab.
@@ -185,6 +187,7 @@ impl Editor {
             toggle_play: false,
             bake: false,
             bake_lighting: false,
+            export_package: false,
             switch_tab: None,
             new_tab: None,
             close_tab: None,
@@ -885,6 +888,13 @@ impl Editor {
                 });
                 output.bake |= clicked[0];
                 output.bake_lighting |= clicked[1];
+                ui.menu_button("PROJECT", |ui| {
+                    let hint = "THE WHOLE PROJECT FOLDER IN ONE .GAMEPACK FILE NEXT TO IT,                                 TO OPEN IN ANOTHER EDITOR (SAVED FILES ONLY)";
+                    if ui.button("EXPORT PACKAGE").on_hover_text(hint).clicked() {
+                        output.export_package = true;
+                        ui.close();
+                    }
+                });
                 let notes: Vec<String> = bakes
                     .iter()
                     .filter(|(_, _, status, _)| !status.is_empty() && status.as_str() != "BAKED")

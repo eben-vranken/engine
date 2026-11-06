@@ -4,7 +4,8 @@
 //!   cargo run -p app -- --editor                    -> edit the sandbox
 //!   cargo run -p app -- --editor --game ../my-game  -> edit another game project
 //!
-//! `--game <path>` picks the game project folder (default: `sandbox`).
+//! `--game <path>` picks the game project folder (default: `sandbox`), or a
+//! project package (`.gamepack`), which is unpacked next to it and opened.
 //! `--scene <path>` opens another scene than the project's start scene
 //! (relative to the project folder, e.g. `scenes/hall.ron`).
 //! `--quality low` uses the low preset (for integrated graphics);
@@ -77,7 +78,19 @@ fn main() -> anyhow::Result<()> {
         args.mode,
         args.game.display()
     );
-    let mut project = Project::open(&args.game)?;
+    let game = if engine::package::is_package(&args.game) {
+        let (dir, manifest) = engine::package::unpack(&args.game)?;
+        log::info!(
+            "unpacked {} ({}) into {}",
+            args.game.display(),
+            manifest.name,
+            dir.display()
+        );
+        dir
+    } else {
+        args.game
+    };
+    let mut project = Project::open(&game)?;
     if let Some(scene) = args.scene {
         project.settings.start_scene = scene;
     }

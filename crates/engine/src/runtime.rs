@@ -754,6 +754,10 @@ impl Running {
             let Some(editor) = &mut self.editor else {
                 return;
             };
+            if crate::package::is_package(&file) {
+                open_package_window(&file, editor);
+                continue;
+            }
             if import::is_sound(&file) {
                 match import::copy_sound_into_project(&file, &self.game_dir) {
                     Ok(path) if editor.shows_player(&self.scene) => {
@@ -869,6 +873,32 @@ impl Running {
         }
         if let Some(editor) = &mut self.editor {
             editor.remove_tab(index);
+        }
+    }
+
+    /// Editor: writes the project folder to a package next to it.
+    fn export_package(&mut self) {
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        let out = crate::package::export_path(&self.game_dir);
+        match crate::package::export(&self.game_dir, &editor.game_name, &out) {
+            Ok(count) => {
+                log::info!("exported {} ({count} files)", out.display());
+                let unsaved = if editor.any_dirty() {
+                    "; UNSAVED CHANGES ARE NOT IN IT"
+                } else {
+                    ""
+                };
+                editor.show_message(format!(
+                    "EXPORTED {} ({count} FILES){unsaved}",
+                    out.display()
+                ));
+            }
+            Err(err) => {
+                log::error!("{err}");
+                editor.show_error(err.to_string());
+            }
         }
     }
 
@@ -1354,6 +1384,9 @@ impl Running {
             if output.bake_lighting {
                 self.start_light_bake();
             }
+            if output.export_package {
+                self.export_package();
+            }
             for &change in &output.changed {
                 self.show_change(change);
             }
@@ -1411,6 +1444,30 @@ impl Running {
                 overlay.paint(ui_frame, size, device, queue, encoder, target);
             });
         self.input.end_frame();
+    }
+}
+
+/// A package dropped on the editor: unpack it next to itself and open it in
+/// a second editor window (this one keeps its project).
+fn open_package_window(file: &std::path::Path, editor: &mut Editor) {
+    let opened = crate::package::unpack(file)
+        .map_err(|e| e.to_string())
+        .and_then(|(dir, _)| {
+            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+            std::process::Command::new(exe)
+                .arg("--editor")
+                .arg("--game")
+                .arg(&dir)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            Ok(dir)
+        });
+    match opened {
+        Ok(dir) => editor.show_message(format!("UNPACKED INTO {}; OPENING IT", dir.display())),
+        Err(err) => {
+            log::error!("{err}");
+            editor.show_error(err);
+        }
     }
 }
 

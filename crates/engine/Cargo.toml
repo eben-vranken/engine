@@ -26,6 +26,7 @@ thiserror = "2.0.21"
 transform-gizmo = "0.11.0"
 wgpu = "30.0.1"
 winit = "0.30.13"
+zip = { version = "9.4.1", default-features = false, features = ["deflate"] }
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
