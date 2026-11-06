@@ -111,6 +111,7 @@ impl Player {
             jump,
             body,
             camera,
+            ..
         } = settings;
 
         // Look.

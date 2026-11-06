@@ -17,9 +17,11 @@ pub mod bake;
 mod clip;
 mod geometry;
 mod mixer;
+mod steps;
 
 use crate::assets::Assets;
 use crate::camera::Camera;
+use crate::player::settings::{Footsteps, RandomOrder};
 use crate::scene::{AcousticPreset, Component, Scene, SoundSource};
 use crate::zones::Active;
 use audionimbus::wiring::{ReflectionsFrame, ReflectionsSimulation, Simulation, SourceWithInputs};
@@ -133,6 +135,8 @@ pub struct Audio {
     clips: HashMap<String, Option<Clip>>,
     project_dir: PathBuf,
     footstep_variant: u32,
+    /// Which of the project's own footstep clips plays next.
+    steps: steps::StepPicker,
     pub toggles: Toggles,
     /// The scene's reverb bake, if it has one; its probe batches are in the
     /// reflection simulator.
@@ -283,6 +287,11 @@ impl Audio {
             clips: HashMap::new(),
             project_dir,
             footstep_variant: 0,
+            steps: steps::StepPicker::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |d| d.subsec_nanos()),
+            ),
             toggles: Toggles::default(),
             baked: None,
         };
@@ -525,9 +534,34 @@ impl Audio {
         self.play(clip, position, 1.0);
     }
 
-    /// A footstep on a surface of `material` at `position`. A project can
-    /// supply its own as `audio/footsteps/<material>.wav`.
-    pub fn footstep(&mut self, material: AcousticPreset, position: Vec3) {
+    /// A footstep on a surface of `material` at `position`: the project's
+    /// own clips if `steps` lists some and `use_default` is off, otherwise
+    /// the default step for the material (which a project can replace with
+    /// `audio/footsteps/<material>.wav`).
+    pub fn footstep(&mut self, material: AcousticPreset, position: Vec3, steps: &Footsteps) {
+        let volume = 0.5 * steps.volume.max(0.0);
+        let clips: Vec<&String> = if steps.use_default {
+            Vec::new()
+        } else {
+            steps.clips.iter().filter(|c| !c.is_empty()).collect()
+        };
+        if !clips.is_empty() {
+            let index = self.steps.pick(clips.len(), steps);
+            if let Some(clip) = self.load(clips[index]) {
+                let (clip, gain) = if steps.randomize && steps.random == RandomOrder::Smart {
+                    let (pitch, gain) = self.steps.variation();
+                    // Read as if recorded at a slightly different rate: higher and
+                    // shorter, or lower and longer.
+                    let from = (self.rate as f32 * pitch) as u32;
+                    (Arc::new(clip::resample(&clip, from, self.rate)), gain)
+                } else {
+                    (clip, 1.0)
+                };
+                self.play(clip, position, volume * gain);
+                return;
+            }
+            // A missing or broken file (logged once): the default step instead.
+        }
         let name = format!("{material:?}").to_lowercase();
         let rate = self.rate;
         self.footstep_variant = (self.footstep_variant + 1) % 4;
@@ -535,7 +569,7 @@ impl Audio {
         let clip = self.clip_or(&format!("audio/footsteps/{name}.wav"), || {
             clip::footstep(&name, variant, rate)
         });
-        self.play(clip, position, 0.5);
+        self.play(clip, position, volume);
     }
 
     /// Plays a clip once from the one-shot pool: a free voice, or the one

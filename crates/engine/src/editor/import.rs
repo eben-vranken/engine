@@ -8,6 +8,8 @@ use std::path::{Component, Path, PathBuf};
 pub enum ImportError {
     #[error("{0}: only .glb and .gltf models can be imported")]
     NotAModel(PathBuf),
+    #[error("{0}: only .wav sounds can be imported")]
+    NotASound(PathBuf),
     #[error("could not copy {from} to {to}: {source}")]
     Copy {
         from: PathBuf,
@@ -71,6 +73,37 @@ pub fn copy_into_project(file: &Path, project: &Path) -> Result<String, ImportEr
     Ok(format!("models/{name}"))
 }
 
+pub fn is_sound(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("wav"))
+}
+
+/// Copies a WAV into `<project>/audio/steps/` (unless it's already in the
+/// project) and returns its path relative to the project. Names are
+/// handled as for models: identical files are reused, others numbered.
+pub fn copy_sound_into_project(file: &Path, project: &Path) -> Result<String, ImportError> {
+    if !is_sound(file) {
+        return Err(ImportError::NotASound(file.to_owned()));
+    }
+    if let Some(relative) = inside(file, project) {
+        return Ok(relative);
+    }
+    let folder = project.join("audio").join("steps");
+    let target = free_name(file, &folder);
+    if !target.exists() {
+        std::fs::create_dir_all(&folder)
+            .and_then(|()| std::fs::copy(file, &target).map(|_| ()))
+            .map_err(|source| ImportError::Copy {
+                from: file.to_owned(),
+                to: target.clone(),
+                source,
+            })?;
+    }
+    let name = target.file_name().unwrap_or_default().to_string_lossy();
+    Ok(format!("audio/steps/{name}"))
+}
+
 /// `file`'s path relative to `project`, if it's inside it.
 fn inside(file: &Path, project: &Path) -> Option<String> {
     let (file, project) = (file.canonicalize().ok()?, project.canonicalize().ok()?);
@@ -82,14 +115,14 @@ fn inside(file: &Path, project: &Path) -> Option<String> {
     Some(parts.join("/"))
 }
 
-/// `models/<name>`, or `models/<stem>-2.<ext>`, `-3`... if a different file
-/// already has that name. An identical file's name is returned as is.
-fn free_name(file: &Path, models: &Path) -> PathBuf {
+/// `<folder>/<name>`, or `<folder>/<stem>-2.<ext>`, `-3`... if a different
+/// file already has that name. An identical file's name is returned as is.
+fn free_name(file: &Path, folder: &Path) -> PathBuf {
     let name = file.file_name().unwrap_or_default();
     let stem = file.file_stem().unwrap_or_default().to_string_lossy();
     let ext = file.extension().unwrap_or_default().to_string_lossy();
-    std::iter::once(models.join(name))
-        .chain((2..).map(|n| models.join(format!("{stem}-{n}.{ext}"))))
+    std::iter::once(folder.join(name))
+        .chain((2..).map(|n| folder.join(format!("{stem}-{n}.{ext}"))))
         .find(|candidate| !candidate.exists() || same_contents(file, candidate))
         .expect("some number is free")
 }

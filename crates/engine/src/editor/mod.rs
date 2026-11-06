@@ -12,6 +12,8 @@ pub mod import;
 pub mod inspector;
 pub mod markers;
 
+use crate::player::settings::{Footsteps, PlayerSettings, RandomOrder};
+use crate::player::tuning;
 use crate::render::mesh::Shape;
 use crate::scene::{
     AcousticMaterial, Component, Door, Floating, FogVolume, LightSource, Material, Model, Object,
@@ -22,7 +24,7 @@ use egui::{Align, Layout, Rect, RichText, Ui};
 use gizmo::{TransformGizmo, View};
 use glam::{Vec2, Vec3};
 use history::{Change, Edit, History};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use transform_gizmo::config::GizmoModeKind;
 
 pub struct Editor {
@@ -53,12 +55,16 @@ pub struct Editor {
     pub settings: Option<SettingsTarget>,
     /// A zone or environment edit in progress: the scene before it.
     zone_pending: Option<Box<Scene>>,
+    /// A player settings edit in progress: the settings before it and now.
+    player_pending: Option<(Box<PlayerSettings>, Box<PlayerSettings>)>,
     pub gizmo: TransformGizmo,
     /// The scene is running in the viewport; editing is locked until Stop.
     pub playing: bool,
     /// A zone being renamed in the hierarchy: its name, and the new name
     /// typed so far.
     renaming: Option<(String, String)>,
+    /// Text typed in the hierarchy's search bar.
+    search: String,
     /// The reverb bake's state for the top bar (set by the runtime).
     pub bake_status: String,
     /// The light bake's state for the top bar (set by the runtime).
@@ -131,9 +137,11 @@ impl Editor {
             show_zones: true,
             settings: None,
             zone_pending: None,
+            player_pending: None,
             gizmo: TransformGizmo::default(),
             playing: false,
             renaming: None,
+            search: String::new(),
             bake_status: String::new(),
             light_status: String::new(),
             probes: Vec::new(),
@@ -146,6 +154,7 @@ impl Editor {
         &mut self,
         ui: &mut Ui,
         scene: &mut Scene,
+        player: &mut PlayerSettings,
         stats: &EditorStats,
         blink: bool,
         view: &View,
@@ -171,7 +180,7 @@ impl Editor {
             });
         }
         egui::Panel::top("editor_top").show(ui, |ui| {
-            self.top_bar(ui, scene, stats, blink, view, &mut output)
+            self.top_bar(ui, scene, player, stats, blink, view, &mut output)
         });
         if self.show_scene {
             egui::Panel::left("editor_scene")
@@ -189,7 +198,9 @@ impl Editor {
                 // Wide enough for its content, so selecting doesn't resize the viewport.
                 .min_size(340.0)
                 .show(ui, |ui| {
-                    ui.add_enabled_ui(!self.playing, |ui| self.inspector(ui, scene, &mut output));
+                    ui.add_enabled_ui(!self.playing, |ui| {
+                        self.inspector(ui, scene, player, &mut output)
+                    });
                 });
         }
 
@@ -234,7 +245,7 @@ impl Editor {
             output.settled |= self.commit_pending(scene);
         }
 
-        self.confirm_dialog(ui, scene, &mut output);
+        self.confirm_dialog(ui, scene, player, &mut output);
 
         output.viewport = ui.available_rect_before_wrap();
         hints(ui, output.viewport, self.playing);
@@ -245,26 +256,53 @@ impl Editor {
     pub fn is_dirty(&self) -> bool {
         self.pending.is_some()
             || self.zone_pending.is_some()
+            || self.player_pending.is_some()
             || self.history.state() != self.saved_state
     }
 
-    /// Writes the scene to its file. Returns true if a pending edit was
-    /// committed first (collision needs a rebuild).
-    pub fn save(&mut self, scene: &Scene) -> bool {
+    /// Writes the scene to its file, and the player settings to the
+    /// project's `player.ron` if they differ from it. Returns true if a
+    /// pending edit was committed first (collision needs a rebuild).
+    pub fn save(&mut self, scene: &Scene, player: &PlayerSettings) -> bool {
         let settled = self.commit_pending(scene);
         let path = self.project_dir.join(&self.scene_path);
-        match scene.save(&path) {
-            Ok(()) => {
+        let saved = scene
+            .save(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|()| self.save_player(player));
+        match saved {
+            Ok(player_saved) => {
                 self.saved_state = self.history.state();
-                self.message = Some((format!("SAVED {}", self.scene_path.display()), false));
+                let also = if player_saved { " AND PLAYER.RON" } else { "" };
+                self.message = Some((format!("SAVED {}{also}", self.scene_path.display()), false));
                 log::info!("saved {}", path.display());
             }
             Err(err) => {
                 log::error!("{err}");
-                self.message = Some((err.to_string(), true));
+                self.message = Some((err, true));
             }
         }
         settled
+    }
+
+    /// Writes `player.ron` if it differs from `player`. Returns whether it
+    /// wrote. A file that doesn't parse is left alone (it may hold hand
+    /// edits in progress); a missing one is only created for non-defaults.
+    fn save_player(&self, player: &PlayerSettings) -> Result<bool, String> {
+        let path = self.project_dir.join("player.ron");
+        let unchanged = if path.exists() {
+            let on_disk = PlayerSettings::load(&path)
+                .map_err(|e| format!("{e} (player settings not saved)"))?;
+            on_disk == *player
+        } else {
+            *player == PlayerSettings::default()
+        };
+        if unchanged {
+            return Ok(false);
+        }
+        player.save(&path).map_err(|e| e.to_string())?;
+        log::info!("saved {}", path.display());
+        Ok(true)
     }
 
     /// The window wants to close. Returns true if it may close now;
@@ -305,7 +343,13 @@ impl Editor {
     }
 
     /// Save / discard / cancel, when unsaved changes are in the way.
-    fn confirm_dialog(&mut self, ui: &Ui, scene: &Scene, output: &mut EditorOutput) {
+    fn confirm_dialog(
+        &mut self,
+        ui: &Ui,
+        scene: &Scene,
+        player: &PlayerSettings,
+        output: &mut EditorOutput,
+    ) {
         let Some(confirm) = self.confirm.clone() else {
             return;
         };
@@ -334,7 +378,7 @@ impl Editor {
         };
         self.confirm = None;
         if save {
-            output.settled |= self.save(scene);
+            output.settled |= self.save(scene, player);
             if self.is_dirty() {
                 return; // saving failed; the error is in the top bar
             }
@@ -355,6 +399,12 @@ impl Editor {
 
     /// Records the edit in progress, if any. Returns true if one was recorded.
     pub fn commit_pending(&mut self, scene: &Scene) -> bool {
+        if let Some((before, after)) = self.player_pending.take()
+            && before != after
+        {
+            self.history.record(Edit::SetPlayer { before, after });
+            return true;
+        }
         if let Some(before) = self.zone_pending.take()
             && *before != *scene
         {
@@ -380,17 +430,17 @@ impl Editor {
     }
 
     /// Undoes the last edit.
-    pub fn undo(&mut self, scene: &mut Scene) -> Option<Change> {
+    pub fn undo(&mut self, scene: &mut Scene, player: &mut PlayerSettings) -> Option<Change> {
         self.commit_pending(scene);
-        let change = self.history.undo(scene)?;
+        let change = self.history.undo(scene, player)?;
         self.follow(change);
         Some(change)
     }
 
     /// Redoes the last undone edit.
-    pub fn redo(&mut self, scene: &mut Scene) -> Option<Change> {
+    pub fn redo(&mut self, scene: &mut Scene, player: &mut PlayerSettings) -> Option<Change> {
         self.commit_pending(scene);
-        let change = self.history.redo(scene)?;
+        let change = self.history.redo(scene, player)?;
         self.follow(change);
         Some(change)
     }
@@ -407,7 +457,7 @@ impl Editor {
     /// added (or restored) object becomes the selection.
     fn follow(&mut self, change: Change) {
         match change {
-            Change::Modified(_) | Change::All | Change::Settings => {}
+            Change::Modified(_) | Change::All | Change::Settings | Change::Player => {}
             Change::Added(index) => {
                 self.selected = Some(index);
                 self.reveal_selection = true;
@@ -645,10 +695,12 @@ impl Editor {
         settled
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn top_bar(
         &mut self,
         ui: &mut Ui,
         scene: &mut Scene,
+        player: &mut PlayerSettings,
         stats: &EditorStats,
         blink: bool,
         view: &View,
@@ -696,7 +748,7 @@ impl Editor {
                     ui.label(RichText::new("[MODIFIED]").color(theme::AMBER));
                 }
                 if ui.small_button("SAVE").clicked() {
-                    output.settled |= self.save(scene);
+                    output.settled |= self.save(scene, player);
                 }
                 if let Some((text, error)) = &self.message {
                     let color = if *error {
@@ -712,7 +764,7 @@ impl Editor {
                 if ui
                     .add_enabled(self.history.undo_len() > 0, egui::Button::new(undo).small())
                     .clicked()
-                    && let Some(change) = self.undo(scene)
+                    && let Some(change) = self.undo(scene, player)
                 {
                     output.changed.push(change);
                     output.settled = true;
@@ -721,7 +773,7 @@ impl Editor {
                 if ui
                     .add_enabled(self.history.redo_len() > 0, egui::Button::new(redo).small())
                     .clicked()
-                    && let Some(change) = self.redo(scene)
+                    && let Some(change) = self.redo(scene, player)
                 {
                     output.changed.push(change);
                     output.settled = true;
@@ -895,6 +947,23 @@ impl Editor {
             scene.zones.len()
         )));
         ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search)
+                    .hint_text("SEARCH NAME, ZONE OR COMPONENT")
+                    .desired_width(ui.available_width() - 28.0),
+            );
+            if ui
+                .add_enabled(!self.search.is_empty(), egui::Button::new("X").small())
+                .on_hover_text("CLEAR THE SEARCH")
+                .clicked()
+            {
+                self.search.clear();
+            }
+        });
+        let query = self.search.trim().to_lowercase();
+        let searching = !query.is_empty();
+        ui.add_space(4.0);
         let mut clicked = None;
         let mut zone_clicked = None;
         let mut zone_action = None;
@@ -915,7 +984,26 @@ impl Editor {
                         .enumerate()
                         .filter(|(_, o)| o.zone == zone.name)
                         .collect();
-                    let header = format!("{} [{}]", zone.name.to_uppercase(), members.len());
+                    // A zone whose name matches shows all its objects.
+                    let zone_matches = zone.name.to_lowercase().contains(&query);
+                    let total = members.len();
+                    let members: Vec<(usize, &Object)> = if zone_matches {
+                        members
+                    } else {
+                        members
+                            .into_iter()
+                            .filter(|(_, o)| matches_search(o, &query))
+                            .collect()
+                    };
+                    if searching && members.is_empty() && !zone_matches {
+                        continue;
+                    }
+                    let shown = if members.len() == total {
+                        total.to_string()
+                    } else {
+                        format!("{}/{total}", members.len())
+                    };
+                    let header = format!("{} [{shown}]", zone.name.to_uppercase());
                     let reveal = self.reveal_selection
                         && members.iter().any(|(i, _)| Some(*i) == self.selected);
                     if let Some((old, typed)) = &mut self.renaming
@@ -935,11 +1023,11 @@ impl Editor {
                         }
                         continue;
                     }
-                    let empty = members.is_empty();
+                    let empty = total == 0;
                     let chosen = self.settings == Some(SettingsTarget::Zone(zone.name.clone()));
                     let response = egui::CollapsingHeader::new(picked(&header, chosen))
                         .id_salt(&zone.name)
-                        .open(reveal.then_some(true))
+                        .open((reveal || searching).then_some(true))
                         .show(ui, |ui| {
                             for (index, object) in members {
                                 let selected = self.selected == Some(index);
@@ -970,6 +1058,17 @@ impl Editor {
                             ui.close();
                         }
                     });
+                }
+                if searching
+                    && !scene.zones.iter().any(|z| {
+                        z.name.to_lowercase().contains(&query)
+                            || scene
+                                .objects
+                                .iter()
+                                .any(|o| o.zone == z.name && matches_search(o, &query))
+                    })
+                {
+                    ui.label(dim("NOTHING MATCHES"));
                 }
             });
         self.reveal_selection = false;
@@ -1080,7 +1179,13 @@ impl Editor {
         true
     }
 
-    fn inspector(&mut self, ui: &mut Ui, scene: &mut Scene, output: &mut EditorOutput) {
+    fn inspector(
+        &mut self,
+        ui: &mut Ui,
+        scene: &mut Scene,
+        player: &mut PlayerSettings,
+        output: &mut EditorOutput,
+    ) {
         ui.add_space(4.0);
         ui.label(RichText::new("INSPECTOR").strong());
         ui.add_space(4.0);
@@ -1117,6 +1222,8 @@ impl Editor {
         let zones = &scene.zones;
         let object = &mut scene.objects[index];
         let before = object.clone();
+        let player_before = player.clone();
+        let project_dir = self.project_dir.as_path();
 
         egui::ScrollArea::vertical()
             .auto_shrink(false)
@@ -1156,6 +1263,9 @@ impl Editor {
                 if let Some(i) = remove {
                     object.components.remove(i);
                 }
+                if object.components.contains(&Component::PlayerStart) {
+                    player_inspector(ui, player, project_dir);
+                }
 
                 ui.add_space(10.0);
                 ui.menu_button("ADD COMPONENT", |ui| {
@@ -1179,7 +1289,218 @@ impl Editor {
             self.begin_edit(index, &before);
             output.changed.push(Change::Modified(index));
         }
+        if *player != player_before {
+            self.begin_player_edit(player_before, player);
+            output.changed.push(Change::Player);
+        }
     }
+
+    /// Starts (or continues) an edit of the player settings; `before` is
+    /// how they were before this frame's change.
+    fn begin_player_edit(&mut self, before: PlayerSettings, now: &PlayerSettings) {
+        match &mut self.player_pending {
+            Some((_, after)) => **after = now.clone(),
+            None => self.player_pending = Some((Box::new(before), Box::new(now.clone()))),
+        }
+    }
+
+    /// Whether the inspector shows the player settings (Player Start is selected).
+    pub fn shows_player(&self, scene: &Scene) -> bool {
+        self.selected
+            .and_then(|i| scene.objects.get(i))
+            .is_some_and(|o| o.components.contains(&Component::PlayerStart))
+    }
+
+    /// Adds a sound file to the footsteps (and turns the default steps
+    /// off), as one undo step.
+    pub fn add_footstep(&mut self, scene: &Scene, player: &mut PlayerSettings, path: String) {
+        self.commit_pending(scene);
+        let before = player.clone();
+        player.footsteps.use_default = false;
+        player.footsteps.clips.push(path);
+        self.history.record(Edit::SetPlayer {
+            before: Box::new(before),
+            after: Box::new(player.clone()),
+        });
+    }
+}
+
+/// Whether an object's name or one of its components (e.g. "light",
+/// "door") contains `query` (lowercase), ignoring case.
+fn matches_search(object: &Object, query: &str) -> bool {
+    object.name.to_lowercase().contains(query)
+        || object
+            .components
+            .iter()
+            .any(|c| inspector::title(c).to_lowercase().contains(query))
+}
+
+/// The game's player settings (its `player.ron`), shown under Player Start:
+/// movement, jump, body and camera as in the F1 tuning panel, then the
+/// footsteps.
+fn player_inspector(ui: &mut Ui, player: &mut PlayerSettings, project_dir: &Path) {
+    section(ui, "PLAYER");
+    ui.label(dim(
+        "THE GAME'S PLAYER.RON: SHARED BY EVERY SCENE, SAVED WITH THE SCENE",
+    ));
+    tuning::sections(ui, player);
+    section(ui, "FOOTSTEPS");
+    footsteps_inspector(ui, &mut player.footsteps, project_dir);
+}
+
+fn footsteps_inspector(ui: &mut Ui, steps: &mut Footsteps, project_dir: &Path) {
+    ui.horizontal(|ui| {
+        inspector::field_label(ui, "VOLUME");
+        ui.add(
+            egui::DragValue::new(&mut steps.volume)
+                .range(0.0..=2.0)
+                .speed(0.01)
+                .max_decimals(2),
+        );
+        ui.label(dim("1 = AS RECORDED"));
+    });
+    on_off(ui, "USE DEFAULT", &mut steps.use_default);
+    if steps.use_default {
+        ui.label(dim("THE ENGINE'S STEPS, ONE PER FLOOR MATERIAL"));
+        return;
+    }
+
+    if steps.clips.is_empty() {
+        ui.label(dim(
+            "NO SOUNDS YET: ADD ONE, OR DROP .WAV FILES ON THE WINDOW",
+        ));
+        ui.label(dim("UNTIL THEN THE DEFAULT STEPS PLAY"));
+    }
+    enum ListAction {
+        Up(usize),
+        Down(usize),
+        Remove(usize),
+    }
+    let mut action = None;
+    let count = steps.clips.len();
+    for (i, clip) in steps.clips.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(dim(&format!("{:>2}", i + 1)));
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.small_button("X").on_hover_text("REMOVE").clicked() {
+                    action = Some(ListAction::Remove(i));
+                }
+                if ui
+                    .add_enabled(i + 1 < count, egui::Button::new("↓").small())
+                    .clicked()
+                {
+                    action = Some(ListAction::Down(i));
+                }
+                if ui
+                    .add_enabled(i > 0, egui::Button::new("↑").small())
+                    .clicked()
+                {
+                    action = Some(ListAction::Up(i));
+                }
+                let text = if project_dir.join(clip).is_file() {
+                    RichText::new(clip)
+                } else {
+                    RichText::new(format!("{clip} (MISSING)")).color(theme::ALERT)
+                };
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(egui::Label::new(text).truncate());
+                });
+            });
+        });
+    }
+    match action {
+        Some(ListAction::Up(i)) => steps.clips.swap(i, i - 1),
+        Some(ListAction::Down(i)) => steps.clips.swap(i, i + 1),
+        Some(ListAction::Remove(i)) => {
+            steps.clips.remove(i);
+        }
+        None => {}
+    }
+    ui.menu_button("ADD SOUND", |ui| {
+        let files = sound_files(project_dir);
+        if files.is_empty() {
+            ui.label(dim("NO .WAV FILES IN THE PROJECT"));
+        }
+        egui::ScrollArea::vertical()
+            .max_height(320.0)
+            .show(ui, |ui| {
+                for file in files {
+                    if ui.button(&file).clicked() {
+                        steps.clips.push(file);
+                        ui.close();
+                    }
+                }
+            });
+    });
+
+    ui.add_space(6.0);
+    on_off(ui, "RANDOMIZE", &mut steps.randomize);
+    if !steps.randomize {
+        ui.label(dim("IN LIST ORDER: 1, 2, 3, 1, 2, 3..."));
+        return;
+    }
+    let name = |order| match order {
+        RandomOrder::True => "TRUE RANDOM",
+        RandomOrder::Smart => "SMART RANDOM",
+    };
+    ui.horizontal(|ui| {
+        inspector::field_label(ui, "ORDER");
+        egui::ComboBox::from_id_salt("footstep_order")
+            .selected_text(name(steps.random))
+            .show_ui(ui, |ui| {
+                for order in [RandomOrder::True, RandomOrder::Smart] {
+                    ui.selectable_value(&mut steps.random, order, name(order));
+                }
+            });
+    });
+    ui.label(dim(match steps.random {
+        RandomOrder::True => "ANY SOUND EACH STEP; THE SAME ONE CAN REPEAT",
+        RandomOrder::Smart => {
+            "NO RECENT REPEATS, AND EACH STEP SLIGHTLY VARIED IN PITCH AND LOUDNESS"
+        }
+    }));
+}
+
+/// [ON]/[OFF] row for a setting.
+fn on_off(ui: &mut Ui, label: &str, value: &mut bool) {
+    ui.horizontal(|ui| {
+        inspector::field_label(ui, label);
+        let text = if *value { "[ON] " } else { "[OFF]" };
+        if ui.small_button(text).clicked() {
+            *value = !*value;
+        }
+    });
+}
+
+/// Every `.wav` in the project, as paths relative to it with `/`
+/// separators, sorted. Hidden folders are skipped.
+fn sound_files(project_dir: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut folders = vec![project_dir.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let hidden = entry.file_name().to_string_lossy().starts_with('.');
+            if path.is_dir() {
+                if !hidden {
+                    folders.push(path);
+                }
+            } else if import::is_sound(&path)
+                && let Ok(relative) = path.strip_prefix(project_dir)
+            {
+                let parts: Vec<_> = relative
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect();
+                found.push(parts.join("/"));
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// How far in front of the camera new objects float when the camera isn't
@@ -1470,11 +1791,11 @@ mod tests {
         editor.delete_selected(&mut scene);
         assert_eq!(editor.selected, None);
         editor.selected = Some(1);
-        editor.undo(&mut scene);
+        editor.undo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(editor.selected, Some(0), "restored object is selected");
         assert_eq!(scene.objects[2].name, "object 2");
 
-        editor.redo(&mut scene);
+        editor.redo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(editor.selected, None);
         assert_eq!(scene.objects.len(), 2);
     }
@@ -1493,7 +1814,7 @@ mod tests {
         assert_eq!(scene.objects[1].name, "object 2");
         assert_eq!(scene.objects[1].transform, scene.objects[0].transform);
 
-        editor.undo(&mut scene);
+        editor.undo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(scene, original);
         assert_eq!(editor.selected, None);
     }
@@ -1509,6 +1830,40 @@ mod tests {
     }
 
     #[test]
+    fn search_matches_names_and_components_ignoring_case() {
+        let scene = boxes(1);
+        let object = &scene.objects[0];
+        assert!(matches_search(object, &object.name.to_lowercase()));
+        assert!(matches_search(object, "primitive"));
+        assert!(!matches_search(object, "no such thing"));
+    }
+
+    #[test]
+    fn a_player_settings_drag_is_one_undo_step() {
+        let scene = boxes(1);
+        let mut scene_after = scene.clone();
+        let mut editor = editor();
+        let mut player = PlayerSettings::default();
+        // As the inspector does on each frame of a drag.
+        for speed in [5.0, 6.0, 7.0] {
+            let before = player.clone();
+            player.movement.walk_speed = speed;
+            editor.begin_player_edit(before, &player);
+        }
+        assert!(editor.is_dirty());
+        assert!(editor.commit_pending(&scene));
+        editor.add_footstep(&scene, &mut player, "audio/steps/a.wav".into());
+        assert!(!player.footsteps.use_default);
+
+        editor.undo(&mut scene_after, &mut player);
+        assert!(player.footsteps.use_default && player.footsteps.clips.is_empty());
+        assert_eq!(player.movement.walk_speed, 7.0);
+        editor.undo(&mut scene_after, &mut player);
+        assert_eq!(player, PlayerSettings::default());
+        assert_eq!(scene_after, scene);
+    }
+
+    #[test]
     fn a_zone_fog_edit_is_one_undo_step() {
         let mut scene = boxes(1);
         let mut editor = editor();
@@ -1519,7 +1874,7 @@ mod tests {
         scene.zones[0].fog.as_mut().unwrap().density = 0.3;
         assert!(editor.is_dirty());
         assert!(editor.commit_pending(&scene));
-        editor.undo(&mut scene);
+        editor.undo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(scene.zones[0].fog, None);
         // Selecting an object leaves the zone.
         editor.select(&scene, Some(0));
@@ -1557,7 +1912,7 @@ mod tests {
             editor.delete_zone(&mut scene, "cellar").is_none(),
             "not empty"
         );
-        editor.undo(&mut scene);
+        editor.undo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(scene, original);
 
         editor.add_zone(&mut scene);

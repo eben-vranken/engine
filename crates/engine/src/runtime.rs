@@ -274,7 +274,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::DroppedFile(_) if app.play.is_some() => {
                 if let Some(editor) = &mut app.editor {
-                    editor.show_error("STOP PLAYING TO IMPORT MODELS".into());
+                    editor.show_error("STOP PLAYING TO IMPORT FILES".into());
                 }
             }
             WindowEvent::DroppedFile(path) if app.editor.is_some() => {
@@ -497,16 +497,16 @@ impl Running {
             }
             if ctrl && input.pressed(KeyCode::KeyZ) {
                 changed = if shift {
-                    editor.redo(&mut self.scene)
+                    editor.redo(&mut self.scene, &mut self.settings)
                 } else {
-                    editor.undo(&mut self.scene)
+                    editor.undo(&mut self.scene, &mut self.settings)
                 };
             }
             if ctrl && input.pressed(KeyCode::KeyY) {
-                changed = editor.redo(&mut self.scene);
+                changed = editor.redo(&mut self.scene, &mut self.settings);
             }
             if ctrl && input.pressed(KeyCode::KeyS) {
-                settled |= editor.save(&self.scene);
+                settled |= editor.save(&self.scene, &self.settings);
             }
             if input.pressed(KeyCode::Delete) {
                 changed = editor.delete_selected(&mut self.scene);
@@ -641,7 +641,7 @@ impl Running {
                 .unwrap_or_default();
             if floor.is_some() {
                 // Just above the floor, so the step comes from the surface.
-                audio.footstep(material, feet + Vec3::Y * 0.15);
+                audio.footstep(material, feet + Vec3::Y * 0.15, &self.settings.footsteps);
             }
         }
     }
@@ -735,6 +735,7 @@ impl Running {
                     .update_object(&self.scene, index, &mut self.assets);
             }
             Change::Settings => self.renderer.set_zones(&self.scene, &self.assets),
+            Change::Player => {}
             Change::Added(_) | Change::Removed(_) | Change::All => {
                 let selected = self.editor.as_ref().and_then(|e| e.selected);
                 self.renderer.set_highlight(selected);
@@ -745,12 +746,30 @@ impl Running {
     }
 
     /// Editor: copies dropped model files into the project and places each
-    /// on the surface under the drop point.
+    /// on the surface under the drop point. Dropped WAV files are copied to
+    /// `audio/steps/` and, while Player Start is selected, added to the
+    /// footsteps.
     fn import_dropped(&mut self, camera: &Camera) {
         for (file, cursor) in std::mem::take(&mut self.dropped) {
             let Some(editor) = &mut self.editor else {
                 return;
             };
+            if import::is_sound(&file) {
+                match import::copy_sound_into_project(&file, &self.game_dir) {
+                    Ok(path) if editor.shows_player(&self.scene) => {
+                        editor.show_message(format!("ADDED {path} TO THE FOOTSTEPS"));
+                        editor.add_footstep(&self.scene, &mut self.settings, path);
+                    }
+                    Ok(path) => editor.show_message(format!(
+                        "COPIED TO {path}; SELECT PLAYER START TO USE IT FOR FOOTSTEPS"
+                    )),
+                    Err(err) => {
+                        log::error!("{err}");
+                        editor.show_error(err.to_string());
+                    }
+                }
+                continue;
+            }
             let path = match import::copy_into_project(&file, &self.game_dir) {
                 Ok(path) => path,
                 Err(err) => {
@@ -1036,6 +1055,8 @@ impl Running {
 
     fn poll_settings_file(&mut self) {
         match self.settings_file.poll() {
+            // The editor saving the same values isn't news.
+            Some(Ok(settings)) if settings == self.settings => self.settings_error = None,
             Some(Ok(settings)) => {
                 self.settings = settings;
                 self.settings_error = None;
@@ -1211,7 +1232,8 @@ impl Running {
             |ui| {
                 match editor {
                     Some(editor) => {
-                        editor_output = Some(editor.ui(ui, scene, &editor_stats, blink, &view));
+                        editor_output =
+                            Some(editor.ui(ui, scene, settings, &editor_stats, blink, &view));
                         if editor.playing && tuning_open {
                             tuning_action = tuning::panel(ui, settings, &file_name, status, error);
                         }

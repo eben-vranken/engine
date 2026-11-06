@@ -15,6 +15,7 @@ pub struct PlayerSettings {
     pub jump: Jump,
     pub body: Body,
     pub camera: CameraFeel,
+    pub footsteps: Footsteps,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -169,6 +170,46 @@ impl Default for CameraFeel {
             step_smoothing: 0.06,
         }
     }
+}
+
+/// Which sounds the player's footsteps make.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Footsteps {
+    /// The engine's own steps, one per floor material (a project can replace
+    /// them with `audio/footsteps/<material>.wav`).
+    pub use_default: bool,
+    /// Loudness of every step, default or own clips: 1 = as recorded (the
+    /// default steps' level), 0 = silent, 2 = twice as loud.
+    pub volume: f32,
+    /// WAV files in the project (paths relative to it), used instead of the
+    /// default steps when `use_default` is off.
+    pub clips: Vec<String>,
+    /// Off: the clips play in list order. On: in the order `random` picks.
+    pub randomize: bool,
+    pub random: RandomOrder,
+}
+
+impl Default for Footsteps {
+    fn default() -> Self {
+        Self {
+            use_default: true,
+            volume: 1.0,
+            clips: Vec::new(),
+            randomize: false,
+            random: RandomOrder::Smart,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RandomOrder {
+    /// Any clip each step, so the same one can play twice in a row.
+    True,
+    /// Never one of the most recent clips (the last half of the list), and
+    /// each step slightly different in pitch and loudness, so even a few
+    /// clips don't sound like a loop.
+    Smart,
 }
 
 #[derive(Debug, thiserror::Error)]

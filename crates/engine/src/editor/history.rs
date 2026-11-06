@@ -1,6 +1,8 @@
-//! Undo/redo. Every change to the scene is an [`Edit`] that knows how to
-//! apply and revert itself; the history keeps two stacks of them.
+//! Undo/redo. Every change to the scene (or the game's player settings) is
+//! an [`Edit`] that knows how to apply and revert itself; the history keeps
+//! two stacks of them.
 
+use crate::player::settings::PlayerSettings;
 use crate::scene::{Object, Scene};
 
 #[derive(Debug, Clone)]
@@ -21,6 +23,11 @@ pub enum Edit {
         before: Box<Scene>,
         after: Box<Scene>,
     },
+    /// Replace the player settings (the project's `player.ron`).
+    SetPlayer {
+        before: Box<PlayerSettings>,
+        after: Box<PlayerSettings>,
+    },
 }
 
 /// What applying or reverting an edit did to the scene's object list.
@@ -39,10 +46,12 @@ pub enum Change {
     /// Only zone or environment settings changed (fog, grade, sun, sky):
     /// no meshes need re-uploading.
     Settings,
+    /// Only the player settings changed; nothing in the scene did.
+    Player,
 }
 
 impl Edit {
-    fn apply(&self, scene: &mut Scene) -> Change {
+    fn apply(&self, scene: &mut Scene, player: &mut PlayerSettings) -> Change {
         match self {
             Edit::SetObject { index, after, .. } => {
                 scene.objects[*index] = (**after).clone();
@@ -54,10 +63,14 @@ impl Edit {
                 *scene = (**after).clone();
                 Change::All
             }
+            Edit::SetPlayer { after, .. } => {
+                *player = (**after).clone();
+                Change::Player
+            }
         }
     }
 
-    fn revert(&self, scene: &mut Scene) -> Change {
+    fn revert(&self, scene: &mut Scene, player: &mut PlayerSettings) -> Change {
         match self {
             Edit::SetObject { index, before, .. } => {
                 scene.objects[*index] = (**before).clone();
@@ -68,6 +81,10 @@ impl Edit {
             Edit::SetScene { before, .. } => {
                 *scene = (**before).clone();
                 Change::All
+            }
+            Edit::SetPlayer { before, .. } => {
+                *player = (**before).clone();
+                Change::Player
             }
         }
     }
@@ -95,7 +112,8 @@ pub struct History {
 impl History {
     /// Applies an edit to the scene and records it.
     pub fn push(&mut self, scene: &mut Scene, edit: Edit) -> Change {
-        let change = edit.apply(scene);
+        // Scene edits never touch the player settings.
+        let change = edit.apply(scene, &mut PlayerSettings::default());
         self.record(edit);
         change
     }
@@ -114,17 +132,17 @@ impl History {
     }
 
     /// Reverts the last edit.
-    pub fn undo(&mut self, scene: &mut Scene) -> Option<Change> {
+    pub fn undo(&mut self, scene: &mut Scene, player: &mut PlayerSettings) -> Option<Change> {
         let (id, edit) = self.undo.pop()?;
-        let change = edit.revert(scene);
+        let change = edit.revert(scene, player);
         self.redo.push((id, edit));
         Some(change)
     }
 
     /// Re-applies the last undone edit.
-    pub fn redo(&mut self, scene: &mut Scene) -> Option<Change> {
+    pub fn redo(&mut self, scene: &mut Scene, player: &mut PlayerSettings) -> Option<Change> {
         let (id, edit) = self.redo.pop()?;
-        let change = edit.apply(scene);
+        let change = edit.apply(scene, player);
         self.undo.push((id, edit));
         Some(change)
     }
@@ -162,16 +180,25 @@ mod tests {
         moved(&mut scene, &mut history, 1.0);
         moved(&mut scene, &mut history, 2.0);
 
-        assert_eq!(history.undo(&mut scene), Some(Change::Modified(0)));
+        assert_eq!(
+            history.undo(&mut scene, &mut PlayerSettings::default()),
+            Some(Change::Modified(0))
+        );
         assert_eq!(scene.objects[0].transform.position.x, 1.0);
-        history.undo(&mut scene);
+        history.undo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(scene.objects[0].transform.position.x, 0.0);
-        assert_eq!(history.undo(&mut scene), None);
+        assert_eq!(
+            history.undo(&mut scene, &mut PlayerSettings::default()),
+            None
+        );
 
-        history.redo(&mut scene);
-        history.redo(&mut scene);
+        history.redo(&mut scene, &mut PlayerSettings::default());
+        history.redo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(scene.objects[0].transform.position.x, 2.0);
-        assert_eq!(history.redo(&mut scene), None);
+        assert_eq!(
+            history.redo(&mut scene, &mut PlayerSettings::default()),
+            None
+        );
     }
 
     #[test]
@@ -182,10 +209,10 @@ mod tests {
         let saved = history.state();
         moved(&mut scene, &mut history, 2.0);
         assert_ne!(history.state(), saved);
-        history.undo(&mut scene);
+        history.undo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(history.state(), saved);
         // Undo past the save and make a different edit: not the saved state.
-        history.undo(&mut scene);
+        history.undo(&mut scene, &mut PlayerSettings::default());
         moved(&mut scene, &mut history, 3.0);
         assert_ne!(history.state(), saved);
     }
@@ -195,7 +222,7 @@ mod tests {
         let mut scene = test_scene(vec![(Shape::Box { size: Vec3::ONE }, Vec3::ZERO)]);
         let mut history = History::default();
         moved(&mut scene, &mut history, 1.0);
-        history.undo(&mut scene);
+        history.undo(&mut scene, &mut PlayerSettings::default());
         moved(&mut scene, &mut history, 5.0);
         assert_eq!(history.redo_len(), 0);
         assert_eq!(history.undo_len(), 1);
@@ -234,12 +261,41 @@ mod tests {
         assert_eq!(change, Change::Removed(3));
         assert_eq!(scene.objects.len(), 3);
 
-        assert_eq!(history.undo(&mut scene), Some(Change::Added(3)));
-        assert_eq!(history.undo(&mut scene), Some(Change::Removed(1)));
+        assert_eq!(
+            history.undo(&mut scene, &mut PlayerSettings::default()),
+            Some(Change::Added(3))
+        );
+        assert_eq!(
+            history.undo(&mut scene, &mut PlayerSettings::default()),
+            Some(Change::Removed(1))
+        );
         assert_eq!(scene, original);
-        assert_eq!(history.redo(&mut scene), Some(Change::Added(1)));
-        assert_eq!(history.redo(&mut scene), Some(Change::Removed(3)));
+        assert_eq!(
+            history.redo(&mut scene, &mut PlayerSettings::default()),
+            Some(Change::Added(1))
+        );
+        assert_eq!(
+            history.redo(&mut scene, &mut PlayerSettings::default()),
+            Some(Change::Removed(3))
+        );
         assert_eq!(scene.objects.len(), 3);
         assert_eq!(scene.objects[1].name, "copy");
+    }
+
+    #[test]
+    fn player_edits_undo_and_redo() {
+        let mut scene = test_scene(vec![(Shape::Box { size: Vec3::ONE }, Vec3::ZERO)]);
+        let mut player = PlayerSettings::default();
+        let mut history = History::default();
+        let before = player.clone();
+        player.movement.walk_speed = 9.0;
+        history.record(Edit::SetPlayer {
+            before: Box::new(before),
+            after: Box::new(player.clone()),
+        });
+        assert_eq!(history.undo(&mut scene, &mut player), Some(Change::Player));
+        assert_eq!(player, PlayerSettings::default());
+        history.redo(&mut scene, &mut player);
+        assert_eq!(player.movement.walk_speed, 9.0);
     }
 }

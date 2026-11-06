@@ -48,7 +48,7 @@ pub fn load_wav(path: &Path, rate: u32) -> Result<Clip, ClipError> {
 }
 
 /// Linear-interpolation resampling; good enough for game sounds.
-fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
+pub fn resample(samples: &[f32], from: u32, to: u32) -> Vec<f32> {
     if from == to {
         return samples.to_vec();
     }

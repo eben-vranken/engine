@@ -1,5 +1,6 @@
 //! In-game tuning panel (F1): every player property, editable live.
-//! Hand-written for now; the reflected inspector replaces it in the editor.
+//! Hand-written, with ranges and units; the editor shows the same rows
+//! under Player Start.
 
 use super::settings::PlayerSettings;
 use crate::ui::theme;
@@ -54,7 +55,9 @@ pub fn panel(
     action
 }
 
-fn sections(ui: &mut Ui, s: &mut PlayerSettings) {
+/// Movement, jump, body and camera rows (also shown in the editor's
+/// inspector under Player Start).
+pub fn sections(ui: &mut Ui, s: &mut PlayerSettings) {
     section(ui, "MOVEMENT", |ui| {
         let m = &mut s.movement;
         row(ui, "WALK SPEED", &mut m.walk_speed, 0.0..=30.0, "M/S");
