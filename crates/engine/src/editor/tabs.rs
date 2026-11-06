@@ -293,10 +293,6 @@ impl Editor {
                         }
                     }
                     ui.separator();
-                    if ui.button("NEW MODEL").clicked() {
-                        self.ask_name(super::new_scene::Naming::Model);
-                        ui.close();
-                    }
                     for path in super::model_files(&self.project_dir) {
                         let open = self.tab_of(&path);
                         let mut text = path.display().to_string().to_uppercase();
@@ -313,7 +309,7 @@ impl Editor {
                     }
                 })
                 .response
-                .on_hover_text("OPEN ANOTHER SCENE IN A NEW TAB");
+                .on_hover_text("OPEN A SCENE OR MODEL IN A NEW TAB");
             });
         });
     }

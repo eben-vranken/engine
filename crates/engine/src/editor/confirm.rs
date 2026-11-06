@@ -4,12 +4,10 @@ use super::{Editor, EditorOutput, dim};
 use crate::player::settings::PlayerSettings;
 use crate::scene::Scene;
 use egui::{RichText, Ui};
-use std::path::PathBuf;
 
 /// What to do once unsaved changes are dealt with.
 #[derive(Debug, Clone)]
 pub(super) enum Confirm {
-    Open(PathBuf),
     /// Close this tab.
     CloseTab(usize),
     /// Close the editor (every tab).
@@ -25,15 +23,6 @@ impl Editor {
             false
         } else {
             true
-        }
-    }
-    pub(super) fn open_scene(&mut self, path: PathBuf, output: &mut EditorOutput) {
-        if let Some(index) = self.tab_of(&path) {
-            output.switch_tab = Some(index); // already open in another tab
-        } else if self.is_dirty() {
-            self.confirm = Some(Confirm::Open(path));
-        } else {
-            output.open = Some(path);
         }
     }
 
@@ -52,7 +41,6 @@ impl Editor {
         egui::Modal::new(egui::Id::unique("unsaved_changes")).show(ui.ctx(), |ui| {
             ui.label(RichText::new("UNSAVED CHANGES").strong());
             let names = match &confirm {
-                Confirm::Open(_) => self.scene_path.display().to_string().to_uppercase(),
                 Confirm::CloseTab(index) => self.tab_label(*index),
                 Confirm::Close => self.dirty_paths().join(", "),
             };
@@ -77,20 +65,16 @@ impl Editor {
         self.confirm = None;
         if save {
             let saved = match &confirm {
-                Confirm::Open(_) => {
-                    self.save_tab(self.active_tab, scene, player, &mut output.settled)
-                }
                 Confirm::CloseTab(index) => {
                     self.save_tab(*index, scene, player, &mut output.settled)
                 }
                 Confirm::Close => self.save_all(scene, player, &mut output.settled),
             };
             if !saved {
-                return; // saving failed; the error is in the top bar
+                return; // saving failed; the error is in the status bar
             }
         }
         match confirm {
-            Confirm::Open(path) => output.open = Some(path),
             Confirm::CloseTab(index) => output.close_tab = Some(index),
             Confirm::Close => output.exit = true,
         }

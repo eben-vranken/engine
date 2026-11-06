@@ -14,6 +14,7 @@ pub mod history;
 pub mod import;
 pub mod inspector;
 pub mod markers;
+mod menu_bar;
 mod model_tab;
 mod model_tools;
 mod new_scene;
@@ -21,8 +22,8 @@ mod object_panel;
 mod objects;
 mod player_panel;
 mod settings_panel;
+mod status_bar;
 mod tabs;
-mod top_bar;
 mod widgets;
 
 use crate::player::settings::PlayerSettings;
@@ -38,7 +39,6 @@ pub use model_tab::{ModelDoc, stage};
 pub use objects::{NEW_OBJECT_DISTANCE, placement};
 pub use settings_panel::SettingsTarget;
 use std::path::PathBuf;
-use top_bar::{hint_line, hints};
 use widgets::{dim, section};
 
 pub struct Editor {
@@ -53,7 +53,7 @@ pub struct Editor {
     project_dir: PathBuf,
     /// History state at the last save (or load).
     saved_state: Option<u64>,
-    /// Last save/load result for the top bar; true = error.
+    /// The last message for the status bar; true = error.
     message: Option<(String, bool)>,
     /// Waiting for the user to decide about unsaved changes.
     confirm: Option<Confirm>,
@@ -65,6 +65,10 @@ pub struct Editor {
     pub show_inspector: bool,
     /// Zone volume and portal markers in the viewport (H).
     pub show_zones: bool,
+    /// The key hints over the viewport.
+    show_hints: bool,
+    /// The frame stats in the status bar.
+    show_stats: bool,
     /// Settings shown in the inspector instead of an object.
     pub settings: Option<SettingsTarget>,
     /// A zone or environment edit in progress: the scene before it.
@@ -79,9 +83,9 @@ pub struct Editor {
     renaming: Option<(String, String)>,
     /// Text typed in the hierarchy's search bar.
     search: String,
-    /// The reverb bake's state for the top bar (set by the runtime).
+    /// The reverb bake's state for the BAKE menu (set by the runtime).
     pub bake_status: String,
-    /// The light bake's state for the top bar (set by the runtime).
+    /// The light bake's state for the BAKE menu (set by the runtime).
     pub light_status: String,
     /// Where the loaded bake's probes are (set by the runtime).
     pub probes: Vec<Vec3>,
@@ -95,7 +99,7 @@ pub struct Editor {
     pub model: Option<ModelDoc>,
 }
 
-/// Numbers for the top bar.
+/// Numbers for the status bar.
 pub struct EditorStats {
     pub fps: f32,
     pub frame_ms: f32,
@@ -122,8 +126,6 @@ pub struct EditorOutput {
     /// The pointer is on a gizmo handle or a marker, so a click there isn't
     /// a viewport pick.
     pub gizmo_hovered: bool,
-    /// Load this scene (relative to the project folder).
-    pub open: Option<PathBuf>,
     /// The user confirmed closing the editor.
     pub exit: bool,
     /// The Play/Stop button was clicked.
@@ -160,6 +162,8 @@ impl Editor {
             show_scene: true,
             show_inspector: true,
             show_zones: true,
+            show_hints: true,
+            show_stats: true,
             settings: None,
             zone_pending: None,
             player_pending: None,
@@ -193,7 +197,6 @@ impl Editor {
             changed: Vec::new(),
             settled: false,
             gizmo_hovered: false,
-            open: None,
             exit: false,
             toggle_play: false,
             bake: false,
@@ -204,8 +207,12 @@ impl Editor {
             close_tab: None,
             open_model: None,
         };
+        egui::Panel::top("editor_menu").show(ui, |ui| {
+            self.menu_bar(ui, scene, player, blink, view, &mut output)
+        });
+        egui::Panel::bottom("editor_status").show(ui, |ui| self.status_bar(ui, stats));
         if self.model.is_some() {
-            self.model_ui(ui, scene, player, blink, view, &mut output);
+            self.model_ui(ui, scene, player, view, &mut output);
             return output;
         }
         // H: zone markers (not while typing in a field). Tab and Shift+Tab
@@ -217,9 +224,6 @@ impl Editor {
                 }
             });
         }
-        egui::Panel::top("editor_top").show(ui, |ui| {
-            self.top_bar(ui, scene, player, stats, blink, view, &mut output)
-        });
         if self.show_scene {
             egui::Panel::left("editor_scene")
                 .resizable(true)
@@ -288,7 +292,7 @@ impl Editor {
         self.name_dialog(ui, scene, player, &mut output);
 
         output.viewport = ui.available_rect_before_wrap();
-        hints(ui, output.viewport, self.playing);
+        self.hints(ui, output.viewport);
         output
     }
 

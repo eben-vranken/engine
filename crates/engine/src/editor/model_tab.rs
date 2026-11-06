@@ -12,7 +12,7 @@ use crate::modeler::mesh::{Edge, EditMesh, edge};
 use crate::render::mesh::Shape;
 use crate::scene::{Component, Model, Object, Primitive, Scene, Transform, Zone};
 use crate::ui::theme;
-use egui::{Color32, Pos2, RichText, Stroke, Ui};
+use egui::{Color32, Pos2, Stroke, Ui};
 use glam::{Vec2, Vec3};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -455,7 +455,6 @@ impl Editor {
         ui: &mut Ui,
         scene: &Scene,
         player: &crate::player::settings::PlayerSettings,
-        blink: bool,
         view: &View,
         output: &mut EditorOutput,
     ) {
@@ -492,9 +491,6 @@ impl Editor {
             });
         }
 
-        egui::Panel::top("editor_top").show(ui, |ui| {
-            ui.horizontal(|ui| self.model_top_bar(ui, scene, player, blink, output));
-        });
         if self.show_scene {
             egui::Panel::left("editor_scene")
                 .resizable(true)
@@ -602,46 +598,7 @@ impl Editor {
         self.confirm_dialog(ui, scene, player, output);
         self.name_dialog(ui, scene, player, output);
         output.viewport = viewport;
-        super::hint_line(
-            ui,
-            viewport,
-            "CLICK/DRAG SELECT  SHIFT ADD  1/2/3 VERTEX/EDGE/FACE  A ALL  W/E/R GIZMO  CTRL SNAP  CTRL+E EXTRUDE  I INSET  CTRL+R LOOP CUT  M MERGE  X DELETE  RMB+WASD FLY  CTRL+Z/Y UNDO  CTRL+S SAVE  TAB/SHIFT+TAB PANELS",
-        );
-    }
-
-    fn model_top_bar(
-        &mut self,
-        ui: &mut Ui,
-        scene: &Scene,
-        player: &crate::player::settings::PlayerSettings,
-        blink: bool,
-        output: &mut EditorOutput,
-    ) {
-        if ui
-            .small_button(if self.show_scene { "[≡]" } else { " ≡ " })
-            .on_hover_text("SHOW / HIDE THE MODEL PANEL")
-            .clicked()
-        {
-            self.show_scene = !self.show_scene;
-        }
-        let cursor = if blink { "_" } else { " " };
-        ui.label(RichText::new(format!("ENGINE // MODELER{cursor}")).strong());
-        ui.add_space(12.0);
-        ui.label(self.scene_path.display().to_string().to_uppercase());
-        if self.is_dirty() {
-            ui.label(RichText::new("[MODIFIED]").color(theme::AMBER));
-        }
-        if ui.small_button("SAVE").clicked() {
-            output.settled |= self.save(scene, player);
-        }
-        if let Some((text, error)) = &self.message {
-            let color = if *error {
-                theme::ALERT
-            } else {
-                theme::AMBER_DIM
-            };
-            ui.label(RichText::new(text.to_uppercase()).small().color(color));
-        }
+        self.hints(ui, viewport);
     }
 
     /// The left panel: what's selected and how to select.

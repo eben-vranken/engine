@@ -27,24 +27,6 @@ impl Running {
             }
         }
     }
-    /// Editor: replace the scene with another file from the project.
-    pub(super) fn open_scene(&mut self, path: PathBuf) {
-        let Some(editor) = &mut self.editor else {
-            return;
-        };
-        match Scene::load(&self.game_dir.join(&path)) {
-            Ok(scene) => {
-                self.scene = scene;
-                editor.scene_loaded(path);
-                self.scene_swapped();
-            }
-            Err(err) => {
-                log::error!("{err}");
-                editor.show_error(err.to_string());
-            }
-        }
-    }
-
     /// Editor: opens a scene from the project in a new tab.
     pub(super) fn open_tab(&mut self, path: PathBuf) {
         let Some(editor) = &mut self.editor else {

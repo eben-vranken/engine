@@ -645,9 +645,6 @@ impl Running {
             if output.exit {
                 self.exit_requested = true;
             }
-            if let Some(path) = &output.open {
-                self.open_scene(path.clone());
-            }
             if output.bake {
                 self.start_bake();
             }

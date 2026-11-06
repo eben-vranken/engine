@@ -30,20 +30,6 @@ impl Editor {
             return;
         };
 
-        let mut structural = None;
-        ui.horizontal(|ui| {
-            if ui.small_button("DUPLICATE CTRL+D").clicked() {
-                structural = self.duplicate_selected(scene);
-            }
-            if ui.small_button("DELETE DEL").clicked() {
-                structural = self.delete_selected(scene);
-            }
-        });
-        if let Some(change) = structural {
-            output.changed.push(change);
-            output.settled = true;
-            return;
-        }
         ui.add_space(4.0);
 
         // For reference pickers.
