@@ -28,13 +28,33 @@ impl Editor {
                 }
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("SEARCH NAME, ZONE OR COMPONENT")
+                        .hint_text("NAME, ZONE OR COMPONENT; MODEL > PART")
                         .desired_width(ui.available_width().max(0.0)),
                 );
             });
         });
-        let query = self.search.trim().to_lowercase();
+        let query = Query::parse(&self.search);
         let searching = !query.is_empty();
+        // MODEL > PART: every matching part, to pick in one go.
+        let found = if query.part.is_some() {
+            search_parts(scene, &self.model_parts, &query)
+        } else {
+            Vec::new()
+        };
+        if !found.is_empty() {
+            let text = format!("SELECT ALL {}", found.len());
+            if ui
+                .small_button(text)
+                .on_hover_text("SELECT EVERY PART FOUND, TO EDIT THEM TOGETHER")
+                .clicked()
+            {
+                let settled = self.select(scene, Some(found[0].object));
+                output.settled |= settled;
+                self.selected_part = found[0].part.clone();
+                self.also = found[1..].to_vec();
+            }
+        }
+        let mut shown_any = false;
         ui.add_space(4.0);
         let mut clicked = None;
         let mut zone_clicked = None;
@@ -57,19 +77,23 @@ impl Editor {
                         .filter(|(_, o)| o.zone == zone.name)
                         .collect();
                     // A zone whose name matches shows all its objects.
-                    let zone_matches = zone.name.to_lowercase().contains(&query);
+                    let zone_matches =
+                        query.part.is_none() && zone.name.to_lowercase().contains(&query.object);
                     let total = members.len();
                     let members: Vec<(usize, &Object)> = if zone_matches {
                         members
                     } else {
                         members
                             .into_iter()
-                            .filter(|(_, o)| matches_search(o, &query))
+                            .filter(|(_, o)| {
+                                query.shows(o, &zone.name, &model_parts(o, &self.model_parts))
+                            })
                             .collect()
                     };
                     if searching && members.is_empty() && !zone_matches {
                         continue;
                     }
+                    shown_any = true;
                     let shown = if members.len() == total {
                         total.to_string()
                     } else {
@@ -104,7 +128,7 @@ impl Editor {
                                 let selected = self.selected == Some(index);
                                 let parts = model_parts(object, &self.model_parts);
                                 let whole = self.is_picked(index, None);
-                                if parts.len() < 2 {
+                                if parts.len() < 2 && query.part.is_none() {
                                     let response =
                                         ui.selectable_label(whole, picked(&object.name, whole));
                                     if response.clicked() {
@@ -123,11 +147,13 @@ impl Editor {
                                         id,
                                         false,
                                     );
-                                if (reveal || selected)
-                                    && self.picks().iter().any(|p| p.object == index && p.part.is_some())
-                                {
+                                let part_picked =
+                                    self.picks().iter().any(|p| p.object == index && p.part.is_some());
+                                if ((reveal || selected) && part_picked) || query.part.is_some() {
                                     state.set_open(true);
                                 }
+                                let parts: Vec<String> =
+                                    parts.into_iter().filter(|p| query.part_matches(p)).collect();
                                 let header = state.show_header(ui, |ui| {
                                     let response =
                                         ui.selectable_label(whole, picked(&object.name, whole));
@@ -176,15 +202,7 @@ impl Editor {
                         }
                     });
                 }
-                if searching
-                    && !scene.zones.iter().any(|z| {
-                        z.name.to_lowercase().contains(&query)
-                            || scene
-                                .objects
-                                .iter()
-                                .any(|o| o.zone == z.name && matches_search(o, &query))
-                    })
-                {
+                if searching && !shown_any {
                     ui.label(dim("NOTHING MATCHES"));
                 }
             });
@@ -438,6 +456,77 @@ fn has_own_settings(object: &Object, part: &str) -> bool {
     })
 }
 
+/// What's typed in the search bar. `candle > sphere` finds the parts
+/// named like `sphere` in every object named like `candle` (`candle 3`
+/// too); without `>` it finds objects (and zones) only.
+#[derive(Debug, Default)]
+struct Query {
+    /// Lowercase; empty = any object.
+    object: String,
+    /// Lowercase, after `>`.
+    part: Option<String>,
+}
+
+impl Query {
+    fn parse(text: &str) -> Self {
+        let text = text.trim().to_lowercase();
+        match text.split_once('>') {
+            Some((object, part)) => Query {
+                object: object.trim().to_owned(),
+                part: Some(part.trim().to_owned()),
+            },
+            None => Query {
+                object: text,
+                part: None,
+            },
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.object.is_empty() && self.part.is_none()
+    }
+
+    fn part_matches(&self, part: &str) -> bool {
+        self.part
+            .as_deref()
+            .is_none_or(|query| part.to_lowercase().contains(query))
+    }
+
+    /// Whether an object (in `zone`, made of `parts`) shows in the list.
+    fn shows(&self, object: &Object, zone: &str, parts: &[String]) -> bool {
+        if self.part.is_none() {
+            return matches_search(object, &self.object);
+        }
+        let object_matches = self.object.is_empty()
+            || matches_search(object, &self.object)
+            || zone.to_lowercase().contains(&self.object);
+        object_matches && parts.iter().any(|p| self.part_matches(p))
+    }
+}
+
+/// Every part a `model > part` search finds, in list order.
+fn search_parts(scene: &Scene, parts: &super::ModelParts, query: &Query) -> Vec<super::Pick> {
+    let mut found = Vec::new();
+    for zone in &scene.zones {
+        for (index, object) in scene.objects.iter().enumerate() {
+            if object.zone != zone.name {
+                continue;
+            }
+            let names = model_parts(object, parts);
+            if !query.shows(object, &zone.name, &names) {
+                continue;
+            }
+            for name in names.into_iter().filter(|p| query.part_matches(p)) {
+                found.push(super::Pick {
+                    object: index,
+                    part: Some(name),
+                });
+            }
+        }
+    }
+    found
+}
+
 /// Whether an object's name or one of its components (e.g. "light",
 /// "door") contains `query` (lowercase), ignoring case.
 pub(super) fn matches_search(object: &Object, query: &str) -> bool {
@@ -474,6 +563,57 @@ mod tests {
     use crate::editor::testing::*;
     use crate::player::settings::PlayerSettings;
     use crate::scene::Portal;
+
+    #[test]
+    fn model_greater_than_part_finds_that_part_in_every_matching_model() {
+        let mut scene = boxes(0);
+        let candle = |name: &str, path: &str| crate::scene::Object {
+            name: name.into(),
+            zone: "test".into(),
+            transform: Default::default(),
+            components: vec![Component::Model(crate::scene::Model {
+                path: path.into(),
+                color: glam::Vec3::ONE,
+                emissive: glam::Vec3::ZERO,
+                collision: true,
+                parts: Vec::new(),
+            })],
+        };
+        scene.objects = vec![
+            candle("candle", "models/candle.glb"),
+            candle("Candle 3", "models/candle.glb"),
+            candle("lantern", "models/lantern.glb"),
+        ];
+        let mut parts = crate::editor::ModelParts::new();
+        let names = |list: &[&str]| {
+            list.iter()
+                .map(|n| (n.to_string(), glam::Vec3::ZERO))
+                .collect()
+        };
+        parts.insert("models/candle.glb".into(), names(&["body", "sphere"]));
+        parts.insert("models/lantern.glb".into(), names(&["frame", "sphere"]));
+
+        let found = search_parts(&scene, &parts, &Query::parse("  CANDLE >sphere "));
+        let found: Vec<_> = found
+            .iter()
+            .map(|p| (p.object, p.part.clone().unwrap()))
+            .collect();
+        assert_eq!(
+            found,
+            [(0, "sphere".to_string()), (1, "sphere".to_string())]
+        );
+
+        // No object query: that part in every model.
+        assert_eq!(
+            search_parts(&scene, &parts, &Query::parse("> sph")).len(),
+            3
+        );
+        assert!(search_parts(&scene, &parts, &Query::parse("candle > wick")).is_empty());
+        // Without `>`, objects only.
+        let q = Query::parse("candle");
+        assert!(q.part.is_none() && q.shows(&scene.objects[1], "test", &[]));
+        assert!(!q.shows(&scene.objects[2], "test", &[]));
+    }
 
     #[test]
     fn search_matches_names_and_components_ignoring_case() {
