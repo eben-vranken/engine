@@ -205,13 +205,13 @@ Models made of named parts (a candle's stick, wax and flame), each of which a sc
 
 **Acceptance:** the user builds a candle (stick, wax, flame) as one model, places it in the hall, makes only the flame glow and gives it a flickering light, walks through the flame but not the stick, and bakes lighting.
 
-## 10.6 Multi-select ← current
+## 10.6 Multi-select
 Select several things at once and edit them together.
 
-- [ ] Shift-click in the scene panel adds or removes an object or a model part; shift-click in the viewport adds or removes an object; every selected object is highlighted
-- [ ] The inspector shows the last one picked; a change to it is copied to every other selected object (or part), only the field that changed, as one undo step; adding or removing a component, or giving parts their own settings, applies to all
-- [ ] The gizmo moves, turns and scales all selected objects together; EDIT ▸ DUPLICATE and DELETE act on all of them
-- [ ] Search `model > part` (e.g. `candle > sphere`) lists only that part of every matching model (`candle 3` too), opened; SELECT ALL picks every part found
+- [x] Shift-click in the scene panel adds or removes an object or a model part; shift-click in the viewport adds or removes an object; every selected object is highlighted
+- [x] The inspector shows the last one picked; a change to it is copied to every other selected object (or part), only the field that changed, as one undo step; adding or removing a component, or giving parts their own settings, applies to all
+- [x] The gizmo moves, turns and scales all selected objects together; EDIT ▸ DUPLICATE and DELETE act on all of them
+- [x] Search `model > part` (e.g. `candle > sphere`) lists only that part of every matching model (`candle 3` too), opened; SELECT ALL picks every part found
 
 **Acceptance:** the user opens several candles in the scene panel, shift-clicks every flame, gives them all a glow and a flickering light in one go, moves three candles together with the gizmo, and undoes each step.
 
