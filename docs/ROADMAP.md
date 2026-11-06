@@ -164,19 +164,19 @@ Make scenes from the editor instead of writing RON files by hand.
 
 **Acceptance:** the user makes a new scene from the editor, builds in it, saves it, closes the editor, and finds it again in the scene picker and `+` menu next time.
 
-## 10.3.1 Editor cleanup ← current
+## 10.3.1 Editor cleanup
 The editor grew one feature at a time. Give it a proper menu bar, native file dialogs, new/open project, collapsible panels and a tidier codebase. No new features beyond this list.
 
-- [ ] Code split: `editor/mod.rs` and `runtime.rs` broken into modules named after what they do, with no behavior change
-- [ ] A menu bar (PROJECT, EDIT, ADD, BAKE, VIEW) with shortcuts shown next to items; every existing action reachable, nothing duplicated without reason
-- [ ] A slim toolbar row with only the constant controls: Play/Stop, W/E/R gizmo modes and snap hint
-- [ ] A status bar along the bottom: save/open/error messages and bake notes on the left, FPS, GPU, internal resolution and zone stats on the right; nothing dropped at 1600×900
-- [ ] Model tabs use the same menu bar, with scene-only actions (Play, bakes, ADD) hidden or disabled
-- [ ] Each side panel (and the modeler's left panel) collapses from a button in its own header to a thin strip with an expand button; Tab / Shift+Tab still work
-- [ ] Native file dialogs (rfd) that don't freeze the render loop, for opening projects and packages, exporting packages and SAVE SCENE AS
-- [ ] NEW PROJECT creates a content-only game folder (`game.ron`, `scenes/main.ron`, empty `models/`, `textures/`, `audio/`) and opens it; OPEN PROJECT refuses folders without `game.ron`
-- [ ] NEW PROJECT, OPEN PROJECT and OPEN PACKAGE ask about unsaved changes in every open tab first
-- [ ] Duplicated helpers merged, dead code and stale comments removed; consistent spacing, button sizes, headers, wording and hints across panels
+- [x] Code split: `editor/mod.rs` and `runtime.rs` broken into modules named after what they do, with no behavior change
+- [x] A menu bar (PROJECT, EDIT, ADD, BAKE, VIEW) with shortcuts shown next to items; every existing action reachable, nothing duplicated without reason
+- [x] A slim toolbar row with only the constant controls: Play/Stop, W/E/R gizmo modes and snap hint
+- [x] A status bar along the bottom: save/open/error messages and bake notes on the left, FPS, GPU, internal resolution and zone stats on the right; nothing dropped at 1600×900
+- [x] Model tabs use the same menu bar, with scene-only actions (Play, bakes, ADD) hidden or disabled
+- [x] Each side panel (and the modeler's left panel) collapses from a button in its own header to a thin strip with an expand button; Tab / Shift+Tab still work
+- [x] Native file dialogs (rfd) that don't freeze the render loop, for opening projects and packages, exporting packages and SAVE SCENE AS
+- [x] NEW PROJECT creates a content-only game folder (`game.ron`, `scenes/main.ron`, empty `models/`, `textures/`, `audio/`) and opens it; OPEN PROJECT refuses folders without `game.ron`
+- [x] NEW PROJECT, OPEN PROJECT and OPEN PACKAGE ask about unsaved changes in every open tab first
+- [x] Duplicated helpers merged, dead code and stale comments removed; consistent spacing, button sizes, headers, wording and hints across panels
 
 **Acceptance:** at 1600×900 the user finds every action in the menus with its shortcut, sees messages and stats in the status bar without anything cut off, collapses and restores each panel with the mouse, creates a new project from the editor, opens another one and a package through the system file picker (on Windows and on the laptop), and notices no regressions in scene or model tabs.
 
@@ -197,11 +197,11 @@ A small, simplified modeler inside the editor for very low-poly, PS1-style model
 ## 10.5 Model parts
 Models made of named parts (a candle's stick, wax and flame), each of which a scene can give its own look and light.
 
-- [ ] Modeler: a model has parts; + PART adds a box, plane, cylinder or sphere as a new part on top of the model; parts can be picked (selects their faces), renamed and deleted, and faces moved to another part; tools keep new faces in their part
-- [ ] Saved `.glb`s have one named node per part; any glTF's node (or mesh) names become its parts when loaded
-- [ ] Scene panel: a model with several parts opens to list them; picking one shows the part's settings in the inspector
-- [ ] A part can have its own color, emissive, collision and a light at its center; the rest of the model keeps the model's settings
-- [ ] Rendering, collision, light bakes and acoustics follow the part settings; scenes without part settings are unchanged
+- [x] Modeler: a model has parts; + PART adds a box, plane, cylinder or sphere as a new part on top of the model; parts can be picked (selects their faces), renamed and deleted, and faces moved to another part; tools keep new faces in their part
+- [x] Saved `.glb`s have one named node per part; any glTF's node (or mesh) names become its parts when loaded
+- [x] Scene panel: a model with several parts opens to list them; picking one shows the part's settings in the inspector
+- [x] A part can have its own color, emissive, collision and a light at its center; the rest of the model keeps the model's settings
+- [x] Rendering, collision, light bakes and acoustics follow the part settings; scenes without part settings are unchanged
 
 **Acceptance:** the user builds a candle (stick, wax, flame) as one model, places it in the hall, makes only the flame glow and gives it a flickering light, walks through the flame but not the stick, and bakes lighting.
 
