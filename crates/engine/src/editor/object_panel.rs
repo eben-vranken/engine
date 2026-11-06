@@ -3,13 +3,14 @@
 
 use super::history::Change;
 use super::player_panel::player_inspector;
+use super::selection::own_settings;
 use super::settings_panel::own_toggle;
 use super::{Editor, EditorOutput, dim, inspector, section};
 use crate::player::settings::PlayerSettings;
 use crate::render::mesh::Shape;
 use crate::scene::{
-    AcousticMaterial, Component, Door, Floating, FogVolume, LightSource, Material, ModelPart,
-    Object, PhysicsBody, Portal, Scene, SoundSource, Switch, ZoneVolume,
+    AcousticMaterial, Component, Door, Floating, FogVolume, LightSource, Material, Object,
+    PhysicsBody, Portal, Scene, SoundSource, Switch, ZoneVolume,
 };
 use egui::{Align, Layout, RichText, Ui};
 
@@ -40,13 +41,29 @@ impl Editor {
         let zones = &scene.zones;
         let object = &mut scene.objects[index];
         let before = object.clone();
+        let several = self.edits_several();
+        if several {
+            ui.label(dim(&format!(
+                "{} SELECTED: CHANGES GO TO EVERY SELECTED {}",
+                self.picks().len(),
+                if self.selected_part.is_some() {
+                    "PART"
+                } else {
+                    "OBJECT"
+                }
+            )));
+        }
         if let Some(part) = self.selected_part.clone() {
             if part_inspector(ui, object, &part, &names) {
                 self.selected_part = None;
             }
             if *object != before {
-                self.begin_edit(index, &before);
-                output.changed.push(Change::Modified(index));
+                if several {
+                    self.spread_part_edit(scene, index, &before, output);
+                } else {
+                    self.begin_edit(index, &before);
+                    output.changed.push(Change::Modified(index));
+                }
             }
             return;
         }
@@ -114,8 +131,12 @@ impl Editor {
             });
 
         if *object != before {
-            self.begin_edit(index, &before);
-            output.changed.push(Change::Modified(index));
+            if several {
+                self.spread_object_edit(scene, index, &before, output);
+            } else {
+                self.begin_edit(index, &before);
+                output.changed.push(Change::Modified(index));
+            }
         }
         if *player != player_before {
             self.begin_player_edit(player_before, player);
@@ -218,13 +239,7 @@ fn part_inspector(ui: &mut Ui, object: &mut Object, part: &str, names: &inspecto
             let Some(own) = own else {
                 ui.label(dim("USES THE MODEL'S COLOR, GLOW AND COLLISION"));
                 if ui.small_button("GIVE IT ITS OWN").clicked() {
-                    model.parts.push(ModelPart {
-                        name: part.to_owned(),
-                        color: model.color,
-                        emissive: model.emissive,
-                        collision: model.collision,
-                        light: None,
-                    });
+                    own_settings(model, part);
                 }
                 return;
             };

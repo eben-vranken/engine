@@ -6,7 +6,7 @@
 use crate::scene::{ObjectRef, ZoneRef};
 use crate::ui::theme;
 use bevy_reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo};
-use bevy_reflect::{PartialReflect, ReflectMut, TypeInfo};
+use bevy_reflect::{PartialReflect, ReflectMut, ReflectRef, TypeInfo};
 use egui::{DragValue, Ui};
 use glam::{Vec2, Vec3};
 
@@ -63,10 +63,56 @@ pub fn fields_except(
     changed
 }
 
+/// Copies what changed from `before` to `after` into `target`, field by
+/// field, leaving `target`'s other fields as they are (editing several
+/// objects at once). Nested structs and enums of the same variant are
+/// compared inside; anything else that changed is copied whole.
+pub fn copy_changes(
+    before: &dyn PartialReflect,
+    after: &dyn PartialReflect,
+    target: &mut dyn PartialReflect,
+) {
+    if before.reflect_partial_eq(after) == Some(true) {
+        return;
+    }
+    match (
+        before.reflect_ref(),
+        after.reflect_ref(),
+        target.reflect_mut(),
+    ) {
+        (ReflectRef::Struct(b), ReflectRef::Struct(a), ReflectMut::Struct(t)) => {
+            for i in 0..a.field_len() {
+                let Some(name) = a.name_at(i) else { continue };
+                if let (Some(bf), Some(af), Some(tf)) =
+                    (b.field(name), a.field_at(i), t.field_mut(name))
+                {
+                    copy_changes(bf, af, tf);
+                }
+            }
+        }
+        (ReflectRef::Enum(b), ReflectRef::Enum(a), ReflectMut::Enum(t))
+            if b.variant_name() == a.variant_name() && t.variant_name() == a.variant_name() =>
+        {
+            for i in 0..a.field_len() {
+                if let (Some(bf), Some(af), Some(tf)) =
+                    (b.field_at(i), a.field_at(i), t.field_at_mut(i))
+                {
+                    copy_changes(bf, af, tf);
+                }
+            }
+        }
+        _ => {
+            if let Err(err) = target.try_apply(after) {
+                log::warn!("couldn't copy a change: {err}");
+            }
+        }
+    }
+}
+
 /// The section title for a value: an enum shows its variant name.
 pub fn title(value: &dyn PartialReflect) -> String {
     match value.reflect_ref() {
-        bevy_reflect::ReflectRef::Enum(e) => label_text(e.variant_name()),
+        ReflectRef::Enum(e) => label_text(e.variant_name()),
         _ => value
             .get_represented_type_info()
             .map(|info| label_text(info.type_path_table().ident().unwrap_or("?")))
@@ -324,6 +370,40 @@ fn drag_speed(name: &str) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn copy_changes_copies_only_what_changed() {
+        use crate::scene::{LightSource, ModelPart};
+        let before = ModelPart::default();
+        let mut after = before.clone();
+        after.emissive.y = 2.0;
+        after.light = Some(LightSource::default());
+        let mut target = ModelPart {
+            name: "flame".into(),
+            color: glam::Vec3::new(0.1, 0.2, 0.3),
+            emissive: glam::Vec3::new(5.0, 0.0, 7.0),
+            ..Default::default()
+        };
+        super::copy_changes(&before, &after, &mut target);
+        assert_eq!(target.name, "flame");
+        assert_eq!(target.color, glam::Vec3::new(0.1, 0.2, 0.3));
+        assert_eq!(
+            target.emissive,
+            glam::Vec3::new(5.0, 2.0, 7.0),
+            "only y changed"
+        );
+        assert_eq!(target.light, Some(LightSource::default()));
+
+        // Inside Some(light): only the flicker.
+        let before = target.clone();
+        let mut after = target.clone();
+        after.light.as_mut().unwrap().flicker = 0.8;
+        let mut other = target.clone();
+        other.light.as_mut().unwrap().range = 2.0;
+        super::copy_changes(&before, &after, &mut other);
+        let light = other.light.unwrap();
+        assert_eq!((light.flicker, light.range), (0.8, 2.0));
+    }
+
     use super::*;
     use crate::render::mesh::Shape;
     use crate::scene::AcousticPreset;

@@ -136,8 +136,8 @@ struct Running {
     scene: Scene,
     /// Present when running the editor.
     editor: Option<Editor>,
-    /// Object currently highlighted in the viewport.
-    highlighted: Option<usize>,
+    /// Objects currently highlighted in the viewport.
+    highlighted: Vec<usize>,
     /// Mouse position in window pixels.
     cursor: Vec2,
     /// Where the scene is drawn, in window pixels (the editor's viewport).
@@ -394,7 +394,7 @@ impl Running {
             perf_log: config.perf_log.then(Instant::now),
             scene: config.scene.clone(),
             editor,
-            highlighted: None,
+            highlighted: Vec::new(),
             cursor: Vec2::ZERO,
             viewport: None,
             pending_pick: None,
@@ -633,7 +633,17 @@ impl Running {
                     .physics
                     .pick(origin, direction, camera.far)
                     .map(|(object, _)| object);
-                if editor.select(&self.scene, hit) {
+                let shift =
+                    self.input.held(KeyCode::ShiftLeft) || self.input.held(KeyCode::ShiftRight);
+                let settled = match hit {
+                    // Shift-click adds or removes an object.
+                    Some(object) if shift => {
+                        editor.toggle_pick(&self.scene, crate::editor::Pick { object, part: None })
+                    }
+                    _ if shift => false,
+                    _ => editor.select(&self.scene, hit),
+                };
+                if settled {
                     self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
                 }
                 editor.reveal_selection = true;
@@ -707,13 +717,12 @@ impl Running {
             ]
         }));
         // No selection highlight in the running game.
-        let selected = self
-            .editor
-            .as_ref()
-            .and_then(|e| e.selected)
-            .filter(|_| self.play.is_none());
+        let selected = match &self.editor {
+            Some(editor) if self.play.is_none() => editor.selected_objects(),
+            _ => Vec::new(),
+        };
         if selected != self.highlighted {
-            self.renderer.set_highlight(selected);
+            self.renderer.set_highlight(&selected);
             self.highlighted = selected;
         }
 

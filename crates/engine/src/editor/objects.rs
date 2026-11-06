@@ -141,6 +141,9 @@ impl Editor {
             model.apply(super::model_tools::Tool::Delete);
             return None;
         }
+        if self.selected_objects().len() > 1 {
+            return self.delete_all_selected(scene);
+        }
         let index = self.selected.filter(|&i| i < scene.objects.len())?;
         // Commit first so undo restores the object with its latest edit.
         self.commit_pending(scene);
@@ -153,6 +156,9 @@ impl Editor {
     pub fn duplicate_selected(&mut self, scene: &mut Scene) -> Option<Change> {
         if self.model.is_some() {
             return None;
+        }
+        if self.selected_objects().len() > 1 {
+            return self.duplicate_all_selected(scene);
         }
         let index = self.selected.filter(|&i| i < scene.objects.len())?;
         let mut object = scene.objects[index].clone();

@@ -23,6 +23,7 @@ mod name_dialog;
 mod object_panel;
 mod objects;
 mod player_panel;
+mod selection;
 mod settings_panel;
 mod status_bar;
 mod tabs;
@@ -38,6 +39,7 @@ use glam::Vec3;
 use history::{Change, Edit, History};
 pub use model_tab::{ModelDoc, stage};
 pub use objects::{NEW_OBJECT_DISTANCE, placement};
+pub use selection::Pick;
 pub use settings_panel::SettingsTarget;
 use std::path::PathBuf;
 use widgets::{Side, collapsed_panel, dialog_heading, dim, panel_header, section};
@@ -103,6 +105,8 @@ pub struct Editor {
     pub model: Option<ModelDoc>,
     /// The part of the selected model shown in the inspector, by name.
     pub selected_part: Option<String>,
+    /// Picked with shift-click besides `selected` / `selected_part`.
+    also: Vec<Pick>,
     /// Each model in the scene's parts and their centers, by path (kept
     /// up to date by the runtime).
     pub model_parts: ModelParts,
@@ -163,6 +167,27 @@ pub struct EditorOutput {
     pub open_project: Option<PathBuf>,
 }
 
+impl EditorOutput {
+    fn empty() -> Self {
+        Self {
+            viewport: Rect::NOTHING,
+            changed: Vec::new(),
+            settled: false,
+            gizmo_hovered: false,
+            exit: false,
+            toggle_play: false,
+            bake: false,
+            bake_lighting: false,
+            export_package: None,
+            switch_tab: None,
+            new_tab: None,
+            close_tab: None,
+            open_model: None,
+            open_project: None,
+        }
+    }
+}
+
 impl Editor {
     pub fn new(game_name: String, project_dir: PathBuf, scene_path: PathBuf) -> Self {
         Self {
@@ -198,6 +223,7 @@ impl Editor {
             model: None,
             file_dialog: None,
             selected_part: None,
+            also: Vec::new(),
             model_parts: ModelParts::new(),
         }
     }
@@ -213,22 +239,7 @@ impl Editor {
         blink: bool,
         view: &View,
     ) -> EditorOutput {
-        let mut output = EditorOutput {
-            viewport: Rect::NOTHING,
-            changed: Vec::new(),
-            settled: false,
-            gizmo_hovered: false,
-            exit: false,
-            toggle_play: false,
-            bake: false,
-            bake_lighting: false,
-            export_package: None,
-            switch_tab: None,
-            new_tab: None,
-            close_tab: None,
-            open_model: None,
-            open_project: None,
-        };
+        let mut output = EditorOutput::empty();
         self.poll_file_dialog(scene, player, &mut output);
         egui::Panel::top("editor_menu").show(ui, |ui| {
             self.menu_bar(ui, scene, player, blink, view, &mut output)
@@ -301,7 +312,27 @@ impl Editor {
             if let Some(moved) = self.gizmo.ui(ui, view, &current)
                 && moved != current
             {
-                self.begin_edit(index, &scene.objects[index]);
+                let others: Vec<usize> = self
+                    .selected_objects()
+                    .into_iter()
+                    .filter(|&i| i != index && i < scene.objects.len())
+                    .collect();
+                if others.is_empty() {
+                    self.begin_edit(index, &scene.objects[index]);
+                } else {
+                    self.begin_group_move(scene);
+                }
+                // The others move, turn and scale with it, about it.
+                let delta = moved.matrix() * current.matrix().inverse();
+                for i in others {
+                    let t = &mut scene.objects[i].transform;
+                    let (scale, rotation, position) =
+                        (delta * t.matrix()).to_scale_rotation_translation();
+                    t.position = position;
+                    t.set_quat(rotation);
+                    t.scale = scale;
+                    output.changed.push(Change::Modified(i));
+                }
                 scene.objects[index].transform = moved;
                 output.changed.push(Change::Modified(index));
             }
@@ -497,10 +528,12 @@ impl Editor {
         match change {
             Change::Modified(_) | Change::All | Change::Settings | Change::Player => {}
             Change::Added(index) => {
+                self.clear_selection();
                 self.selected = Some(index);
                 self.reveal_selection = true;
             }
             Change::Removed(index) => {
+                self.follow_removed(index);
                 self.selected = match self.selected {
                     Some(s) if s == index => None,
                     Some(s) if s > index => Some(s - 1),
@@ -519,6 +552,7 @@ impl Editor {
         let settled = self.commit_pending(scene);
         self.selected = selected;
         self.selected_part = None;
+        self.also.clear();
         if selected.is_some() {
             self.settings = None;
         }
@@ -534,6 +568,10 @@ pub(crate) mod testing {
 
     pub fn editor() -> Editor {
         Editor::new("test".into(), PathBuf::new(), PathBuf::new())
+    }
+
+    pub fn output() -> EditorOutput {
+        EditorOutput::empty()
     }
 
     pub fn boxes(count: usize) -> Scene {

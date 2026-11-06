@@ -20,6 +20,7 @@ pub(super) struct Document {
     pub saved_state: Option<u64>,
     pub history: History,
     pub selected: Option<usize>,
+    pub also: Vec<super::Pick>,
     pub settings: Option<SettingsTarget>,
     pub search: String,
     pub probes: Vec<Vec3>,
@@ -51,6 +52,7 @@ impl Editor {
             saved_state: self.saved_state.take(),
             history: std::mem::take(&mut self.history),
             selected: self.selected.take(),
+            also: std::mem::take(&mut self.also),
             settings: self.settings.take(),
             search: std::mem::take(&mut self.search),
             probes: std::mem::take(&mut self.probes),
@@ -63,6 +65,7 @@ impl Editor {
         self.saved_state = doc.saved_state;
         self.history = doc.history;
         self.selected = doc.selected;
+        self.also = doc.also;
         self.settings = doc.settings;
         self.search = doc.search;
         self.probes = doc.probes;

@@ -285,7 +285,7 @@ pub struct Renderer {
     /// One per mesh in `meshes`: which object it draws, and its data.
     draws: Vec<Draw>,
     /// Scene object shown as selected.
-    highlighted: Option<usize>,
+    highlighted: Vec<usize>,
     environment: Environment,
     /// Last frame: draws in view, and all draws.
     drawn: [usize; 2],
@@ -828,7 +828,7 @@ impl Renderer {
             meshes: Vec::new(),
             draws: Vec::new(),
             drawn: [0, 0],
-            highlighted: None,
+            highlighted: Vec::new(),
             environment: Environment::default(),
             lights: Vec::new(),
             light_buffer,
@@ -1039,7 +1039,7 @@ impl Renderer {
                 reflection: self.reflection_of(scene, r.object),
             };
             self.meshes.push(mesh);
-            let highlighted = Some(r.object) == self.highlighted;
+            let highlighted = self.highlighted.contains(&r.object);
             self.draws.push(Draw {
                 object: r.object,
                 geometry: r.geometry.into(),
@@ -1086,7 +1086,7 @@ impl Renderer {
             self.set_scene(scene, assets);
             return;
         }
-        let highlighted = Some(index) == self.highlighted;
+        let highlighted = self.highlighted.contains(&index);
         for (&slot, r) in slots.iter().zip(renderables) {
             let key = GeometryKey::from(r.geometry);
             let texture = material_texture(&r);
@@ -1135,11 +1135,11 @@ impl Renderer {
         self.update_object(scene, index, assets);
     }
 
-    /// Highlights the given scene object (by index) as selected.
-    pub fn set_highlight(&mut self, selected: Option<usize>) {
-        self.highlighted = selected;
+    /// Highlights the given scene objects (by index) as selected.
+    pub fn set_highlight(&mut self, selected: &[usize]) {
+        self.highlighted = selected.to_vec();
         for i in 0..self.draws.len() {
-            let highlight = (Some(self.draws[i].object) == selected) as u32 as f32;
+            let highlight = selected.contains(&self.draws[i].object) as u32 as f32;
             if self.draws[i].uniform.highlight.x != highlight {
                 self.draws[i].uniform.highlight.x = highlight;
                 self.write_draw(i);

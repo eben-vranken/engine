@@ -10,7 +10,7 @@ use egui::{Align, Layout, RichText, Ui};
 impl Editor {
     pub(super) fn hierarchy(&mut self, ui: &mut Ui, scene: &mut Scene, output: &mut EditorOutput) {
         ui.label(dim(&format!(
-            "{} OBJECTS IN {} ZONES  (RIGHT-CLICK A ZONE)",
+            "{} OBJECTS IN {} ZONES  (SHIFT-CLICK: SEVERAL)",
             scene.objects.len(),
             scene.zones.len()
         )));
@@ -103,8 +103,8 @@ impl Editor {
                             for (index, object) in members {
                                 let selected = self.selected == Some(index);
                                 let parts = model_parts(object, &self.model_parts);
+                                let whole = self.is_picked(index, None);
                                 if parts.len() < 2 {
-                                    let whole = selected && self.selected_part.is_none();
                                     let response =
                                         ui.selectable_label(whole, picked(&object.name, whole));
                                     if response.clicked() {
@@ -123,10 +123,11 @@ impl Editor {
                                         id,
                                         false,
                                     );
-                                if selected && self.selected_part.is_some() {
+                                if (reveal || selected)
+                                    && self.picks().iter().any(|p| p.object == index && p.part.is_some())
+                                {
                                     state.set_open(true);
                                 }
-                                let whole = selected && self.selected_part.is_none();
                                 let header = state.show_header(ui, |ui| {
                                     let response =
                                         ui.selectable_label(whole, picked(&object.name, whole));
@@ -139,8 +140,7 @@ impl Editor {
                                 });
                                 header.body(|ui| {
                                     for part in parts {
-                                        let chosen = selected
-                                            && self.selected_part.as_deref() == Some(part.as_str());
+                                        let chosen = self.is_picked(index, Some(&part));
                                         let own = has_own_settings(object, &part);
                                         let text = if own {
                                             format!("{part} *")
@@ -191,8 +191,18 @@ impl Editor {
         self.reveal_selection = false;
         self.zone_delete_dialog(ui, scene, output);
         if let Some((index, part)) = clicked {
-            self.select(scene, Some(index));
-            self.selected_part = part;
+            if ui.input(|i| i.modifiers.shift) {
+                self.toggle_pick(
+                    scene,
+                    super::Pick {
+                        object: index,
+                        part,
+                    },
+                );
+            } else {
+                self.select(scene, Some(index));
+                self.selected_part = part;
+            }
         }
         if let Some(target) = zone_clicked {
             self.select(scene, None);

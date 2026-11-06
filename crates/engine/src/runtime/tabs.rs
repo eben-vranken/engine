@@ -20,8 +20,12 @@ impl Running {
             Change::Settings => self.renderer.set_zones(&self.scene, &self.assets),
             Change::Player => {}
             Change::Added(_) | Change::Removed(_) | Change::All => {
-                let selected = self.editor.as_ref().and_then(|e| e.selected);
-                self.renderer.set_highlight(selected);
+                let selected = self
+                    .editor
+                    .as_ref()
+                    .map(|e| e.selected_objects())
+                    .unwrap_or_default();
+                self.renderer.set_highlight(&selected);
                 self.highlighted = selected;
                 self.renderer.set_scene(&self.scene, &mut self.assets);
             }
@@ -115,8 +119,8 @@ impl Running {
         self.renderer.set_scene(&self.scene, &mut self.assets);
         self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
         self.zone.reset();
-        self.highlighted = None;
-        self.renderer.set_highlight(None);
+        self.highlighted.clear();
+        self.renderer.set_highlight(&[]);
         self.load_bake();
         self.load_lightmaps();
     }
