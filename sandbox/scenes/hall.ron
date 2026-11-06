@@ -21,7 +21,7 @@
         fog_distance: 60.0,
         shadow_distance: 40.0,
         bloom: 0.06,
-        grain: 0.035,
+        grain: 0.075,
         grade: (
             exposure: 0.0,
             contrast: 1.0,

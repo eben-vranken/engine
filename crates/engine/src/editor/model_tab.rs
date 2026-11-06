@@ -15,7 +15,7 @@ use crate::ui::theme;
 use egui::{Color32, Pos2, RichText, Stroke, Ui};
 use glam::{Vec2, Vec3};
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// What clicks select.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -433,22 +433,6 @@ pub fn stage(key: &str) -> Scene {
     };
     scene.environment.fog.density = 0.0;
     scene
-}
-
-/// Models in the project's `models/` folder that the modeler can open.
-pub fn model_files(project_dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(project_dir.join("models")) else {
-        return Vec::new();
-    };
-    let mut files: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("glb")))
-        .filter(|p| glb::is_editable(p))
-        .filter_map(|p| p.strip_prefix(project_dir).ok().map(PathBuf::from))
-        .collect();
-    files.sort();
-    files
 }
 
 impl Editor {

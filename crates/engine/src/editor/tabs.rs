@@ -331,16 +331,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::mesh::Shape;
-    use crate::scene::test_scene;
-
-    fn boxes(count: usize) -> Scene {
-        test_scene(
-            (0..count)
-                .map(|i| (Shape::Box { size: Vec3::ONE }, Vec3::X * i as f32))
-                .collect(),
-        )
-    }
+    use crate::editor::testing::boxes;
 
     #[test]
     fn each_tab_keeps_its_scene_history_selection_and_camera() {

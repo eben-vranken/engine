@@ -164,6 +164,22 @@ Make scenes from the editor instead of writing RON files by hand.
 
 **Acceptance:** the user makes a new scene from the editor, builds in it, saves it, closes the editor, and finds it again in the scene picker and `+` menu next time.
 
+## 10.3.1 Editor cleanup ← current
+The editor grew one feature at a time. Give it a proper menu bar, native file dialogs, new/open project, collapsible panels and a tidier codebase. No new features beyond this list.
+
+- [ ] Code split: `editor/mod.rs` and `runtime.rs` broken into modules named after what they do, with no behavior change
+- [ ] A menu bar (PROJECT, EDIT, ADD, BAKE, VIEW) with shortcuts shown next to items; every existing action reachable, nothing duplicated without reason
+- [ ] A slim toolbar row with only the constant controls: Play/Stop, W/E/R gizmo modes and snap hint
+- [ ] A status bar along the bottom: save/open/error messages and bake notes on the left, FPS, GPU, internal resolution and zone stats on the right; nothing dropped at 1600×900
+- [ ] Model tabs use the same menu bar, with scene-only actions (Play, bakes, ADD) hidden or disabled
+- [ ] Each side panel (and the modeler's left panel) collapses from a button in its own header to a thin strip with an expand button; Tab / Shift+Tab still work
+- [ ] Native file dialogs (rfd) that don't freeze the render loop, for opening projects and packages, exporting packages and SAVE SCENE AS
+- [ ] NEW PROJECT creates a content-only game folder (`game.ron`, `scenes/main.ron`, empty `models/`, `textures/`, `audio/`) and opens it; OPEN PROJECT refuses folders without `game.ron`
+- [ ] NEW PROJECT, OPEN PROJECT and OPEN PACKAGE ask about unsaved changes in every open tab first
+- [ ] Duplicated helpers merged, dead code and stale comments removed; consistent spacing, button sizes, headers, wording and hints across panels
+
+**Acceptance:** at 1600×900 the user finds every action in the menus with its shortcut, sees messages and stats in the status bar without anything cut off, collapses and restores each panel with the mouse, creates a new project from the editor, opens another one and a package through the system file picker (on Windows and on the laptop), and notices no regressions in scene or model tabs.
+
 ## 10.4 Modeler
 A small, simplified modeler inside the editor for very low-poly, PS1-style models. Not Blender: just enough to build and shape props and pieces cleanly, and drop them into a scene.
 
