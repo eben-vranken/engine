@@ -164,17 +164,17 @@ Make scenes from the editor instead of writing RON files by hand.
 
 **Acceptance:** the user makes a new scene from the editor, builds in it, saves it, closes the editor, and finds it again in the scene picker and `+` menu next time.
 
-## 10.4 Modeler ← current
+## 10.4 Modeler
 A small, simplified modeler inside the editor for very low-poly, PS1-style models. Not Blender: just enough to build and shape props and pieces cleanly, and drop them into a scene.
 
-- [ ] A model tab next to the scene tabs (`+` → NEW MODEL, or open a model from the project) with its own viewport, drawn by the same renderer
-- [ ] Start from a primitive (box, plane, cylinder, sphere) with a small number of segments
-- [ ] Select vertices, edges or faces (click, shift-click, box select); move, rotate and scale the selection with the gizmo, with snapping
-- [ ] Basic tools: extrude, inset, delete, merge vertices, split an edge / loop cut, flip normals, mirror
-- [ ] Flat or smooth shading per face; vertex colors
-- [ ] One texture per model from the project, point-sampled; simple UVs (planar / box projection per selection) and moving / scaling UVs
-- [ ] Every edit is an undo step
-- [ ] Save as glTF into the project's `models/`; scenes using the model update live (the existing hot reload)
+- [x] A model tab next to the scene tabs (`+` → NEW MODEL, or open a model from the project) with its own viewport, drawn by the same renderer
+- [x] Start from a primitive (box, plane, cylinder, sphere) with a small number of segments
+- [x] Select vertices, edges or faces (click, shift-click, box select); move, rotate and scale the selection with the gizmo, with snapping
+- [x] Basic tools: extrude, inset, delete, merge vertices, split an edge / loop cut, flip normals, mirror
+- [x] Flat or smooth shading per face; vertex colors
+- [x] One texture per model from the project, point-sampled; simple UVs (planar / box projection per selection) and moving / scaling UVs
+- [x] Every edit is an undo step
+- [x] Save as glTF into the project's `models/`; scenes using the model update live (the existing hot reload)
 
 **Acceptance:** the user builds a simple prop (a table or a lantern) from a box, colors and textures it, saves it, places it in the hall, then edits it again and sees the hall update.
 
