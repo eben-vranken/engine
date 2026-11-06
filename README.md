@@ -1,14 +1,18 @@
 # engine
 
-A small Rust 3D engine and editor for quiet, atmospheric, audio-first games: crisp HD output, very low-poly worlds, strong light and real volumetric fog, and sound that is physically simulated from the scene's geometry.
+*A small Rust 3D engine and editor for quiet, atmospheric, audio-first games.*
 
+Crisp HD output. Very low-poly worlds. Strong light and real volumetric fog. Sound physically simulated from the geometry of the scene.
 
+## Demo
 
 https://github.com/user-attachments/assets/07985f75-9701-407d-8a18-6c98663c12f8
 
+## About
 
+**Working name.** Games made with the engine are content-only project folders that live outside this repository. The editor is the game with a UI on top.
 
-*Working name.* Games made with it are content-only project folders that live outside this repo; the editor is the game with a UI on top. Built with [Claude Code](https://claude.com/claude-code).
+Built with [Claude Code](https://claude.com/claude-code).
 
 ## What it does
 

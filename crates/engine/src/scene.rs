@@ -47,6 +47,23 @@ pub struct Fog {
     pub height: f32,
     /// How quickly it thins above `height` (per meter); 0 = not at all.
     pub falloff: f32,
+    /// Drifting wisps in the fog: 0 = even (and cheapest), 1 = strong
+    /// swirls.
+    pub wisps: f32,
+    /// Size of the wisps (meters). About 0.5–1.5 reads as smoke in a light
+    /// beam; much bigger than the beam and it only dims or brightens it.
+    pub wisp_size: f32,
+    /// How fast they drift (meters per second).
+    pub wisp_speed: f32,
+    /// Dust motes floating in the air, glittering where light catches them
+    /// (invisible in the dark): 0 = none, 1 = a lot.
+    pub dust: f32,
+    /// Size of a mote in internal pixels.
+    pub dust_size: f32,
+    /// How bright a lit mote is.
+    pub dust_brightness: f32,
+    /// How fast the motes drift (meters per second).
+    pub dust_speed: f32,
 }
 
 impl Default for Fog {
@@ -56,6 +73,15 @@ impl Default for Fog {
             color: Vec3::ONE,
             height: 2.0,
             falloff: 0.15,
+            // Off by default: the noise costs about 4 ms of fog time on
+            // integrated graphics.
+            wisps: 0.0,
+            wisp_size: 1.0,
+            wisp_speed: 0.15,
+            dust: 0.0,
+            dust_size: 1.0,
+            dust_brightness: 4.0,
+            dust_speed: 0.05,
         }
     }
 }
@@ -171,6 +197,35 @@ pub enum Component {
     Portal(Portal),
     LightSource(LightSource),
     FogVolume(FogVolume),
+    Material(Material),
+}
+
+/// How the object's surfaces look: a texture for primitives (instead of the
+/// grid) and how glossy they are. Without one, surfaces are fully matte
+/// (and models use the roughness and metalness from their glTF file).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Material {
+    /// A PNG or JPEG in the project, e.g. `textures/stone.png`, point-sampled
+    /// like the grid; empty = the grid. Primitives only.
+    pub texture: String,
+    /// Meters one repeat of the texture covers.
+    pub meters: f32,
+    /// 0 = mirror-smooth (polished marble, still water), 1 = fully matte.
+    pub roughness: f32,
+    /// 0 = stone, wood, plaster; 1 = bare metal (reflections take its color).
+    pub metalness: f32,
+}
+
+impl Default for Material {
+    fn default() -> Self {
+        Self {
+            texture: String::new(),
+            meters: 2.0,
+            roughness: 0.5,
+            metalness: 0.0,
+        }
+    }
 }
 
 /// Extra fog in a box centered on the object (turned and scaled with it),
@@ -478,11 +533,13 @@ pub struct Renderable<'a> {
     pub color: Vec3,
     pub emissive: Vec3,
     pub transform: &'a Transform,
+    /// The object's `Material`, if it has one.
+    pub material: Option<&'a Material>,
 }
 
 /// Global lighting and atmosphere. All colors are linear RGB; light colors
 /// include intensity, so values above 1 are expected.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 #[serde(default)]
 pub struct Environment {
     /// Direction the sunlight travels (from the sun toward the ground).
@@ -599,6 +656,10 @@ impl Scene {
     /// Everything visible.
     pub fn renderables(&self) -> impl Iterator<Item = Renderable<'_>> {
         self.objects.iter().enumerate().flat_map(|(index, object)| {
+            let material = object.components.iter().find_map(|c| match c {
+                Component::Material(m) => Some(m),
+                _ => None,
+            });
             object.components.iter().filter_map(move |c| {
                 let (geometry, color, emissive) = match c {
                     Component::Primitive(p) => (Geometry::Shape(p.shape), p.color, p.emissive),
@@ -611,6 +672,7 @@ impl Scene {
                     color,
                     emissive,
                     transform: &object.transform,
+                    material,
                 })
             })
         })

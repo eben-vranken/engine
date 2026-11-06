@@ -25,7 +25,11 @@ use std::thread::JoinHandle;
 use trace::{BakeLight, Rng, World};
 use unwrap::Unwrapped;
 
-const MAGIC: &[u8; 8] = b"LIGHTM01";
+const MAGIC: &[u8; 8] = b"LIGHTM02";
+/// Texels per side of each face of a zone's reflection cube.
+pub const REFLECTION_SIZE: u32 = 64;
+/// Bounce rays per reflection texel.
+const REFLECTION_SAMPLES: u32 = 12;
 /// Meters between probes (before shrinking to fit the cap).
 const PROBE_SPACING: f32 = 1.5;
 const MAX_PROBES: usize = 4096;
@@ -143,6 +147,35 @@ impl ProbeGrid {
     }
 }
 
+/// What glossy surfaces in a zone reflect: a cube of the room seen from
+/// the middle of its volumes, and the box it's projected onto (so
+/// reflections line up with the walls instead of sitting at infinity).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Reflection {
+    pub center: Vec3,
+    pub min: Vec3,
+    pub max: Vec3,
+    /// RGB9E5, six faces of `REFLECTION_SIZE`² (+X, -X, +Y, -Y, +Z, -Z), each
+    /// row by row.
+    pub texels: Vec<u32>,
+}
+
+/// The direction through texel (x, y) of a cube face, in the GPU's
+/// cube-map convention (+X, -X, +Y, -Y, +Z, -Z; rows top to bottom).
+pub fn cube_direction(face: usize, x: u32, y: u32, size: u32) -> Vec3 {
+    let u = 2.0 * (x as f32 + 0.5) / size as f32 - 1.0;
+    let v = 2.0 * (y as f32 + 0.5) / size as f32 - 1.0;
+    match face {
+        0 => Vec3::new(1.0, -v, -u),
+        1 => Vec3::new(-1.0, -v, u),
+        2 => Vec3::new(u, 1.0, v),
+        3 => Vec3::new(u, -1.0, -v),
+        4 => Vec3::new(u, -v, 1.0),
+        _ => Vec3::new(-u, -v, -1.0),
+    }
+    .normalize()
+}
+
 /// One zone's bake.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct BakedZone {
@@ -151,6 +184,8 @@ pub struct BakedZone {
     /// RGB9E5 texels, row by row.
     pub texels: Vec<u32>,
     pub probes: ProbeGrid,
+    /// `None` for zones without volumes.
+    pub reflection: Option<Reflection>,
 }
 
 /// One static draw's lightmap UVs.
@@ -237,7 +272,8 @@ pub fn signature(scene: &Scene) -> u64 {
                 Component::Primitive(_)
                 | Component::Model(_)
                 | Component::ZoneVolume(_)
-                | Component::LightSource(_) => {
+                | Component::LightSource(_)
+                | Component::Material(_) => {
                     format!(
                         "{}{}{:?}{:?}",
                         object.name, object.zone, object.transform, c
@@ -332,7 +368,12 @@ pub fn start(scene: &Scene, assets: &mut Assets, file: PathBuf) -> Result<BakeJo
             Resolved::Shape(shape) => {
                 let mesh = MeshData::from_shape(shape);
                 let n = mesh.indices.len() / 3;
-                (mesh, vec![grid * r.color; n])
+                let texture = r
+                    .material
+                    .filter(|m| !m.texture.is_empty())
+                    .and_then(|m| assets.texture(&m.texture))
+                    .map_or(grid, |image| average(&image));
+                (mesh, vec![texture * r.color; n])
             }
             Resolved::Model(model_data) => {
                 let colors: Vec<Vec3> = model_data.images.iter().map(average).collect();
@@ -661,6 +702,64 @@ fn bake(
         }
     }
 
+    // Reflection cubes: one per zone with volumes, traced from the middle of
+    // the box around them.
+    let boxes: Vec<Option<(Vec3, Vec3)>> = grids
+        .iter()
+        .map(|g| {
+            (!g.dims.contains(&0) && g.spacing > 0.0).then(|| {
+                let extent = Vec3::new(
+                    (g.dims[0] - 1) as f32,
+                    (g.dims[1] - 1) as f32,
+                    (g.dims[2] - 1) as f32,
+                ) * g.spacing;
+                (g.origin, g.origin + extent)
+            })
+        })
+        .collect();
+    let face_texels = (REFLECTION_SIZE * REFLECTION_SIZE) as usize;
+    let reflection_jobs: Vec<(usize, usize)> = boxes
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.is_some())
+        .flat_map(|(z, _)| (0..6 * REFLECTION_SIZE as usize).map(move |row| (z, row)))
+        .collect();
+    set("REFLECTIONS", 0.0);
+    let rows = reflection_jobs.len();
+    let reflection_rows = parallel(
+        rows,
+        |j| {
+            let (z, row) = reflection_jobs[j];
+            let (lo, hi) = boxes[z].expect("filtered");
+            let center = (lo + hi) * 0.5;
+            let (face, y) = (row / REFLECTION_SIZE as usize, row as u32 % REFLECTION_SIZE);
+            let mut rng = Rng::new(0x51ed_270b ^ j as u64);
+            (0..REFLECTION_SIZE)
+                .map(|x| {
+                    let dir = cube_direction(face, x, y, REFLECTION_SIZE);
+                    rgb9e5(world.radiance(center, dir, REFLECTION_SAMPLES, &mut rng))
+                })
+                .collect::<Vec<u32>>()
+        },
+        |done| set("REFLECTIONS", done as f32 / rows.max(1) as f32),
+    );
+    let mut reflections: Vec<Option<Reflection>> = boxes
+        .iter()
+        .map(|b| {
+            b.map(|(lo, hi)| Reflection {
+                center: (lo + hi) * 0.5,
+                min: lo,
+                max: hi,
+                texels: Vec::with_capacity(face_texels * 6),
+            })
+        })
+        .collect();
+    for (&(z, _), row) in reflection_jobs.iter().zip(reflection_rows) {
+        if let Some(r) = &mut reflections[z] {
+            r.texels.extend(row);
+        }
+    }
+
     // Probes.
     let probe_jobs: Vec<(usize, usize)> = grids
         .iter()
@@ -706,7 +805,8 @@ fn bake(
         .zip(sizes.iter().copied())
         .zip(atlases)
         .zip(grids)
-        .map(|(((name, size), atlas), probes)| BakedZone {
+        .zip(reflections)
+        .map(|((((name, size), atlas), probes), reflection)| BakedZone {
             name,
             size,
             texels: atlas
@@ -714,6 +814,7 @@ fn bake(
                 .map(|t| rgb9e5(t.unwrap_or(Vec3::ZERO)))
                 .collect(),
             probes,
+            reflection,
         })
         .collect();
     let draws = inputs
@@ -835,8 +936,8 @@ pub fn rgb9e5(c: Vec3) -> u32 {
     m(c.x) | (m(c.y) << 9) | (m(c.z) << 18) | ((exp as u32) << 27)
 }
 
-#[cfg(test)]
-fn from_rgb9e5(v: u32) -> Vec3 {
+/// Unpacks an RGB9E5 color.
+pub fn from_rgb9e5(v: u32) -> Vec3 {
     let scale = 2f32.powi((v >> 27) as i32 - 24);
     Vec3::new(
         (v & 511) as f32,
@@ -930,6 +1031,18 @@ fn encode(baked: &Baked) -> Vec<u8> {
                 None => w.0.push(0),
             }
         }
+        match &z.reflection {
+            Some(r) => {
+                w.0.push(1);
+                w.vec3(r.center);
+                w.vec3(r.min);
+                w.vec3(r.max);
+                for &t in &r.texels {
+                    w.u32(t);
+                }
+            }
+            None => w.0.push(0),
+        }
     }
     w.u32(baked.draws.len() as u32);
     for d in &baked.draws {
@@ -987,6 +1100,23 @@ fn decode(bytes: &[u8]) -> Option<Baked> {
         if probes.len() != (dims[0] * dims[1] * dims[2]) as usize && !probes.is_empty() {
             return None;
         }
+        let reflection = match r.bytes(1)?[0] {
+            0 => None,
+            _ => {
+                let (center, min, max) = (r.vec3()?, r.vec3()?, r.vec3()?);
+                let n = (6 * REFLECTION_SIZE * REFLECTION_SIZE) as usize;
+                if n * 4 > r.0.len() {
+                    return None;
+                }
+                let texels = (0..n).map(|_| r.u32()).collect::<Option<_>>()?;
+                Some(Reflection {
+                    center,
+                    min,
+                    max,
+                    texels,
+                })
+            }
+        };
         zones.push(BakedZone {
             name,
             size,
@@ -997,6 +1127,7 @@ fn decode(bytes: &[u8]) -> Option<Baked> {
                 dims,
                 probes,
             },
+            reflection,
         });
     }
     let mut draws = Vec::new();
@@ -1077,6 +1208,27 @@ mod tests {
                 "{c} {back}"
             );
         }
+    }
+
+    #[test]
+    fn cube_faces_point_along_their_axes() {
+        let axes = [
+            Vec3::X,
+            Vec3::NEG_X,
+            Vec3::Y,
+            Vec3::NEG_Y,
+            Vec3::Z,
+            Vec3::NEG_Z,
+        ];
+        for (face, axis) in axes.iter().enumerate() {
+            let center = cube_direction(face, 31, 31, 64);
+            assert!(center.dot(*axis) > 0.99, "{face} {center}");
+        }
+        // +Z face: x grows to the right (+X), rows grow downward (-Y).
+        assert!(
+            cube_direction(4, 63, 32, 64).x > 0.9 * cube_direction(4, 63, 32, 64).length() - 0.3
+        );
+        assert!(cube_direction(4, 32, 63, 64).y < 0.0);
     }
 
     #[test]
@@ -1189,6 +1341,14 @@ mod tests {
         let zone = &baked.zones[0];
         assert!(zone.size[0] > 0 && zone.texels.iter().any(|&t| t != 0));
         assert!(zone.probes.probes.iter().any(Option::is_some));
+        let reflection = zone
+            .reflection
+            .as_ref()
+            .expect("a zone with a volume reflects");
+        assert_eq!(
+            reflection.texels.len(),
+            (6 * REFLECTION_SIZE * REFLECTION_SIZE) as usize
+        );
         std::fs::remove_dir_all(dir).ok();
     }
 }

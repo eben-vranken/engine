@@ -56,6 +56,10 @@ pub struct RunConfig {
     pub game_name: String,
     /// Open the editor instead of playing.
     pub editor: bool,
+    pub quality: crate::render::quality::Quality,
+    /// Log FPS and GPU times every couple of seconds (for measuring on
+    /// machines you can't watch).
+    pub perf_log: bool,
 }
 
 pub fn run(config: RunConfig) -> Result<(), RunError> {
@@ -120,6 +124,8 @@ struct Running {
     rmb_look: bool,
     last_frame: Instant,
     fps: FpsCounter,
+    /// `--perf-log`: when FPS and GPU times were last logged.
+    perf_log: Option<Instant>,
     scene: Scene,
     /// Present when running the editor.
     editor: Option<Editor>,
@@ -190,6 +196,25 @@ impl ApplicationHandler for App {
         let Some(app) = &mut self.running else {
             return;
         };
+        // Editor: Tab toggles the scene panel, Shift+Tab the inspector.
+        // Handled before egui, which would otherwise move keyboard focus
+        // between buttons; left alone while typing in a field.
+        if let (Some(editor), WindowEvent::KeyboardInput { event: key, .. }) =
+            (&mut app.editor, &event)
+            && key.physical_key == PhysicalKey::Code(KeyCode::Tab)
+            && !app.overlay.wants_keyboard()
+        {
+            if key.state.is_pressed() && !key.repeat {
+                let shift =
+                    app.input.held(KeyCode::ShiftLeft) || app.input.held(KeyCode::ShiftRight);
+                if shift {
+                    editor.show_inspector = !editor.show_inspector;
+                } else {
+                    editor.show_scene = !editor.show_scene;
+                }
+            }
+            return;
+        }
         let ui_consumed = app.overlay.on_window_event(&app.window, &event);
         match event {
             WindowEvent::CloseRequested => self.close(event_loop),
@@ -298,7 +323,7 @@ impl Running {
                     .with_inner_size(LogicalSize::new(1600, 900)),
             )?,
         );
-        let mut renderer = Renderer::new(window.clone())?;
+        let mut renderer = Renderer::new(window.clone(), config.quality)?;
         let mut assets = Assets::new(config.game_dir.clone());
         renderer.set_scene(&config.scene, &mut assets);
         let overlay = Overlay::new(&window, renderer.device(), renderer.surface_format());
@@ -355,6 +380,7 @@ impl Running {
             rmb_look: false,
             last_frame: Instant::now(),
             fps: FpsCounter::default(),
+            perf_log: config.perf_log.then(Instant::now),
             scene: config.scene.clone(),
             editor,
             highlighted: None,
@@ -708,7 +734,7 @@ impl Running {
                 self.renderer
                     .update_object(&self.scene, index, &mut self.assets);
             }
-            Change::Zones => self.renderer.set_zones(&self.scene, &self.assets),
+            Change::Settings => self.renderer.set_zones(&self.scene, &self.assets),
             Change::Added(_) | Change::Removed(_) | Change::All => {
                 let selected = self.editor.as_ref().and_then(|e| e.selected);
                 self.renderer.set_highlight(selected);
@@ -1048,6 +1074,34 @@ impl Running {
         let dt = (now - self.last_frame).as_secs_f32().min(0.1);
         self.last_frame = now;
         self.fps.tick(dt);
+        if let Some(last) = self.perf_log
+            && last.elapsed().as_secs_f32() >= 2.0
+        {
+            self.perf_log = Some(Instant::now());
+            let [w, h] = self.renderer.layout().internal;
+            let gpu = match self.renderer.gpu_times() {
+                Some(times) => {
+                    let stages: Vec<String> = crate::render::timings::STAGES
+                        .iter()
+                        .zip(times)
+                        .map(|(name, ms)| format!("{} {ms:.2}", name.to_lowercase()))
+                        .collect();
+                    format!(
+                        "gpu {:.2} ms ({})",
+                        times.iter().sum::<f32>(),
+                        stages.join(", ")
+                    )
+                }
+                None => "gpu times unavailable".into(),
+            };
+            log::info!(
+                "perf: {:.0} fps, {:.2} ms | {w}x{h} x{} {} | {gpu}",
+                self.fps.fps,
+                self.fps.frame_ms,
+                self.renderer.layout().factor,
+                self.renderer.quality().name(),
+            );
+        }
 
         let mut actions = HudActions::default();
         self.handle_keys(&mut actions);
@@ -1085,6 +1139,7 @@ impl Running {
         let hud = HudInfo {
             fps: self.fps.fps,
             frame_ms: self.fps.frame_ms,
+            gpu_times: self.renderer.gpu_times(),
             gpu: self.renderer.adapter_name().to_uppercase(),
             output: self.renderer.output_size(),
             internal: self.renderer.layout().internal,
@@ -1115,6 +1170,7 @@ impl Running {
         let editor_stats = EditorStats {
             fps: hud.fps,
             frame_ms: hud.frame_ms,
+            gpu_ms: hud.gpu_times.map(|t| t.iter().sum()),
             internal: hud.internal,
             factor: hud.factor,
             zone,
@@ -1372,6 +1428,8 @@ struct PlayerReadout {
 struct HudInfo {
     fps: f32,
     frame_ms: f32,
+    /// GPU milliseconds per stage, if measured.
+    gpu_times: Option<[f32; crate::render::timings::STAGES.len()]>,
     gpu: String,
     output: [u32; 2],
     internal: [u32; 2],
@@ -1419,6 +1477,17 @@ fn draw_hud(ui: &mut egui::Ui, hud: &HudInfo, actions: &mut HudActions) {
                             ui.label(dim("FPS"));
                             ui.label(format!("{:>5.0}  {:>5.2} MS", hud.fps, hud.frame_ms));
                             ui.end_row();
+
+                            if let Some(times) = hud.gpu_times {
+                                ui.label(dim("GPU"));
+                                ui.label(format!("{:>5.2} MS", times.iter().sum::<f32>()));
+                                ui.end_row();
+                                for (name, ms) in crate::render::timings::STAGES.iter().zip(times) {
+                                    ui.label(dim(&format!("  {name}")));
+                                    ui.label(format!("{ms:>5.2} MS"));
+                                    ui.end_row();
+                                }
+                            }
 
                             ui.label(dim("OUTPUT"));
                             ui.label(format!("{}×{}", hud.output[0], hud.output[1]));

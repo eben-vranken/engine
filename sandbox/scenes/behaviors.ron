@@ -4,7 +4,26 @@
         sun_color: (2.6, 2.34, 2.0279999),
         ambient_sky: (0.16, 0.18, 0.24),
         ambient_ground: (0.05, 0.045, 0.04),
-        fog: (density: 0.02, color: (1.0, 1.0, 1.0), height: 2.0, falloff: 0.15),
+        fog: (
+            density: 0.02,
+            color: (1.0, 1.0, 1.0),
+            height: 2.0,
+            falloff: 0.15,
+        ),
+        fog_anisotropy: 0.35,
+        fog_distance: 60.0,
+        shadow_distance: 40.0,
+        bloom: 0.05,
+        grain: 0.03,
+        grade: (
+            exposure: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            tint: (1.0, 1.0, 1.0),
+            lut: "",
+        ),
+        lightmap_density: 4.0,
+        bake_samples: 256,
     ),
     zones: [
         (
@@ -113,12 +132,6 @@
             zone: "test",
             transform: (position: (4.5, 1.6, -3.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
             components: [Primitive((shape: Box(size: (0.8, 0.8, 0.8)), color: (0.7, 0.55, 0.3))), PhysicsBody((mass: 20.0, starts_asleep: false))],
-        ),
-        (
-            name: "ball",
-            zone: "test",
-            transform: (position: (26.347223, 0.4, -2.1400902), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
-            components: [Primitive((shape: Sphere(radius: 0.4, segments: 12, rings: 8), color: (0.2, 0.5, 0.7))), PhysicsBody((mass: 5.0, starts_asleep: false)), SoundSource((clip: "", volume: 1.0, looping: false, radius: 1.0))],
         ),
         (
             name: "floating platform",

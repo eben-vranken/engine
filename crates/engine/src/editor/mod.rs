@@ -14,7 +14,7 @@ pub mod markers;
 
 use crate::render::mesh::Shape;
 use crate::scene::{
-    AcousticMaterial, Component, Door, Floating, FogVolume, LightSource, Model, Object,
+    AcousticMaterial, Component, Door, Floating, FogVolume, LightSource, Material, Model, Object,
     PhysicsBody, Portal, Primitive, Scene, SoundSource, Switch, Transform, Zone, ZoneVolume,
 };
 use crate::ui::theme;
@@ -44,9 +44,14 @@ pub struct Editor {
     history: History,
     /// An edit in progress: the object's index and how it was before.
     pending: Option<(usize, Object)>,
-    /// The zone shown in the inspector (instead of an object).
-    pub selected_zone: Option<String>,
-    /// A zone edit in progress: the scene before it.
+    /// Whether the scene panel (left) and the inspector (right) are open.
+    pub show_scene: bool,
+    pub show_inspector: bool,
+    /// Zone volume and portal markers in the viewport (H).
+    pub show_zones: bool,
+    /// Settings shown in the inspector instead of an object.
+    pub settings: Option<SettingsTarget>,
+    /// A zone or environment edit in progress: the scene before it.
     zone_pending: Option<Box<Scene>>,
     pub gizmo: TransformGizmo,
     /// The scene is running in the viewport; editing is locked until Stop.
@@ -73,6 +78,8 @@ enum Confirm {
 pub struct EditorStats {
     pub fps: f32,
     pub frame_ms: f32,
+    /// GPU milliseconds per frame, if measured.
+    pub gpu_ms: Option<f32>,
     pub internal: [u32; 2],
     pub factor: u32,
     /// The zone the camera is in.
@@ -119,7 +126,10 @@ impl Editor {
             confirm: None,
             history: History::default(),
             pending: None,
-            selected_zone: None,
+            show_scene: true,
+            show_inspector: true,
+            show_zones: true,
+            settings: None,
             zone_pending: None,
             gizmo: TransformGizmo::default(),
             playing: false,
@@ -151,24 +161,37 @@ impl Editor {
             bake: false,
             bake_lighting: false,
         };
+        // H: zone markers (not while typing in a field). Tab and Shift+Tab
+        // (the side panels) are handled by the runtime, before egui.
+        if !ui.ctx().memory(|m| m.focused().is_some()) {
+            ui.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::H) {
+                    self.show_zones = !self.show_zones;
+                }
+            });
+        }
         egui::Panel::top("editor_top").show(ui, |ui| {
             self.top_bar(ui, scene, stats, blink, view, &mut output)
         });
-        egui::Panel::left("editor_scene")
-            .resizable(true)
-            .default_size(260.0)
-            .min_size(220.0)
-            .show(ui, |ui| {
-                ui.add_enabled_ui(!self.playing, |ui| self.hierarchy(ui, scene, &mut output));
-            });
-        egui::Panel::right("editor_inspector")
-            .resizable(true)
-            .default_size(340.0)
-            // Wide enough for its content, so selecting doesn't resize the viewport.
-            .min_size(340.0)
-            .show(ui, |ui| {
-                ui.add_enabled_ui(!self.playing, |ui| self.inspector(ui, scene, &mut output));
-            });
+        if self.show_scene {
+            egui::Panel::left("editor_scene")
+                .resizable(true)
+                .default_size(260.0)
+                .min_size(220.0)
+                .show(ui, |ui| {
+                    ui.add_enabled_ui(!self.playing, |ui| self.hierarchy(ui, scene, &mut output));
+                });
+        }
+        if self.show_inspector {
+            egui::Panel::right("editor_inspector")
+                .resizable(true)
+                .default_size(340.0)
+                // Wide enough for its content, so selecting doesn't resize the viewport.
+                .min_size(340.0)
+                .show(ui, |ui| {
+                    ui.add_enabled_ui(!self.playing, |ui| self.inspector(ui, scene, &mut output));
+                });
+        }
 
         if let Some(index) = self
             .selected
@@ -188,8 +211,13 @@ impl Editor {
         if !self.playing {
             markers::probes(ui, view, &self.probes);
             let starts = markers::player_starts(ui, view, scene, self.selected);
-            let zones = markers::zones(ui, view, scene, self.selected, &stats.active_zones);
-            for (clicked, hovered) in [starts, zones] {
+            let zones = if self.show_zones {
+                markers::zones(ui, view, scene, self.selected, &stats.active_zones)
+            } else {
+                (None, false)
+            };
+            let lights = markers::lights(ui, view, scene, self.selected);
+            for (clicked, hovered) in [starts, zones, lights] {
                 output.gizmo_hovered |= hovered;
                 if let Some(index) = clicked {
                     output.settled |= self.select(scene, Some(index));
@@ -379,7 +407,7 @@ impl Editor {
     /// added (or restored) object becomes the selection.
     fn follow(&mut self, change: Change) {
         match change {
-            Change::Modified(_) | Change::All | Change::Zones => {}
+            Change::Modified(_) | Change::All | Change::Settings => {}
             Change::Added(index) => {
                 self.selected = Some(index);
                 self.reveal_selection = true;
@@ -612,7 +640,7 @@ impl Editor {
         let settled = self.commit_pending(scene);
         self.selected = selected;
         if selected.is_some() {
-            self.selected_zone = None;
+            self.settings = None;
         }
         settled
     }
@@ -627,6 +655,13 @@ impl Editor {
         output: &mut EditorOutput,
     ) {
         ui.horizontal(|ui| {
+            if ui
+                .small_button(if self.show_scene { "[≡]" } else { " ≡ " })
+                .on_hover_text("SHOW / HIDE THE SCENE PANEL")
+                .clicked()
+            {
+                self.show_scene = !self.show_scene;
+            }
             let cursor = if blink { "_" } else { " " };
             ui.label(RichText::new(format!("ENGINE // EDITOR{cursor}")).strong());
             ui.add_space(12.0);
@@ -790,28 +825,56 @@ impl Editor {
                         self.gizmo.kind = kind;
                     }
                 }
-                ui.label(dim("CTRL SNAP"));
             });
 
+            // Stats on the right, as many as fit: the rest are dropped
+            // rather than drawn over the buttons.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(format!("{} / {}", stats.drawn[0], stats.drawn[1]));
-                ui.label(dim("DRAWN"));
-                ui.add_space(12.0);
-                let zone = stats.zone.as_deref().unwrap_or("-");
-                ui.label(zone.to_uppercase()).on_hover_text(format!(
-                    "ACTIVE: {}",
-                    crate::runtime::active_text(&stats.active_zones)
-                ));
-                ui.label(dim("ZONE"));
-                ui.add_space(12.0);
-                ui.label(format!(
-                    "{}×{} ×{}",
-                    stats.internal[0], stats.internal[1], stats.factor
-                ));
-                ui.label(dim("INTERNAL"));
-                ui.add_space(12.0);
-                ui.label(format!("{:.0}  {:.2} MS", stats.fps, stats.frame_ms));
-                ui.label(dim("FPS"));
+                if ui
+                    .small_button(if self.show_inspector {
+                        "[≡]"
+                    } else {
+                        " ≡ "
+                    })
+                    .on_hover_text("SHOW / HIDE THE INSPECTOR")
+                    .clicked()
+                {
+                    self.show_inspector = !self.show_inspector;
+                }
+                ui.add_space(8.0);
+                let room = ui.available_width();
+                let zone = stats.zone.as_deref().unwrap_or("-").to_uppercase();
+                let fps = format!("{:.0}  {:.2} MS", stats.fps, stats.frame_ms);
+                if room > 620.0 {
+                    ui.label(format!("{} / {}", stats.drawn[0], stats.drawn[1]));
+                    ui.label(dim("DRAWN"));
+                    ui.add_space(12.0);
+                }
+                if room > 460.0 {
+                    ui.label(zone).on_hover_text(format!(
+                        "ACTIVE: {}",
+                        crate::runtime::active_text(&stats.active_zones)
+                    ));
+                    ui.label(dim("ZONE"));
+                    ui.add_space(12.0);
+                    ui.label(format!(
+                        "{}×{} ×{}",
+                        stats.internal[0], stats.internal[1], stats.factor
+                    ));
+                    ui.label(dim("INTERNAL"));
+                    ui.add_space(12.0);
+                }
+                if room > 300.0
+                    && let Some(gpu) = stats.gpu_ms
+                {
+                    ui.label(format!("{gpu:.2} MS"));
+                    ui.label(dim("GPU"));
+                    ui.add_space(12.0);
+                }
+                if room > 140.0 {
+                    ui.label(fps);
+                    ui.label(dim("FPS"));
+                }
             });
         });
     }
@@ -835,6 +898,13 @@ impl Editor {
         let mut clicked = None;
         let mut zone_clicked = None;
         let mut zone_action = None;
+        let environment = self.settings == Some(SettingsTarget::Environment);
+        if ui
+            .selectable_label(environment, picked("ENVIRONMENT", environment))
+            .clicked()
+        {
+            zone_clicked = Some(SettingsTarget::Environment);
+        }
         egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| {
@@ -866,13 +936,15 @@ impl Editor {
                         continue;
                     }
                     let empty = members.is_empty();
-                    let response = egui::CollapsingHeader::new(header)
+                    let chosen = self.settings == Some(SettingsTarget::Zone(zone.name.clone()));
+                    let response = egui::CollapsingHeader::new(picked(&header, chosen))
                         .id_salt(&zone.name)
                         .open(reveal.then_some(true))
                         .show(ui, |ui| {
                             for (index, object) in members {
                                 let selected = self.selected == Some(index);
-                                let response = ui.selectable_label(selected, &object.name);
+                                let response =
+                                    ui.selectable_label(selected, picked(&object.name, selected));
                                 if response.clicked() {
                                     clicked = Some(index);
                                 }
@@ -882,7 +954,7 @@ impl Editor {
                             }
                         });
                     if response.header_response.clicked() {
-                        zone_clicked = Some(zone.name.clone());
+                        zone_clicked = Some(SettingsTarget::Zone(zone.name.clone()));
                     }
                     response.header_response.context_menu(|ui| {
                         if ui.button("RENAME").clicked() {
@@ -904,9 +976,9 @@ impl Editor {
         if let Some(index) = clicked {
             self.select(scene, Some(index));
         }
-        if let Some(zone) = zone_clicked {
+        if let Some(target) = zone_clicked {
             self.select(scene, None);
-            self.selected_zone = Some(zone);
+            self.settings = Some(target);
         }
         let change = match zone_action {
             Some(ZoneAction::StartRename(name)) => {
@@ -938,19 +1010,15 @@ impl Editor {
         }
     }
 
-    /// The selected zone's settings: its own fog and color grade, or the
-    /// environment's. Returns false if no zone is selected.
-    fn zone_inspector(
+    /// The selected zone's or the environment's settings. Returns false if
+    /// neither is selected.
+    fn settings_inspector(
         &mut self,
         ui: &mut Ui,
         scene: &mut Scene,
         output: &mut EditorOutput,
     ) -> bool {
-        let Some(name) = self.selected_zone.clone() else {
-            return false;
-        };
-        let Some(z) = scene.zones.iter().position(|z| z.name == name) else {
-            self.selected_zone = None;
+        let Some(target) = self.settings.clone() else {
             return false;
         };
         let names = inspector::Names {
@@ -958,35 +1026,56 @@ impl Editor {
             zones: Vec::new(),
         };
         let before = scene.clone();
-        let env = scene.environment.clone();
-        let zone = &mut scene.zones[z];
-        egui::ScrollArea::vertical()
-            .auto_shrink(false)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    inspector::field_label(ui, "ZONE");
-                    ui.label(zone.name.to_uppercase());
-                });
-                ui.label(dim("WITHOUT ITS OWN, A ZONE USES THE ENVIRONMENT'S"));
+        match target {
+            SettingsTarget::Environment => {
+                let env = &mut scene.environment;
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        ui.label(RichText::new("ENVIRONMENT").strong());
+                        ui.label(dim("THE WHOLE SCENE; ZONES CAN OVERRIDE FOG AND GRADE"));
+                        section(ui, "SUN");
+                        sun_angles(ui, &mut env.sun_direction);
+                        section(ui, "LIGHT, FOG AND LOOK");
+                        inspector::fields_except(ui, env, &names, &["sun_direction"]);
+                    });
+            }
+            SettingsTarget::Zone(name) => {
+                let Some(z) = scene.zones.iter().position(|z| z.name == name) else {
+                    self.settings = None;
+                    return false;
+                };
+                let env = scene.environment.clone();
+                let zone = &mut scene.zones[z];
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            inspector::field_label(ui, "ZONE");
+                            ui.label(zone.name.to_uppercase());
+                        });
+                        ui.label(dim("WITHOUT ITS OWN, A ZONE USES THE ENVIRONMENT'S"));
 
-                section(ui, "FOG");
-                own_toggle(ui, "OWN FOG", &mut zone.fog, &env.fog);
-                if let Some(fog) = &mut zone.fog {
-                    inspector::fields(ui, fog, &names);
-                }
+                        section(ui, "FOG");
+                        own_toggle(ui, "OWN FOG", &mut zone.fog, &env.fog);
+                        if let Some(fog) = &mut zone.fog {
+                            inspector::fields(ui, fog, &names);
+                        }
 
-                section(ui, "COLOR GRADE");
-                own_toggle(ui, "OWN GRADE", &mut zone.grade, &env.grade);
-                if let Some(grade) = &mut zone.grade {
-                    inspector::fields(ui, grade, &names);
-                }
-            });
+                        section(ui, "COLOR GRADE");
+                        own_toggle(ui, "OWN GRADE", &mut zone.grade, &env.grade);
+                        if let Some(grade) = &mut zone.grade {
+                            inspector::fields(ui, grade, &names);
+                        }
+                    });
+            }
+        }
         if *scene != before {
             if self.zone_pending.is_none() {
                 self.commit_pending(&before);
                 self.zone_pending = Some(Box::new(before));
             }
-            output.changed.push(Change::Zones);
+            output.changed.push(Change::Settings);
         }
         true
     }
@@ -996,7 +1085,7 @@ impl Editor {
         ui.label(RichText::new("INSPECTOR").strong());
         ui.add_space(4.0);
         let Some(index) = self.selected.filter(|&i| i < scene.objects.len()) else {
-            if !self.zone_inspector(ui, scene, output) {
+            if !self.settings_inspector(ui, scene, output) {
                 ui.label(dim("NOTHING SELECTED"));
             }
             return;
@@ -1212,7 +1301,7 @@ enum ZoneAction {
 }
 
 /// Components the inspector can add (one of each per object).
-fn new_components() -> [(&'static str, Component); 10] {
+fn new_components() -> [(&'static str, Component); 11] {
     [
         ("floating", Component::Floating(Floating::default())),
         ("door", Component::Door(Door::default())),
@@ -1236,7 +1325,53 @@ fn new_components() -> [(&'static str, Component); 10] {
             Component::LightSource(LightSource::default()),
         ),
         ("fog volume", Component::FogVolume(FogVolume::default())),
+        ("material", Component::Material(Material::default())),
     ]
+}
+
+/// A row's text in the hierarchy: inverted (amber background, text in the
+/// background color) when it's the one being inspected.
+fn picked(text: &str, selected: bool) -> RichText {
+    let text = RichText::new(text);
+    if selected {
+        text.color(theme::BACKGROUND).background_color(theme::AMBER)
+    } else {
+        text
+    }
+}
+
+/// What the inspector shows when it isn't showing an object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsTarget {
+    Environment,
+    /// A zone, by name.
+    Zone(String),
+}
+
+/// The sun's direction as compass angle and height above the horizon
+/// (degrees), easier to aim than a vector.
+fn sun_angles(ui: &mut Ui, direction: &mut Vec3) {
+    // The direction the light travels; the sun sits the other way.
+    let to_sun = -direction.normalize_or(Vec3::NEG_Y);
+    let mut azimuth = to_sun.x.atan2(-to_sun.z).to_degrees();
+    let mut elevation = to_sun.y.clamp(-1.0, 1.0).asin().to_degrees();
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        inspector::field_label(ui, "AZIMUTH");
+        changed |= inspector::drag(ui, &mut azimuth, 0.5, 5.0);
+    });
+    ui.horizontal(|ui| {
+        inspector::field_label(ui, "ELEVATION");
+        changed |= inspector::drag(ui, &mut elevation, 0.25, 5.0);
+    });
+    if changed {
+        let (az, el) = (
+            azimuth.to_radians(),
+            elevation.clamp(-89.0, 89.0).to_radians(),
+        );
+        let to_sun = Vec3::new(az.sin() * el.cos(), el.sin(), -az.cos() * el.cos());
+        *direction = -to_sun;
+    }
 }
 
 /// [ON]/[OFF] for a zone setting: on starts from the environment's value.
@@ -1284,7 +1419,7 @@ fn hints(ui: &Ui, viewport: Rect, playing: bool) {
     let text = if playing {
         "F5 STOP  E USE  ESC FREE MOUSE  CLICK CAPTURE MOUSE  R RESPAWN  F1 TUNING  F2 FLY"
     } else {
-        "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+D DUPLICATE  DEL DELETE  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE  F5 PLAY"
+        "CLICK SELECT  W/E/R GIZMO  CTRL SNAP  RMB+WASD FLY  CTRL+D DUPLICATE  DEL DELETE  CTRL+Z/Y UNDO/REDO  CTRL+S SAVE  F5 PLAY  TAB/SHIFT+TAB PANELS  H ZONES"
     };
     egui::Area::new(egui::Id::unique("editor_hints"))
         // Anchored at the bottom, so wrapped lines grow upward.
@@ -1364,10 +1499,20 @@ mod tests {
     }
 
     #[test]
+    fn sun_angles_round_trip() {
+        let dir = Vec3::new(0.62, -0.62, 0.3).normalize();
+        let to_sun = -dir;
+        let az = to_sun.x.atan2(-to_sun.z);
+        let el = to_sun.y.asin();
+        let back = -Vec3::new(az.sin() * el.cos(), el.sin(), -az.cos() * el.cos());
+        assert!((back - dir).length() < 1e-5);
+    }
+
+    #[test]
     fn a_zone_fog_edit_is_one_undo_step() {
         let mut scene = boxes(1);
         let mut editor = editor();
-        editor.selected_zone = Some("test".into());
+        editor.settings = Some(SettingsTarget::Zone("test".into()));
         // As the zone inspector does: remember the scene, then edit live.
         editor.zone_pending = Some(Box::new(scene.clone()));
         scene.zones[0].fog = Some(crate::scene::Fog::default());
@@ -1378,7 +1523,7 @@ mod tests {
         assert_eq!(scene.zones[0].fog, None);
         // Selecting an object leaves the zone.
         editor.select(&scene, Some(0));
-        assert_eq!(editor.selected_zone, None);
+        assert_eq!(editor.settings, None);
     }
 
     #[test]

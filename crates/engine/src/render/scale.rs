@@ -2,8 +2,9 @@
 //! upscaled with nearest-neighbor so every internal pixel becomes an exact
 //! `factor × factor` block. Leftover output pixels become a black letterbox.
 
-/// Internal heights above this get a bigger factor by default.
-const MAX_DEFAULT_HEIGHT: u32 = 720;
+/// Internal heights above this get a bigger factor by default (HIGH
+/// quality; presets can lower it).
+pub const MAX_DEFAULT_HEIGHT: u32 = 720;
 
 /// Highest factor the user can pick; beyond this the image is mush.
 pub const MAX_FACTOR: u32 = 8;
@@ -11,7 +12,13 @@ pub const MAX_FACTOR: u32 = 8;
 /// The factor that puts the internal height at or just under 720 lines:
 /// 1080p → 2 (540), 1440p → 2 (720), 4K → 3 (720).
 pub fn default_factor(output_height: u32) -> u32 {
-    output_height.div_ceil(MAX_DEFAULT_HEIGHT).max(1)
+    factor_for_lines(output_height, MAX_DEFAULT_HEIGHT)
+}
+
+/// The smallest factor that keeps the internal height at or under
+/// `max_lines`.
+pub fn factor_for_lines(output_height: u32, max_lines: u32) -> u32 {
+    output_height.div_ceil(max_lines.max(1)).max(1)
 }
 
 /// How the internal image maps onto the output.

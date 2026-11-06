@@ -4,7 +4,29 @@
         sun_color: (2.6, 2.34, 2.0279999),
         ambient_sky: (0.16, 0.18, 0.24),
         ambient_ground: (0.05, 0.045, 0.04),
-        fog: (density: 0.02, color: (1.0, 1.0, 1.0), height: 2.0, falloff: 0.15),
+        fog: (
+            density: 0.02,
+            color: (1.0, 1.0, 1.0),
+            height: 2.0,
+            falloff: 0.15,
+            wisps: 0.5,
+            wisp_size: 2.0,
+            wisp_speed: 0.15,
+        ),
+        fog_anisotropy: 0.35,
+        fog_distance: 60.0,
+        shadow_distance: 40.0,
+        bloom: 0.05,
+        grain: 0.03,
+        grade: (
+            exposure: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            tint: (1.0, 1.0, 1.0),
+            lut: "",
+        ),
+        lightmap_density: 4.0,
+        bake_samples: 256,
     ),
     zones: [
         (
@@ -873,8 +895,8 @@
         (
             name: "arch",
             zone: "ground",
-            transform: (position: (-1.0914673, 0.0, -0.57951033), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 5.295394)),
-            components: [Model((path: "models/arch.gltf", color: (0.3, 0.28, 0.25)))],
+            transform: (position: (20.578789, 0.0, 7.255825), rotation: (0.0, -90.0, 0.0), scale: (0.99999994, 1.0, 25.812445)),
+            components: [Model((path: "models/arch.gltf", color: (1.0, 1.0, 1.0))), Material((texture: "", meters: 2.0, roughness: 0.0, metalness: 0.0))],
         ),
         (
             name: "box",

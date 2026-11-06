@@ -13,8 +13,6 @@ use super::lights::{self, CASCADES, FrameLight, MAX_SHADOWED};
 use glam::{Mat4, Vec3};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-pub const SUN_SIZE: u32 = 2048;
-pub const POINT_SIZE: u32 = 512;
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// Pass matrices: the sun's cascades first, then six per shadow slot.
 const PASSES: usize = CASCADES + MAX_SHADOWED * 6;
@@ -33,6 +31,8 @@ pub struct Caster<'a> {
 }
 
 pub struct Shadows {
+    /// Texels per side of each sun cascade.
+    pub sun_size: u32,
     /// All sun cascades, as one array for the scene shader.
     pub sun_view: wgpu::TextureView,
     /// One view per cascade, to render into.
@@ -52,7 +52,12 @@ pub struct Shadows {
 }
 
 impl Shadows {
-    pub fn new(device: &wgpu::Device, object_layout: &wgpu::BindGroupLayout) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        object_layout: &wgpu::BindGroupLayout,
+        sun_size: u32,
+        point_size: u32,
+    ) -> Self {
         let texture = |label, size, layers| {
             device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -70,7 +75,7 @@ impl Shadows {
                 view_formats: &[],
             })
         };
-        let sun = texture("sun shadow", SUN_SIZE, CASCADES as u32);
+        let sun = texture("sun shadow", sun_size, CASCADES as u32);
         let sun_view = sun.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
@@ -86,7 +91,7 @@ impl Shadows {
             })
             .collect();
         let layers = (MAX_SHADOWED * 6) as u32;
-        let point = texture("point shadows", POINT_SIZE, layers);
+        let point = texture("point shadows", point_size, layers);
         let point_view = point.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
@@ -181,6 +186,7 @@ impl Shadows {
         });
 
         Self {
+            sun_size,
             sun_view,
             cascade_views,
             point_view,

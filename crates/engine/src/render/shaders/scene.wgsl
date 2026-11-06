@@ -20,19 +20,23 @@ struct Frame {
     shadow: vec4<f32>,
     // xy: 1 / internal size in pixels. z, w: fog grid near and far depth.
     screen: vec4<f32>,
+    // Dust motes in the camera's zone: amount, size (px), brightness, speed.
+    dust: vec4<f32>,
 };
 
 struct Object {
     model: mat4x4<f32>,
     normal_matrix: mat4x4<f32>,
     color: vec4<f32>,
-    // x: selection highlight, 0 or 1. y: 1 = primitive (UVs in meters,
-    // tiling the grid texture), 0 = model (its own UVs and texture).
+    // x: selection highlight, 0 or 1. y: texture repeats per UV unit
+    // (primitives' UVs are in meters; models use 1).
     highlight: vec4<f32>,
     // rgb: light the surface gives off.
     emissive: vec4<f32>,
     // x: 1 = indirect light from the lightmap, 0 = from `ambient`.
     lighting: vec4<f32>,
+    // x: roughness, y: metalness, z: reflection cube index or -1.
+    surface: vec4<f32>,
     // Light arriving from +X, -X, +Y, -Y, +Z, -Z (probes or the sky).
     ambient: array<vec4<f32>, 6>,
 };
@@ -44,9 +48,18 @@ struct Light {
     color: vec4<f32>,
 };
 
+// A zone's reflection cube and the box it's projected onto.
+struct Reflection {
+    // xyz: where it was captured, w: its index in the cube array.
+    center: vec4<f32>,
+    min: vec4<f32>,
+    max: vec4<f32>,
+};
+
+const PI: f32 = 3.14159265;
+
 // Linear version of the UI amber, for the selection highlight.
 const HIGHLIGHT: vec3<f32> = vec3<f32>(1.0, 0.34, 0.025);
-const POINT_SHADOW_SIZE: f32 = 512.0;
 
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var<storage, read> lights: array<Light>;
@@ -59,6 +72,10 @@ const POINT_SHADOW_SIZE: f32 = 512.0;
 // what's behind shows through.
 @group(0) @binding(6) var fog_volume: texture_3d<f32>;
 @group(0) @binding(7) var fog_sampler: sampler;
+// What glossy surfaces reflect: one cube per baked zone.
+@group(0) @binding(8) var reflections: texture_cube_array<f32>;
+@group(0) @binding(9) var<storage, read> reflection_boxes: array<Reflection>;
+@group(0) @binding(10) var reflection_sampler: sampler;
 @group(1) @binding(0) var<uniform> object: Object;
 // The grid for primitives; a model part's base color texture.
 @group(2) @binding(0) var albedo_texture: texture_2d<f32>;
@@ -163,11 +180,12 @@ fn point_visibility(light: Light, world: vec3<f32>, n: vec3<f32>, distance: f32)
         return 1.0;
     }
     // A shadow texel covers about 2·distance/size meters.
-    let texel = 2.0 * distance / POINT_SHADOW_SIZE;
+    let size = f32(textureDimensions(point_shadows).x);
+    let texel = 2.0 * distance / size;
     let p = world + n * (texel * 1.5 + 0.005);
     let layer = u32(light.color.w) * 6u + cube_face(p - light.position.xyz);
     let c = shadow_coords(shadow_faces[layer], p);
-    let step = 1.0 / POINT_SHADOW_SIZE;
+    let step = 1.0 / size;
     var lit = 0.0;
     for (var i = 0; i < 4; i++) {
         let offset = vec2<f32>(f32(i & 1), f32(i >> 1u)) - 0.5;
@@ -176,9 +194,46 @@ fn point_visibility(light: Light, world: vec3<f32>, n: vec3<f32>, distance: f32)
     return lit * 0.25;
 }
 
-// Light from all point lights reaching a surface with normal n.
-fn point_lights(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
-    var total = vec3<f32>(0.0);
+// How glossy a surface is, for the lighting functions.
+struct Surface {
+    n: vec3<f32>,
+    // Toward the camera.
+    v: vec3<f32>,
+    roughness: f32,
+    // Reflectance looking straight on: 4% for stone and wood, the albedo
+    // for metal.
+    f0: vec3<f32>,
+    // Fully matte surfaces get no highlights or reflections at all.
+    glossy: bool,
+};
+
+// A highlight from light arriving along l (GGX distribution, Smith
+// visibility, Schlick Fresnel), scaled like the diffuse light (× π).
+fn highlight(s: Surface, l: vec3<f32>) -> vec3<f32> {
+    if !s.glossy {
+        return vec3<f32>(0.0);
+    }
+    let h = normalize(l + s.v);
+    let ndh = max(dot(s.n, h), 0.0);
+    let ndl = max(dot(s.n, l), 1e-4);
+    let ndv = max(dot(s.n, s.v), 1e-4);
+    let a = max(s.roughness * s.roughness, 0.002);
+    let a2 = a * a;
+    let d = a2 / (PI * pow(ndh * ndh * (a2 - 1.0) + 1.0, 2.0));
+    let k = a * 0.5;
+    let visibility = 0.25 / ((ndl * (1.0 - k) + k) * (ndv * (1.0 - k) + k));
+    let fresnel = s.f0 + (1.0 - s.f0) * pow(1.0 - max(dot(s.v, h), 0.0), 5.0);
+    return d * visibility * fresnel * PI;
+}
+
+struct Lit {
+    diffuse: vec3<f32>,
+    specular: vec3<f32>,
+};
+
+// Light from all point lights reaching a surface.
+fn point_lights(world: vec3<f32>, s: Surface) -> Lit {
+    var lit = Lit(vec3<f32>(0.0), vec3<f32>(0.0));
     let count = u32(frame.params.y);
     for (var i = 0u; i < count; i++) {
         let light = lights[i];
@@ -189,7 +244,7 @@ fn point_lights(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
             continue;
         }
         let l = to_light / max(distance, 1e-4);
-        let facing = dot(n, l);
+        let facing = dot(s.n, l);
         if facing <= 0.0 {
             continue;
         }
@@ -197,23 +252,53 @@ fn point_lights(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
         let ratio = distance / range;
         let window = saturate(1.0 - ratio * ratio * ratio * ratio);
         let falloff = window * window / max(distance * distance, 0.01);
-        let visibility = point_visibility(light, world, n, distance);
-        total += light.color.rgb * facing * falloff * visibility;
+        let arriving = light.color.rgb * facing * falloff * point_visibility(light, world, s.n, distance);
+        lit.diffuse += arriving;
+        lit.specular += arriving * highlight(s, l);
     }
-    return total;
+    return lit;
+}
+
+// What a glossy surface reflects along r: its zone's cube, projected onto
+// the zone's box so walls appear where they are; the sky without a bake.
+fn reflected(world: vec3<f32>, r: vec3<f32>, roughness: f32) -> vec3<f32> {
+    let index = i32(object.surface.z);
+    if index < 0 {
+        return mix(frame.ambient_ground.rgb, frame.ambient_sky.rgb, r.y * 0.5 + 0.5);
+    }
+    let probe = reflection_boxes[index];
+    var dir = r;
+    if all(world >= probe.min.xyz) && all(world <= probe.max.xyz) {
+        let safe = select(r, vec3<f32>(1e-5), abs(r) < vec3<f32>(1e-5));
+        let far = max((probe.max.xyz - world) / safe, (probe.min.xyz - world) / safe);
+        let t = min(min(far.x, far.y), far.z);
+        dir = world + r * t - probe.center.xyz;
+    }
+    let levels = f32(textureNumLevels(reflections) - 1u);
+    return textureSampleLevel(reflections, reflection_sampler, dir, i32(probe.center.w), roughness * levels).rgb;
+}
+
+// How much of the reflection a surface shows, averaged over its roughness
+// (Karis' fit of the split-sum lookup).
+fn reflectance(f0: vec3<f32>, roughness: f32, ndv: f32) -> vec3<f32> {
+    let c0 = vec4<f32>(-1.0, -0.0275, -0.572, 0.022);
+    let c1 = vec4<f32>(1.0, 0.0425, 1.04, -0.04);
+    let r = roughness * c0 + c1;
+    let a004 = min(r.x * r.x, exp2(-9.28 * ndv)) * r.x + r.y;
+    let ab = vec2<f32>(-1.04, 1.04) * a004 + r.zw;
+    return f0 * ab.x + ab.y;
 }
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let n = normalize(in.normal);
-    let uv = in.uv * mix(1.0, frame.params.x, object.highlight.y);
+    let uv = in.uv * object.highlight.y;
     let albedo = textureSample(albedo_texture, albedo_sampler, uv).rgb * object.color.rgb;
+    let roughness = object.surface.x;
+    let metalness = object.surface.y;
+    let to_camera = normalize(frame.camera_pos.xyz - in.world);
+    let s = Surface(n, to_camera, roughness, mix(vec3<f32>(0.04), albedo, metalness), roughness < 0.99);
 
-    let facing_sun = max(dot(n, -frame.sun_dir.xyz), 0.0);
-    var sun = vec3<f32>(0.0);
-    if facing_sun > 0.0 {
-        sun = frame.sun_color.rgb * facing_sun * sun_visibility(in.world, n);
-    }
     var ambient: vec3<f32>;
     if object.lighting.x > 0.5 {
         ambient = textureSampleLevel(lightmap, lightmap_sampler, in.lightmap_uv, 0.0).rgb;
@@ -225,11 +310,26 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             + n2.y * select(a[3], a[2], n.y >= 0.0).rgb
             + n2.z * select(a[5], a[4], n.z >= 0.0).rgb;
     }
-    let light = sun + ambient + point_lights(in.world, n);
-    var color = albedo * light + object.emissive.rgb;
+
+    var diffuse = ambient;
+    var specular = vec3<f32>(0.0);
+    let facing_sun = max(dot(n, -frame.sun_dir.xyz), 0.0);
+    if facing_sun > 0.0 {
+        let sun = frame.sun_color.rgb * facing_sun * sun_visibility(in.world, n);
+        diffuse += sun;
+        specular += sun * highlight(s, -frame.sun_dir.xyz);
+    }
+    let lamps = point_lights(in.world, s);
+    diffuse += lamps.diffuse;
+    specular += lamps.specular;
+    if s.glossy {
+        let ndv = max(dot(n, to_camera), 1e-4);
+        let r = reflect(-to_camera, n);
+        specular += reflected(in.world, r, roughness) * reflectance(s.f0, roughness, ndv);
+    }
+    var color = albedo * (1.0 - metalness) * diffuse + specular + object.emissive.rgb;
 
     // Selected: amber tint, stronger toward the silhouette.
-    let to_camera = normalize(frame.camera_pos.xyz - in.world);
     let rim = pow(1.0 - max(dot(n, to_camera), 0.0), 2.0);
     color = mix(color, HIGHLIGHT * 1.5, object.highlight.x * (0.3 + 0.6 * rim));
 
@@ -267,4 +367,111 @@ fn fs_sky(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = pixel.xy * frame.screen.xy;
     let f = textureSampleLevel(fog_volume, fog_sampler, vec3<f32>(uv, 1.0), 0.0);
     return vec4<f32>(frame.ambient_sky.rgb * f.a + f.rgb, 1.0);
+}
+
+// ---- Dust motes ----
+//
+// Points spread through a box that follows the camera (positions come
+// from a hash of the instance number and drift with time, wrapping around
+// the box), each lit like a speck of dust: the sun and lights through their
+// shadow maps, scattered strongly forward. Outside light they're black and
+// add nothing; in a beam they glitter.
+
+// Meters from the camera to the edge of the dust box.
+const DUST_REACH: f32 = 7.0;
+
+fn dust_hash(n: u32) -> u32 {
+    var x = n * 747796405u + 2891336453u;
+    x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+    return (x >> 22u) ^ x;
+}
+
+fn dust_rand(n: u32) -> f32 {
+    return f32(dust_hash(n)) / 4294967295.0;
+}
+
+// Henyey–Greenstein phase, strongly forward: motes flare when the light is
+// behind them.
+fn dust_phase(cos_theta: f32) -> f32 {
+    let g = 0.7;
+    let d = max(1.0 + g * g - 2.0 * g * cos_theta, 1e-3);
+    return (1.0 - g * g) / (4.0 * PI * d * sqrt(d));
+}
+
+struct DustOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) light: vec3<f32>,
+};
+
+@vertex
+fn vs_dust(@builtin(vertex_index) vertex: u32, @builtin(instance_index) id: u32) -> DustOut {
+    var out: DustOut;
+    let t = frame.params.z;
+    let seed = id * 4u;
+    // A home position in the box, a slow drift and a little sway.
+    let home = vec3<f32>(dust_rand(seed), dust_rand(seed + 1u), dust_rand(seed + 2u));
+    let heading = normalize(vec3<f32>(dust_rand(seed + 3u) - 0.5, (dust_rand(seed + 7u) - 0.5) * 0.4, dust_rand(seed + 11u) - 0.5) + vec3<f32>(1e-3));
+    let size = DUST_REACH * 2.0;
+    let sway = vec3<f32>(sin(t * 0.7 + home.x * 40.0), sin(t * 0.5 + home.y * 30.0), cos(t * 0.6 + home.z * 50.0)) * 0.08;
+    let p = home * size + heading * frame.dust.w * t + sway;
+    // Wrap into the box around the camera.
+    let rel = (fract((p - frame.camera_pos.xyz) / size + 0.5) - 0.5) * size;
+    let world = frame.camera_pos.xyz + rel;
+
+    // Light reaching the mote, as fog sees it.
+    let view = normalize(rel);
+    var light = vec3<f32>(0.0);
+    if dot(frame.sun_dir.xyz, frame.sun_dir.xyz) > 0.0 {
+        light = frame.sun_color.rgb * sun_visibility(world, vec3<f32>(0.0)) * dust_phase(dot(frame.sun_dir.xyz, -view));
+    }
+    let count = u32(frame.params.y);
+    for (var i = 0u; i < count; i++) {
+        let l = lights[i];
+        let to_mote = world - l.position.xyz;
+        let distance = length(to_mote);
+        let range = l.position.w;
+        if distance >= range {
+            continue;
+        }
+        let ratio = distance / range;
+        let window = saturate(1.0 - ratio * ratio * ratio * ratio);
+        let falloff = window * window / max(distance * distance, 0.04);
+        let travel = to_mote / max(distance, 1e-4);
+        light += l.color.rgb * falloff * point_visibility(l, world, vec3<f32>(0.0), distance) * dust_phase(dot(travel, -view));
+    }
+    // Twinkle as the speck turns, fade near the camera and the box edge.
+    let twinkle = 0.55 + 0.45 * sin(t * (1.5 + home.y * 3.0) + home.z * 60.0);
+    let distance = length(rel);
+    let fade = smoothstep(0.25, 0.9, distance) * (1.0 - smoothstep(DUST_REACH * 0.75, DUST_REACH, max(max(abs(rel.x), abs(rel.y)), abs(rel.z))));
+    out.light = light * frame.dust.z * twinkle * fade;
+
+    // A square of `size` internal pixels, snapped to whole pixels so it
+    // stays crisp.
+    let clip = frame.view_proj * vec4<f32>(world, 1.0);
+    let corner = vec2<f32>(f32(vertex == 1u || vertex == 2u || vertex == 4u), f32(vertex >= 2u && vertex <= 4u));
+    if clip.w <= 0.05 || all(out.light <= vec3<f32>(1e-4)) {
+        // Behind the camera or unlit: collapse it.
+        out.clip = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+        return out;
+    }
+    let pixels = 1.0 / frame.screen.xy;
+    let ndc = clip.xy / clip.w;
+    let pixel = floor((ndc * vec2<f32>(0.5, -0.5) + 0.5) * pixels) + corner * frame.dust.y;
+    let snapped = (pixel / pixels - 0.5) * vec2<f32>(2.0, -2.0);
+    out.clip = vec4<f32>(snapped * clip.w, clip.z, clip.w);
+    return out;
+}
+
+@fragment
+fn fs_dust(in: DustOut) -> @location(0) vec4<f32> {
+    // Dimmed by the fog in front of it (its own scattering is the fog's).
+    let uv = in.clip.xy * frame.screen.xy;
+    var through = 1.0;
+    if frame.camera_forward.w != 0.0 {
+        let depth = max(in.clip.w, frame.screen.z);
+        let t = log(depth / frame.screen.z) / log(frame.screen.w / frame.screen.z);
+        let slices = f32(textureDimensions(fog_volume).z);
+        through = textureSampleLevel(fog_volume, fog_sampler, vec3<f32>(uv, t - 0.5 / slices), 0.0).a;
+    }
+    return vec4<f32>(in.light * through, 1.0);
 }

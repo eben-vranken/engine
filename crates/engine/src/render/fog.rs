@@ -1,6 +1,7 @@
 //! Volumetric fog in a froxel grid: a 3D grid that follows the camera's
-//! view, [`GRID`] cells across, with depth slices spaced exponentially out
-//! to `fog_distance` (thin slices near the camera, where detail shows).
+//! view (its size set by the quality preset), with depth slices spaced
+//! exponentially out to `fog_distance` (thin near the camera, where detail
+//! shows).
 //!
 //! Two compute passes per frame (see the shaders):
 //! 1. inject: per cell, fog density and the light it scatters toward the
@@ -17,9 +18,6 @@ use crate::scene::{Component, Environment, Fog, Scene};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3, Vec4};
 
-/// Cells across, down and deep. Fixed, so it costs the same at every
-/// window size; 192 × 108 matches 16:9, about 6–7 internal pixels per cell.
-pub const GRID: [u32; 3] = [192, 108, 96];
 /// Depth of the first slice (meters).
 pub const NEAR: f32 = 0.4;
 /// Most fog regions (zone volumes plus FogVolumes).
@@ -45,6 +43,8 @@ struct InjectUniform {
     default_shape: Vec4,
     depth: Vec4,
     cascades: Vec4,
+    /// Default fog's wisps: strength, size, speed.
+    default_wisps: Vec4,
 }
 
 #[repr(C)]
@@ -66,6 +66,8 @@ pub struct GpuRegion {
     /// x: the box's height in meters (FogVolumes); yzw: the ambient light
     /// inside (zones).
     extra: Vec4,
+    /// Wisps (zones): strength, size, speed.
+    wisps: Vec4,
 }
 
 /// The camera's ray basis: forward, and right/up scaled so that
@@ -119,6 +121,7 @@ pub fn regions(scene: &Scene, zone_ambient: impl Fn(&str) -> Option<Vec3>) -> Ve
                         fog: volume.color.extend(volume.density.max(0.0)),
                         shape: Vec4::new(0.0, volume.falloff, volume.softness.clamp(0.0, 1.0), 1.0),
                         extra: Vec4::new(size.y.abs(), 0.0, 0.0, 0.0),
+                        wisps: Vec4::ZERO,
                     });
                 }
                 _ => {}
@@ -140,7 +143,18 @@ fn zone_region(to_box: Mat4, fog: &Fog, ambient: Vec3) -> GpuRegion {
         fog: fog.color.extend(fog.density.max(0.0)),
         shape: Vec4::new(fog.height, fog.falloff.max(0.0), 0.0, 0.0),
         extra: Vec4::new(0.0, ambient.x, ambient.y, ambient.z),
+        wisps: wisp_params(fog),
     }
+}
+
+/// A fog's wisps as strength, size, speed.
+fn wisp_params(fog: &Fog) -> Vec4 {
+    Vec4::new(
+        fog.wisps.clamp(0.0, 1.0),
+        fog.wisp_size.max(0.05),
+        fog.wisp_speed,
+        0.0,
+    )
 }
 
 /// What the fog needs to know about this frame.
@@ -154,9 +168,16 @@ pub struct FogFrame<'a> {
     pub sun_on: bool,
     /// Lights in the light buffer, including the fog-only ones.
     pub light_count: u32,
+    /// Seconds since start, for the drifting wisps.
+    pub time: f32,
 }
 
 pub struct VolumetricFog {
+    /// Cells across, down and deep (from the quality preset). Fixed per
+    /// run, so it costs the same at every window size.
+    grid: [u32; 3],
+    /// Samples per cell per frame.
+    samples: u32,
     /// The integrated grid, for the scene shader.
     pub integrated_view: wgpu::TextureView,
     inject_uniform: wgpu::Buffer,
@@ -181,15 +202,17 @@ impl VolumetricFog {
         sun_shadow: &wgpu::TextureView,
         point_shadows: &wgpu::TextureView,
         shadow_sampler: &wgpu::Sampler,
+        quality: &super::quality::Settings,
     ) -> Self {
+        let (grid, samples) = (quality.fog_grid, quality.fog_samples);
         let volume = |label| {
             device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
                     size: wgpu::Extent3d {
-                        width: GRID[0],
-                        height: GRID[1],
-                        depth_or_array_layers: GRID[2],
+                        width: grid[0],
+                        height: grid[1],
+                        depth_or_array_layers: grid[2],
                     },
                     mip_level_count: 1,
                     sample_count: 1,
@@ -386,6 +409,8 @@ impl VolumetricFog {
         );
 
         Self {
+            grid,
+            samples: samples.max(1),
             integrated_view,
             inject_uniform,
             integrate_uniform,
@@ -417,7 +442,7 @@ impl VolumetricFog {
         let env = f.env;
         let [forward, right, up] = ray_basis(f.camera, f.aspect);
         let far = env.fog_distance.max(NEAR * 2.0);
-        let depth = Vec4::new(NEAR, far, 0.0, 0.0);
+        let depth = Vec4::new(NEAR, far, 0.0, self.samples as f32);
         let weight = if self.prev_view_proj.is_some() {
             BLEND
         } else {
@@ -427,7 +452,8 @@ impl VolumetricFog {
         let uniform = InjectUniform {
             sun_view_proj: f.sun_view_proj,
             prev_view_proj: self.prev_view_proj.unwrap_or(f.view_proj),
-            camera_pos: f.camera.position.extend(1.0),
+            // w: seconds, for the drifting wisps.
+            camera_pos: f.camera.position.extend(f.time),
             camera_forward: forward.extend(weight),
             camera_right: right.extend(0.0),
             camera_up: up.extend(0.0),
@@ -446,6 +472,7 @@ impl VolumetricFog {
             ),
             depth,
             cascades: Vec4::new(f.cascades[0], f.cascades[1], f.cascades[2], 0.0),
+            default_wisps: wisp_params(&env.fog),
         };
         queue.write_buffer(&self.inject_uniform, 0, bytemuck::bytes_of(&uniform));
         let integrate = IntegrateUniform {
@@ -464,13 +491,13 @@ impl VolumetricFog {
         pass.set_pipeline(&self.inject);
         pass.set_bind_group(0, &self.inject_groups[parity], &[]);
         pass.dispatch_workgroups(
-            GRID[0].div_ceil(4),
-            GRID[1].div_ceil(4),
-            GRID[2].div_ceil(4),
+            self.grid[0].div_ceil(4),
+            self.grid[1].div_ceil(4),
+            self.grid[2].div_ceil(4),
         );
         pass.set_pipeline(&self.integrate);
         pass.set_bind_group(0, &self.integrate_groups[parity], &[]);
-        pass.dispatch_workgroups(GRID[0].div_ceil(8), GRID[1].div_ceil(8), 1);
+        pass.dispatch_workgroups(self.grid[0].div_ceil(8), self.grid[1].div_ceil(8), 1);
         drop(pass);
 
         self.prev_view_proj = Some(f.view_proj);

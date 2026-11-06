@@ -52,6 +52,11 @@ impl Overlay {
         self.state.on_window_event(window, event).consumed
     }
 
+    /// True while a text field (or other widget) takes keyboard input.
+    pub fn wants_keyboard(&self) -> bool {
+        self.state.egui_ctx().egui_wants_keyboard_input()
+    }
+
     /// True while the pointer is over a UI element.
     pub fn wants_pointer(&self) -> bool {
         self.state.egui_ctx().egui_wants_pointer_input()

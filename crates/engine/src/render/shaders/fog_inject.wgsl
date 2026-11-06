@@ -27,10 +27,12 @@ struct Fog {
     default_fog: vec4<f32>,
     // x: height, y: falloff, z: number of lights, w: frame number.
     default_shape: vec4<f32>,
-    // x: near, y: far (meters of fog), z: sun shadow texels per side.
+    // x: near, y: far (meters of fog), w: samples per cell.
     depth: vec4<f32>,
     // xyz: meters each sun cascade covers.
     cascades: vec4<f32>,
+    // Default fog's wisps: strength, size (m), speed (m/s).
+    default_wisps: vec4<f32>,
 };
 
 struct Light {
@@ -51,10 +53,11 @@ struct Region {
     shape: vec4<f32>,
     // x: the box's height in meters (volumes). yzw: ambient light (zones).
     extra: vec4<f32>,
+    // Wisps (zones): strength, size (m), speed (m/s).
+    wisps: vec4<f32>,
 };
 
 const PI: f32 = 3.14159265;
-const POINT_SHADOW_SIZE: f32 = 512.0;
 
 @group(0) @binding(0) var<uniform> fog: Fog;
 @group(0) @binding(1) var<storage, read> lights: array<Light>;
@@ -128,6 +131,36 @@ fn point_visibility(light: Light, p: vec3<f32>) -> f32 {
     return textureSampleCompareLevel(point_shadows, shadow_sampler, c.xy, layer, c.z);
 }
 
+// Smooth 3D value noise, 0..1.
+fn noise3(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    var v = 0.0;
+    for (var c = 0u; c < 8u; c++) {
+        let o = vec3<f32>(f32(c & 1u), f32((c >> 1u) & 1u), f32((c >> 2u) & 1u));
+        let q = vec3<i32>(i + o) + vec3<i32>(4096);
+        let r = hash(vec3<u32>(q));
+        let w = mix(1.0 - u, u, o);
+        v += r * w.x * w.y * w.z;
+    }
+    return v;
+}
+
+// Density multiplier for drifting wisps (two octaves of noise moving with
+// time); w = strength, size (m), speed (m/s).
+fn wisps(p: vec3<f32>, w: vec4<f32>) -> f32 {
+    if w.x <= 0.0 {
+        return 1.0;
+    }
+    let drift = vec3<f32>(0.8, 0.2, 0.55) * w.z * fog.camera_pos.w;
+    let q = (p + drift) / w.y;
+    let n = noise3(q) * 0.65 + noise3(q * 2.7 + 17.0) * 0.35;
+    // Sharpened, so wisps read as streaks with clear air between them.
+    let streaks = smoothstep(0.35, 0.65, n) * 2.0;
+    return mix(1.0, streaks, w.x);
+}
+
 // Ambient light where `medium` was last called: the zone's (baked), or
 // the environment's outside every zone.
 var<private> local_ambient: vec3<f32>;
@@ -135,6 +168,7 @@ var<private> local_ambient: vec3<f32>;
 // rgb: scattering (density × color), a: density, at a point.
 fn medium(p: vec3<f32>) -> vec4<f32> {
     local_ambient = fog.ambient.rgb;
+    var local_wisps = fog.default_wisps;
     var zone_fog = fog.default_fog;
     var height = fog.default_shape.x;
     var falloff = fog.default_shape.y;
@@ -156,6 +190,7 @@ fn medium(p: vec3<f32>) -> vec4<f32> {
                 height = r.shape.x;
                 falloff = r.shape.y;
                 local_ambient = r.extra.yzw;
+                local_wisps = r.wisps;
             }
         } else {
             let soft = max(r.shape.z, 1e-3) * 0.5;
@@ -166,11 +201,9 @@ fn medium(p: vec3<f32>) -> vec4<f32> {
             extra += vec4<f32>(r.fog.rgb * d, d);
         }
     }
-    let d = zone_fog.a * exp(-falloff * max(p.y - height, 0.0));
+    let d = zone_fog.a * exp(-falloff * max(p.y - height, 0.0)) * wisps(p, local_wisps);
     return vec4<f32>(zone_fog.rgb * d, d) + extra;
 }
-
-const SAMPLES: u32 = 4u;
 
 // A point in cell `id`: `offset` xy in -0.5..0.5 across the cell, z in 0..1
 // through its depth.
@@ -234,14 +267,15 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // from flickering.
     var current = vec4<f32>(0.0);
     let rotation = fract(hash(id) + f32(frame % 64u) * 0.618034);
-    for (var s = 0u; s < SAMPLES; s++) {
-        let seed = vec3<u32>(id.xy, id.z * SAMPLES + s + frame * 7919u);
-        let along = fract(rotation + f32(s) / f32(SAMPLES));
+    let samples = max(u32(fog.depth.w), 1u);
+    for (var s = 0u; s < samples; s++) {
+        let seed = vec3<u32>(id.xy, id.z * samples + s + frame * 7919u);
+        let along = fract(rotation + f32(s) / f32(samples));
         let side = vec2<f32>(hash(seed), hash(seed.yzx)) - 0.5;
         let p = cell_point(id, size, vec3<f32>(side, along));
         current += in_scatter(p, normalize(p - fog.camera_pos.xyz));
     }
-    current /= f32(SAMPLES);
+    current /= f32(samples);
 
     // The cell's center, to find it in last frame's grid.
     let p = cell_point(id, size, vec3<f32>(0.0, 0.0, 0.5));
