@@ -38,4 +38,11 @@
         fov_kick_time: 0.25,
         step_smoothing: 0.06,
     ),
+    footsteps: (
+        use_default: true,
+        volume: 0.26,
+        clips: [],
+        randomize: false,
+        random: Smart,
+    ),
 )
