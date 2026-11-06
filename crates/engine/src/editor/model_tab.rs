@@ -610,7 +610,7 @@ impl Editor {
         }
 
         self.confirm_dialog(ui, scene, player, output);
-        self.name_dialog(ui, scene, player, output);
+        self.name_dialog(ui, output);
         output.viewport = viewport;
         self.hints(ui, viewport);
     }

@@ -7,6 +7,7 @@
 //! *pending*; it becomes one undo step when the interaction ends.
 
 mod confirm;
+mod file_dialogs;
 mod files;
 pub mod gizmo;
 mod hierarchy;
@@ -21,7 +22,6 @@ mod new_scene;
 mod object_panel;
 mod objects;
 mod player_panel;
-mod projects;
 mod settings_panel;
 mod status_bar;
 mod tabs;
@@ -102,7 +102,7 @@ pub struct Editor {
     /// The open model, when the active tab is a model tab.
     pub model: Option<ModelDoc>,
     /// The system's file dialog, while one is open.
-    file_dialog: Option<projects::FileDialog>,
+    file_dialog: Option<file_dialogs::FileDialog>,
 }
 
 /// Numbers for the status bar.
@@ -140,8 +140,8 @@ pub struct EditorOutput {
     pub bake: bool,
     /// BAKE LIGHTING was clicked.
     pub bake_lighting: bool,
-    /// EXPORT PACKAGE was clicked.
-    pub export_package: bool,
+    /// Write the project to a package file here.
+    pub export_package: Option<PathBuf>,
     /// Make this tab the active one.
     pub switch_tab: Option<usize>,
     /// Open this scene in a new tab.
@@ -212,14 +212,14 @@ impl Editor {
             toggle_play: false,
             bake: false,
             bake_lighting: false,
-            export_package: false,
+            export_package: None,
             switch_tab: None,
             new_tab: None,
             close_tab: None,
             open_model: None,
             open_project: None,
         };
-        self.poll_file_dialog(&mut output);
+        self.poll_file_dialog(scene, player, &mut output);
         egui::Panel::top("editor_menu").show(ui, |ui| {
             self.menu_bar(ui, scene, player, blink, view, &mut output)
         });
@@ -325,7 +325,7 @@ impl Editor {
         }
 
         self.confirm_dialog(ui, scene, player, &mut output);
-        self.name_dialog(ui, scene, player, &mut output);
+        self.name_dialog(ui, &mut output);
 
         output.viewport = ui.available_rect_before_wrap();
         self.hints(ui, output.viewport);

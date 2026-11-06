@@ -13,7 +13,7 @@ pub(super) enum Confirm {
     /// Close the editor (every tab).
     Close,
     /// Leave this project for another one.
-    Project(super::projects::Switch),
+    Project(super::file_dialogs::Switch),
 }
 
 impl Editor {

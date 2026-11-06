@@ -654,8 +654,8 @@ impl Running {
             if output.bake_lighting {
                 self.start_light_bake();
             }
-            if output.export_package {
-                self.export_package();
+            if let Some(out) = &output.export_package {
+                self.export_package(out);
             }
             for &change in &output.changed {
                 self.show_change(change);

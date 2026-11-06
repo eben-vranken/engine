@@ -3,7 +3,7 @@
 
 use super::Running;
 use crate::camera::Camera;
-use crate::editor::{Editor, import};
+use crate::editor::import;
 use crate::physics::PhysicsWorld;
 use crate::render::quality::Quality;
 use glam::{Vec2, Vec3};
@@ -35,7 +35,9 @@ impl Running {
                 return;
             };
             if crate::package::is_package(&file) {
-                open_package_window(&file, editor, self.quality, self.perf_log.is_some());
+                if let Some(dir) = editor.open_dropped_package(&file) {
+                    self.open_project(&dir);
+                }
                 continue;
             }
             if import::is_sound(&file) {
@@ -89,13 +91,12 @@ impl Running {
             }
         }
     }
-    /// Editor: writes the project folder to a package next to it.
-    pub(super) fn export_package(&mut self) {
+    /// Editor: writes the project folder to a package at `out`.
+    pub(super) fn export_package(&mut self, out: &Path) {
         let Some(editor) = &mut self.editor else {
             return;
         };
-        let out = crate::package::export_path(&self.game_dir);
-        match crate::package::export(&self.game_dir, &editor.game_name, &out) {
+        match crate::package::export(&self.game_dir, &editor.game_name, out) {
             Ok(count) => {
                 log::info!("exported {} ({count} files)", out.display());
                 let unsaved = if editor.any_dirty() {
@@ -112,26 +113,6 @@ impl Running {
                 log::error!("{err}");
                 editor.show_error(err.to_string());
             }
-        }
-    }
-}
-
-/// A package dropped on the editor: unpack it next to itself and open it in
-/// a second editor window (this one keeps its project).
-pub(super) fn open_package_window(
-    file: &Path,
-    editor: &mut Editor,
-    quality: Quality,
-    perf_log: bool,
-) {
-    let opened = crate::package::unpack(file)
-        .map_err(|e| e.to_string())
-        .and_then(|(dir, _)| start_editor(&dir, quality, perf_log).map(|()| dir));
-    match opened {
-        Ok(dir) => editor.show_message(format!("UNPACKED INTO {}; OPENING IT", dir.display())),
-        Err(err) => {
-            log::error!("{err}");
-            editor.show_error(err);
         }
     }
 }

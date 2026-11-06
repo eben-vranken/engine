@@ -128,6 +128,20 @@ pub fn unpack(file: &Path) -> Result<(PathBuf, Manifest), PackageError> {
     unpack_into(file, &target).map(|manifest| (target, manifest))
 }
 
+/// Where a package goes when unpacked into the folder `parent`: `parent`
+/// itself if it is empty, otherwise a new folder in it named after the
+/// file (`hall.gamepack` → `hall/`, or `hall 2/` if that's taken).
+pub fn unpack_target(file: &Path, parent: &Path) -> PathBuf {
+    let empty = parent
+        .read_dir()
+        .is_ok_and(|mut entries| entries.next().is_none());
+    if empty {
+        return parent.to_owned();
+    }
+    let stem = file.file_stem().unwrap_or_default();
+    free_folder(&parent.join(stem))
+}
+
 /// Unpacks a package into `target` (created if missing).
 pub fn unpack_into(file: &Path, target: &Path) -> Result<Manifest, PackageError> {
     let io = |path: &Path, err| PackageError::Io(path.to_owned(), err);
@@ -231,6 +245,20 @@ mod tests {
 
         // Opening it again doesn't overwrite the first copy.
         assert_eq!(unpack(&file).unwrap().0, dir.join("sandbox 2"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn packages_unpack_into_an_empty_folder_or_a_new_one_in_it() {
+        let dir = temp_dir("target");
+        let file = Path::new("elsewhere/hall.gamepack");
+        let empty = dir.join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        assert_eq!(unpack_target(file, &empty), empty);
+        std::fs::write(empty.join("note.txt"), "x").unwrap();
+        assert_eq!(unpack_target(file, &empty), empty.join("hall"));
+        std::fs::create_dir(empty.join("hall")).unwrap();
+        assert_eq!(unpack_target(file, &empty), empty.join("hall 2"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

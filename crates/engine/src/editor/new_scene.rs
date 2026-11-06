@@ -1,5 +1,5 @@
-//! NEW SCENE and SAVE AS: naming a scene file and the scene a new one
-//! starts as.
+//! NEW SCENE and NEW MODEL: naming the new file in the editor. Also SAVE
+//! SCENE AS once its file is picked.
 
 use super::{Editor, EditorOutput, dim};
 use crate::modeler::mesh::EditMesh;
@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Naming {
     New,
-    SaveAs,
     /// A new model in `models/`.
     Model,
 }
@@ -80,22 +79,12 @@ impl Editor {
     }
 
     /// The name dialog, while one is open.
-    pub(super) fn name_dialog(
-        &mut self,
-        ui: &egui::Ui,
-        scene: &Scene,
-        player: &PlayerSettings,
-        output: &mut EditorOutput,
-    ) {
+    pub(super) fn name_dialog(&mut self, ui: &egui::Ui, output: &mut EditorOutput) {
         let Some(dialog) = &mut self.naming else {
             return;
         };
         let (title, hint) = match dialog.purpose {
             Naming::New => ("NEW SCENE", "CREATED IN SCENES/ AND OPENED IN A NEW TAB"),
-            Naming::SaveAs => (
-                "SAVE AS",
-                "A COPY OF THIS SCENE (AND ITS BAKES); THE TAB SWITCHES TO IT",
-            ),
             Naming::Model => ("NEW MODEL", "CREATED IN MODELS/ AND OPENED IN A NEW TAB"),
         };
         let mut accept = false;
@@ -140,10 +129,8 @@ impl Editor {
         let result = match purpose {
             Naming::Model => project_file(&self.project_dir, "models", "glb", &dialog.text)
                 .and_then(|path| self.create_model(&path, start, output)),
-            _ => scene_file(&self.project_dir, &dialog.text).and_then(|path| match purpose {
-                Naming::SaveAs => self.save_as(&path, scene, player, output),
-                _ => self.create_scene(&path, output),
-            }),
+            Naming::New => scene_file(&self.project_dir, &dialog.text)
+                .and_then(|path| self.create_scene(&path, output)),
         };
         match result {
             Ok(()) => self.naming = None,
@@ -187,7 +174,7 @@ impl Editor {
 
     /// Saves the scene under `path` (copying its bakes along) and makes the
     /// tab edit that file from now on.
-    fn save_as(
+    pub(super) fn save_as(
         &mut self,
         path: &Path,
         scene: &Scene,

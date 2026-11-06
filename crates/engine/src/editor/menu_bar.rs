@@ -2,10 +2,10 @@
 //! controls used all the time (Play, the gizmo modes) and the project name.
 //! Model tabs use the same bar without the scene-only parts.
 
+use super::file_dialogs::Purpose;
 use super::gizmo::View;
 use super::new_scene::Naming;
 use super::objects::primitives;
-use super::projects::Purpose;
 use super::{Editor, EditorOutput, dim};
 use crate::player::settings::PlayerSettings;
 use crate::scene::Scene;
@@ -107,6 +107,21 @@ impl Editor {
             {
                 ask = Some(Purpose::OpenProject);
             }
+            let hint = "A .GAMEPACK FILE: PICK IT, THEN THE FOLDER TO UNPACK IT INTO";
+            if item(ui, "OPEN PACKAGE…", "", !waiting)
+                .on_hover_text(hint)
+                .clicked()
+            {
+                ask = Some(Purpose::OpenPackage);
+            }
+            let hint = "THE WHOLE PROJECT FOLDER IN ONE .GAMEPACK FILE, \
+                        TO OPEN IN ANOTHER EDITOR (SAVED FILES ONLY)";
+            if item(ui, "EXPORT PACKAGE…", "", !waiting)
+                .on_hover_text(hint)
+                .clicked()
+            {
+                ask = Some(Purpose::ExportPackage);
+            }
             ui.separator();
             if item(ui, "NEW SCENE…", "", true).clicked() {
                 naming = Some(Naming::New);
@@ -115,21 +130,16 @@ impl Editor {
             if item(ui, save, "CTRL+S", true).clicked() {
                 output.settled |= self.save(scene, player);
             }
-            if item(ui, "SAVE SCENE AS…", "", !modeling).clicked() {
-                naming = Some(Naming::SaveAs);
+            let hint = "A COPY OF THIS SCENE (AND ITS BAKES) IN SCENES/; THE TAB SWITCHES TO IT";
+            if item(ui, "SAVE SCENE AS…", "", !modeling && !waiting)
+                .on_hover_text(hint)
+                .clicked()
+            {
+                ask = Some(Purpose::SaveSceneAs);
             }
             ui.separator();
             if item(ui, "NEW MODEL…", "", true).clicked() {
                 naming = Some(Naming::Model);
-            }
-            ui.separator();
-            let hint = "THE WHOLE PROJECT FOLDER IN ONE .GAMEPACK FILE NEXT TO IT, \
-                        TO OPEN IN ANOTHER EDITOR (SAVED FILES ONLY)";
-            if item(ui, "EXPORT PACKAGE", "", true)
-                .on_hover_text(hint)
-                .clicked()
-            {
-                output.export_package = true;
             }
             ui.separator();
             if item(ui, "QUIT", "", true).clicked() && self.request_close() {
