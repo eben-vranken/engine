@@ -20,6 +20,8 @@ struct Frame {
     shadow: vec4<f32>,
     // xy: 1 / internal size in pixels. z, w: fog grid near and far depth.
     screen: vec4<f32>,
+    // Dust motes in the camera's zone: amount, size (px), brightness, speed.
+    dust: vec4<f32>,
 };
 
 struct Object {
@@ -365,4 +367,111 @@ fn fs_sky(@builtin(position) pixel: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = pixel.xy * frame.screen.xy;
     let f = textureSampleLevel(fog_volume, fog_sampler, vec3<f32>(uv, 1.0), 0.0);
     return vec4<f32>(frame.ambient_sky.rgb * f.a + f.rgb, 1.0);
+}
+
+// ---- Dust motes ----
+//
+// Points spread through a box that follows the camera (positions come
+// from a hash of the instance number and drift with time, wrapping around
+// the box), each lit like a speck of dust: the sun and lights through their
+// shadow maps, scattered strongly forward. Outside light they're black and
+// add nothing; in a beam they glitter.
+
+// Meters from the camera to the edge of the dust box.
+const DUST_REACH: f32 = 7.0;
+
+fn dust_hash(n: u32) -> u32 {
+    var x = n * 747796405u + 2891336453u;
+    x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+    return (x >> 22u) ^ x;
+}
+
+fn dust_rand(n: u32) -> f32 {
+    return f32(dust_hash(n)) / 4294967295.0;
+}
+
+// Henyey–Greenstein phase, strongly forward: motes flare when the light is
+// behind them.
+fn dust_phase(cos_theta: f32) -> f32 {
+    let g = 0.7;
+    let d = max(1.0 + g * g - 2.0 * g * cos_theta, 1e-3);
+    return (1.0 - g * g) / (4.0 * PI * d * sqrt(d));
+}
+
+struct DustOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) light: vec3<f32>,
+};
+
+@vertex
+fn vs_dust(@builtin(vertex_index) vertex: u32, @builtin(instance_index) id: u32) -> DustOut {
+    var out: DustOut;
+    let t = frame.params.z;
+    let seed = id * 4u;
+    // A home position in the box, a slow drift and a little sway.
+    let home = vec3<f32>(dust_rand(seed), dust_rand(seed + 1u), dust_rand(seed + 2u));
+    let heading = normalize(vec3<f32>(dust_rand(seed + 3u) - 0.5, (dust_rand(seed + 7u) - 0.5) * 0.4, dust_rand(seed + 11u) - 0.5) + vec3<f32>(1e-3));
+    let size = DUST_REACH * 2.0;
+    let sway = vec3<f32>(sin(t * 0.7 + home.x * 40.0), sin(t * 0.5 + home.y * 30.0), cos(t * 0.6 + home.z * 50.0)) * 0.08;
+    let p = home * size + heading * frame.dust.w * t + sway;
+    // Wrap into the box around the camera.
+    let rel = (fract((p - frame.camera_pos.xyz) / size + 0.5) - 0.5) * size;
+    let world = frame.camera_pos.xyz + rel;
+
+    // Light reaching the mote, as fog sees it.
+    let view = normalize(rel);
+    var light = vec3<f32>(0.0);
+    if dot(frame.sun_dir.xyz, frame.sun_dir.xyz) > 0.0 {
+        light = frame.sun_color.rgb * sun_visibility(world, vec3<f32>(0.0)) * dust_phase(dot(frame.sun_dir.xyz, -view));
+    }
+    let count = u32(frame.params.y);
+    for (var i = 0u; i < count; i++) {
+        let l = lights[i];
+        let to_mote = world - l.position.xyz;
+        let distance = length(to_mote);
+        let range = l.position.w;
+        if distance >= range {
+            continue;
+        }
+        let ratio = distance / range;
+        let window = saturate(1.0 - ratio * ratio * ratio * ratio);
+        let falloff = window * window / max(distance * distance, 0.04);
+        let travel = to_mote / max(distance, 1e-4);
+        light += l.color.rgb * falloff * point_visibility(l, world, vec3<f32>(0.0), distance) * dust_phase(dot(travel, -view));
+    }
+    // Twinkle as the speck turns, fade near the camera and the box edge.
+    let twinkle = 0.55 + 0.45 * sin(t * (1.5 + home.y * 3.0) + home.z * 60.0);
+    let distance = length(rel);
+    let fade = smoothstep(0.25, 0.9, distance) * (1.0 - smoothstep(DUST_REACH * 0.75, DUST_REACH, max(max(abs(rel.x), abs(rel.y)), abs(rel.z))));
+    out.light = light * frame.dust.z * twinkle * fade;
+
+    // A square of `size` internal pixels, snapped to whole pixels so it
+    // stays crisp.
+    let clip = frame.view_proj * vec4<f32>(world, 1.0);
+    let corner = vec2<f32>(f32(vertex == 1u || vertex == 2u || vertex == 4u), f32(vertex >= 2u && vertex <= 4u));
+    if clip.w <= 0.05 || all(out.light <= vec3<f32>(1e-4)) {
+        // Behind the camera or unlit: collapse it.
+        out.clip = vec4<f32>(2.0, 2.0, 2.0, 1.0);
+        return out;
+    }
+    let pixels = 1.0 / frame.screen.xy;
+    let ndc = clip.xy / clip.w;
+    let pixel = floor((ndc * vec2<f32>(0.5, -0.5) + 0.5) * pixels) + corner * frame.dust.y;
+    let snapped = (pixel / pixels - 0.5) * vec2<f32>(2.0, -2.0);
+    out.clip = vec4<f32>(snapped * clip.w, clip.z, clip.w);
+    return out;
+}
+
+@fragment
+fn fs_dust(in: DustOut) -> @location(0) vec4<f32> {
+    // Dimmed by the fog in front of it (its own scattering is the fog's).
+    let uv = in.clip.xy * frame.screen.xy;
+    var through = 1.0;
+    if frame.camera_forward.w != 0.0 {
+        let depth = max(in.clip.w, frame.screen.z);
+        let t = log(depth / frame.screen.z) / log(frame.screen.w / frame.screen.z);
+        let slices = f32(textureDimensions(fog_volume).z);
+        through = textureSampleLevel(fog_volume, fog_sampler, vec3<f32>(uv, t - 0.5 / slices), 0.0).a;
+    }
+    return vec4<f32>(in.light * through, 1.0);
 }

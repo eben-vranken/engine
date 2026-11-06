@@ -53,6 +53,15 @@ pub struct Fog {
     pub wisp_size: f32,
     /// How fast they drift (meters per second).
     pub wisp_speed: f32,
+    /// Dust motes floating in the air, glittering where light catches them
+    /// (invisible in the dark): 0 = none, 1 = a lot.
+    pub dust: f32,
+    /// Size of a mote in internal pixels.
+    pub dust_size: f32,
+    /// How bright a lit mote is.
+    pub dust_brightness: f32,
+    /// How fast the motes drift (meters per second).
+    pub dust_speed: f32,
 }
 
 impl Default for Fog {
@@ -65,6 +74,10 @@ impl Default for Fog {
             wisps: 0.5,
             wisp_size: 2.0,
             wisp_speed: 0.15,
+            dust: 0.0,
+            dust_size: 1.0,
+            dust_brightness: 4.0,
+            dust_speed: 0.05,
         }
     }
 }

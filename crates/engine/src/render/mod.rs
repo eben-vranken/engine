@@ -47,6 +47,8 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// Dust motes drawn at `dust: 1`.
+const MAX_DUST: u32 = 12_000;
 /// Most zones with a reflection cube at once.
 const MAX_REFLECTIONS: usize = 16;
 /// Mip levels of the reflection cubes: rougher surfaces read blurrier ones.
@@ -80,6 +82,9 @@ struct FrameUniform {
     params: Vec4,
     shadow: Vec4,
     screen: Vec4,
+    /// Dust motes in the camera's zone: amount, size (px), brightness,
+    /// speed.
+    dust: Vec4,
 }
 
 /// Matches `Object` in `scene.wgsl`.
@@ -245,6 +250,9 @@ pub struct Renderer {
 
     scene_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
+    dust_pipeline: wgpu::RenderPipeline,
+    /// Per zone: its own fog, if any (for the camera zone's dust).
+    zone_fogs: Vec<Option<crate::scene::Fog>>,
     /// Group 3: a zone's lightmap and its sampler.
     lightmap_layout: wgpu::BindGroupLayout,
     lightmap_sampler: wgpu::Sampler,
@@ -351,7 +359,7 @@ impl Renderer {
         // Scene pass resources.
         let storage = |binding| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
                 has_dynamic_offset: false,
@@ -361,7 +369,7 @@ impl Renderer {
         };
         let depth_texture = |binding, view_dimension| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Depth,
                 view_dimension,
@@ -388,7 +396,7 @@ impl Renderer {
                 depth_texture(4, wgpu::TextureViewDimension::D2Array),
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
@@ -729,6 +737,47 @@ impl Renderer {
             cache: None,
         });
 
+        // Dust motes: camera-facing squares, added onto the image where
+        // they're in front of the scene (depth tested, not written).
+        let dust_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("dust"),
+            layout: Some(&sky_layout),
+            vertex: wgpu::VertexState {
+                module: &scene_shader,
+                entry_point: Some("vs_dust"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            primitive: Default::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &scene_shader,
+                entry_point: Some("fs_dust"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: HDR_FORMAT,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::One,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent::REPLACE,
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let layout = ScaleLayout::new(
             [config.width, config.height],
             scale::factor_for_lines(config.height, settings.max_lines),
@@ -752,6 +801,8 @@ impl Renderer {
             targets,
             scene_pipeline,
             sky_pipeline,
+            dust_pipeline,
+            zone_fogs: Vec::new(),
             lightmap_layout,
             lightmap_sampler,
             no_lightmap,
@@ -930,6 +981,7 @@ impl Renderer {
     /// zones' color grades.
     pub fn set_scene(&mut self, scene: &Scene, assets: &mut Assets) {
         self.environment = scene.environment.clone();
+        self.zone_fogs = scene.zones.iter().map(|z| z.fog.clone()).collect();
         self.lights = scene_lights(scene);
         self.shadows.invalidate();
         self.textures.clear();
@@ -1096,6 +1148,7 @@ impl Renderer {
     /// re-uploading every mesh.
     pub fn set_zones(&mut self, scene: &Scene, assets: &Assets) {
         self.environment = scene.environment.clone();
+        self.zone_fogs = scene.zones.iter().map(|z| z.fog.clone()).collect();
         self.post
             .set_grades(&self.device, &self.queue, scene, assets.root());
         let regions = fog::regions(scene, |zone| self.zone_light(zone));
@@ -1395,6 +1448,12 @@ impl Renderer {
                 self.shadows.sun_size,
             )
         });
+        // Dust follows the camera's zone (its own fog, or the environment's).
+        let dust = self
+            .zone
+            .and_then(|z| self.zone_fogs.get(z)?.as_ref())
+            .unwrap_or(&env.fog);
+        let dust_count = (dust.dust.clamp(0.0, 1.0) * MAX_DUST as f32) as u32;
         let uniform = FrameUniform {
             view_proj,
             sun_view_proj,
@@ -1421,6 +1480,12 @@ impl Renderer {
                 1.0 / h as f32,
                 fog::NEAR,
                 env.fog_distance.max(fog::NEAR * 2.0),
+            ),
+            dust: Vec4::new(
+                dust.dust.clamp(0.0, 1.0),
+                dust.dust_size.clamp(1.0, 8.0),
+                dust.dust_brightness.max(0.0),
+                dust.dust_speed,
             ),
         };
         self.queue
@@ -1541,6 +1606,10 @@ impl Renderer {
             pass.set_pipeline(&self.sky_pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.draw(0..3, 0..1);
+            if dust_count > 0 {
+                pass.set_pipeline(&self.dust_pipeline);
+                pass.draw(0..6, 0..dust_count);
+            }
         }
 
         mark(&mut encoder, &self.timer, 3);

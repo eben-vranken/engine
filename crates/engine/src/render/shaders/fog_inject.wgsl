@@ -156,7 +156,9 @@ fn wisps(p: vec3<f32>, w: vec4<f32>) -> f32 {
     let drift = vec3<f32>(0.8, 0.2, 0.55) * w.z * fog.camera_pos.w;
     let q = (p + drift) / w.y;
     let n = noise3(q) * 0.65 + noise3(q * 2.7 + 17.0) * 0.35;
-    return mix(1.0, mix(0.3, 1.7, n), w.x);
+    // Sharpened, so wisps read as streaks with clear air between them.
+    let streaks = smoothstep(0.35, 0.65, n) * 2.0;
+    return mix(1.0, streaks, w.x);
 }
 
 // Ambient light where `medium` was last called: the zone's (baked), or
