@@ -194,6 +194,17 @@ A small, simplified modeler inside the editor for very low-poly, PS1-style model
 
 **Acceptance:** the user builds a simple prop (a table or a lantern) from a box, colors and textures it, saves it, places it in the hall, then edits it again and sees the hall update.
 
+## 10.5 Model parts
+Models made of named parts (a candle's stick, wax and flame), each of which a scene can give its own look and light.
+
+- [ ] Modeler: a model has parts; + PART adds a box, plane, cylinder or sphere as a new part on top of the model; parts can be picked (selects their faces), renamed and deleted, and faces moved to another part; tools keep new faces in their part
+- [ ] Saved `.glb`s have one named node per part; any glTF's node (or mesh) names become its parts when loaded
+- [ ] Scene panel: a model with several parts opens to list them; picking one shows the part's settings in the inspector
+- [ ] A part can have its own color, emissive, collision and a light at its center; the rest of the model keeps the model's settings
+- [ ] Rendering, collision, light bakes and acoustics follow the part settings; scenes without part settings are unchanged
+
+**Acceptance:** the user builds a candle (stick, wax, flame) as one model, places it in the hall, makes only the flame glow and gives it a flickering light, walks through the flame but not the stick, and bakes lighting.
+
 ## 11. Gameplay systems
 - [ ] Abilities + gates, save system, map from zone data
 

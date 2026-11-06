@@ -184,10 +184,18 @@ pub fn lights(
     view: &View,
     scene: &Scene,
     selected: Option<usize>,
+    parts: &super::ModelParts,
 ) -> (Option<usize>, bool) {
     let painter = ui.painter().with_clip_rect(view.image);
     let (mut clicked, mut hovered) = (None, false);
-    for (index, light, position) in scene.lights() {
+    let center = |path: &str, part: &str| {
+        parts
+            .get(path)?
+            .iter()
+            .find(|(name, _)| name == part)
+            .map(|(_, c)| *c)
+    };
+    for (index, light, position) in scene.lights(center) {
         let Some(at) = project(view, position) else {
             continue;
         };

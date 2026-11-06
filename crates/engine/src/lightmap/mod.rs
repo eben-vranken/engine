@@ -69,11 +69,16 @@ pub fn draw_keys(scene: &Scene) -> Vec<DrawKey> {
     let mut seen: std::collections::HashMap<&str, u32> = Default::default();
     for object in &scene.objects {
         let occurrence = seen.entry(object.name.as_str()).or_insert(0);
-        let parts = object
+        // One per draw: a model with parts of its own makes several.
+        let parts: usize = object
             .components
             .iter()
-            .filter(|c| matches!(c, Component::Primitive(_) | Component::Model(_)))
-            .count();
+            .map(|c| match c {
+                Component::Primitive(_) => 1,
+                Component::Model(m) => m.groups().count(),
+                _ => 0,
+            })
+            .sum();
         for part in 0..parts as u32 {
             keys.push(DrawKey {
                 name: object.name.clone(),
@@ -364,6 +369,9 @@ pub fn start(scene: &Scene, assets: &mut Assets, file: PathBuf) -> Result<BakeJo
         }
         let model = r.transform.matrix();
         let resolved = assets.resolve(r.geometry);
+        if matches!(&resolved, Resolved::Model(m) if m.parts.is_empty()) {
+            continue;
+        }
         let (mesh, albedo): (MeshData, Vec<Vec3>) = match resolved {
             Resolved::Shape(shape) => {
                 let mesh = MeshData::from_shape(shape);
@@ -413,7 +421,8 @@ pub fn start(scene: &Scene, assets: &mut Assets, file: PathBuf) -> Result<BakeJo
         return Err(LightmapError::Empty);
     }
     let lights = scene
-        .lights()
+        .lights(|path, part| assets.model(path)?.part_center(part))
+        .into_iter()
         .filter(|(i, l, _)| l.baked && !moves(&scene.objects[*i]))
         .map(|(i, l, p)| BakeLight {
             position: p,

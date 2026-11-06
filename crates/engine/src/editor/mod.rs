@@ -16,6 +16,7 @@ pub mod import;
 pub mod inspector;
 pub mod markers;
 mod menu_bar;
+mod model_parts;
 mod model_tab;
 mod model_tools;
 mod name_dialog;
@@ -100,9 +101,17 @@ pub struct Editor {
     naming: Option<name_dialog::NameDialog>,
     /// The open model, when the active tab is a model tab.
     pub model: Option<ModelDoc>,
+    /// The part of the selected model shown in the inspector, by name.
+    pub selected_part: Option<String>,
+    /// Each model in the scene's parts and their centers, by path (kept
+    /// up to date by the runtime).
+    pub model_parts: ModelParts,
     /// The system's file dialog, while one is open.
     file_dialog: Option<file_dialogs::FileDialog>,
 }
+
+/// Model paths → their parts' names and centers (in the model's space).
+pub type ModelParts = std::collections::HashMap<String, Vec<(String, Vec3)>>;
 
 /// Numbers for the status bar.
 pub struct EditorStats {
@@ -188,6 +197,8 @@ impl Editor {
             naming: None,
             model: None,
             file_dialog: None,
+            selected_part: None,
+            model_parts: ModelParts::new(),
         }
     }
 
@@ -305,7 +316,7 @@ impl Editor {
             } else {
                 (None, false)
             };
-            let lights = markers::lights(ui, view, scene, self.selected);
+            let lights = markers::lights(ui, view, scene, self.selected, &self.model_parts);
             for (clicked, hovered) in [starts, zones, lights] {
                 output.gizmo_hovered |= hovered;
                 if let Some(index) = clicked {
@@ -507,6 +518,7 @@ impl Editor {
         }
         let settled = self.commit_pending(scene);
         self.selected = selected;
+        self.selected_part = None;
         if selected.is_some() {
             self.settings = None;
         }

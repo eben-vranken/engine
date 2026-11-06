@@ -364,6 +364,82 @@ pub struct Model {
     /// Blocks the player. Off: walk-through, but still clickable in the editor.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub collision: bool,
+    /// Parts of the model (named in its file) with settings of their own;
+    /// the other parts use the model's. Edited from the scene panel, so
+    /// the generated inspector leaves it out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[reflect(ignore)]
+    pub parts: Vec<ModelPart>,
+}
+
+impl Model {
+    /// A model as drawn and collided: groups of its parts with their
+    /// settings. The parts without settings of their own come first, with
+    /// the model's; then each part that has its own.
+    pub fn groups(&self) -> impl Iterator<Item = (Parts<'_>, Vec3, Vec3, bool)> {
+        let rest = if self.parts.is_empty() {
+            Parts::All
+        } else {
+            Parts::Except(&self.parts)
+        };
+        std::iter::once((rest, self.color, self.emissive, self.collision)).chain(
+            self.parts
+                .iter()
+                .map(|p| (Parts::Only(&p.name), p.color, p.emissive, p.collision)),
+        )
+    }
+
+    /// The settings of the part named `name`, if it has its own.
+    pub fn part(&self, name: &str) -> Option<&ModelPart> {
+        self.parts.iter().find(|p| p.name == name)
+    }
+}
+
+/// One part of a model with settings of its own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct ModelPart {
+    /// The part's name in the model file.
+    pub name: String,
+    /// Linear RGB tint, instead of the model's.
+    pub color: Vec3,
+    /// Light the part gives off, instead of the model's.
+    pub emissive: Vec3,
+    /// Blocks the player.
+    pub collision: bool,
+    /// A light at the part's center (a flame, a bulb).
+    pub light: Option<LightSource>,
+}
+
+impl Default for ModelPart {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            color: Vec3::ONE,
+            emissive: Vec3::ZERO,
+            collision: true,
+            light: None,
+        }
+    }
+}
+
+/// Which of a model's parts a draw or collider is made of.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Parts<'a> {
+    All,
+    Only(&'a str),
+    /// All but the ones listed (the ones with settings of their own).
+    Except(&'a [ModelPart]),
+}
+
+impl Parts<'_> {
+    pub fn includes(&self, name: &str) -> bool {
+        match self {
+            Parts::All => true,
+            Parts::Only(only) => *only == name,
+            Parts::Except(parts) => parts.iter().all(|p| p.name != name),
+        }
+    }
 }
 
 /// Bobs up and down around where it was placed while the game runs.
@@ -506,7 +582,8 @@ pub enum AcousticPreset {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Geometry<'a> {
     Shape(Shape),
-    Model(&'a str),
+    /// A model file, or some of its parts.
+    Model(&'a str, Parts<'a>),
 }
 
 fn white() -> Vec3 {
@@ -698,52 +775,84 @@ impl Scene {
                 Component::Material(m) => Some(m),
                 _ => None,
             });
-            object.components.iter().filter_map(move |c| {
-                let (geometry, color, emissive) = match c {
-                    Component::Primitive(p) => (Geometry::Shape(p.shape), p.color, p.emissive),
-                    Component::Model(m) => (Geometry::Model(&m.path), m.color, m.emissive),
-                    _ => return None,
+            object.components.iter().flat_map(move |c| {
+                let groups: Vec<(Geometry, Vec3, Vec3)> = match c {
+                    Component::Primitive(p) => {
+                        vec![(Geometry::Shape(p.shape), p.color, p.emissive)]
+                    }
+                    Component::Model(m) => m
+                        .groups()
+                        .map(|(parts, color, emissive, _)| {
+                            (Geometry::Model(&m.path, parts), color, emissive)
+                        })
+                        .collect(),
+                    _ => Vec::new(),
                 };
-                Some(Renderable {
-                    object: index,
-                    geometry,
-                    color,
-                    emissive,
-                    transform: &object.transform,
-                    material,
-                })
+                groups
+                    .into_iter()
+                    .map(move |(geometry, color, emissive)| Renderable {
+                        object: index,
+                        geometry,
+                        color,
+                        emissive,
+                        transform: &object.transform,
+                        material,
+                    })
             })
         })
     }
 
-    /// Every light: object index, the light, and where it is.
-    pub fn lights(&self) -> impl Iterator<Item = (usize, &LightSource, Vec3)> {
-        self.objects.iter().enumerate().flat_map(|(index, object)| {
-            object.components.iter().filter_map(move |c| match c {
-                Component::LightSource(light) => Some((index, light, object.transform.position)),
-                _ => None,
-            })
-        })
+    /// Every light: object index, the light, and where it is. Lights of
+    /// model parts sit at the part's center, which `center(path, part)`
+    /// gives in the model's own space (`None`: the object's origin).
+    pub fn lights(
+        &self,
+        mut center: impl FnMut(&str, &str) -> Option<Vec3>,
+    ) -> Vec<(usize, &LightSource, Vec3)> {
+        let mut lights = Vec::new();
+        for (index, object) in self.objects.iter().enumerate() {
+            for component in &object.components {
+                match component {
+                    Component::LightSource(light) => {
+                        lights.push((index, light, object.transform.position));
+                    }
+                    Component::Model(model) => {
+                        for part in &model.parts {
+                            let Some(light) = &part.light else {
+                                continue;
+                            };
+                            let position = match center(&model.path, &part.name) {
+                                Some(c) => object.transform.matrix().transform_point3(c),
+                                None => object.transform.position,
+                            };
+                            lights.push((index, light, position));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        lights
     }
 
     /// Everything with a collider: object index, geometry, transform, and
     /// whether it blocks the player.
     pub fn colliders(&self) -> impl Iterator<Item = (usize, Geometry<'_>, &Transform, bool)> {
         self.objects.iter().enumerate().flat_map(|(index, object)| {
-            object.components.iter().filter_map(move |c| match c {
-                Component::Primitive(p) => Some((
-                    index,
-                    Geometry::Shape(p.shape),
-                    &object.transform,
-                    p.collision,
-                )),
-                Component::Model(m) => Some((
-                    index,
-                    Geometry::Model(&m.path),
-                    &object.transform,
-                    m.collision,
-                )),
-                _ => None,
+            object.components.iter().flat_map(move |c| {
+                let groups: Vec<(Geometry, bool)> = match c {
+                    Component::Primitive(p) => vec![(Geometry::Shape(p.shape), p.collision)],
+                    Component::Model(m) => m
+                        .groups()
+                        .map(|(parts, _, _, collision)| {
+                            (Geometry::Model(&m.path, parts), collision)
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                groups
+                    .into_iter()
+                    .map(move |(geometry, solid)| (index, geometry, &object.transform, solid))
             })
         })
     }

@@ -102,14 +102,64 @@ impl Editor {
                         .show(ui, |ui| {
                             for (index, object) in members {
                                 let selected = self.selected == Some(index);
-                                let response =
-                                    ui.selectable_label(selected, picked(&object.name, selected));
-                                if response.clicked() {
-                                    clicked = Some(index);
+                                let parts = model_parts(object, &self.model_parts);
+                                if parts.len() < 2 {
+                                    let whole = selected && self.selected_part.is_none();
+                                    let response =
+                                        ui.selectable_label(whole, picked(&object.name, whole));
+                                    if response.clicked() {
+                                        clicked = Some((index, None));
+                                    }
+                                    if selected && reveal {
+                                        response.scroll_to_me(Some(Align::Center));
+                                    }
+                                    continue;
                                 }
-                                if selected && reveal {
-                                    response.scroll_to_me(Some(Align::Center));
+                                // A model made of parts opens to show them.
+                                let id = ui.make_persistent_id(("object_parts", &object.name, index));
+                                let mut state =
+                                    egui::collapsing_header::CollapsingState::load_with_default_open(
+                                        ui.ctx(),
+                                        id,
+                                        false,
+                                    );
+                                if selected && self.selected_part.is_some() {
+                                    state.set_open(true);
                                 }
+                                let whole = selected && self.selected_part.is_none();
+                                let header = state.show_header(ui, |ui| {
+                                    let response =
+                                        ui.selectable_label(whole, picked(&object.name, whole));
+                                    if response.clicked() {
+                                        clicked = Some((index, None));
+                                    }
+                                    if selected && reveal {
+                                        response.scroll_to_me(Some(Align::Center));
+                                    }
+                                });
+                                header.body(|ui| {
+                                    for part in parts {
+                                        let chosen = selected
+                                            && self.selected_part.as_deref() == Some(part.as_str());
+                                        let own = has_own_settings(object, &part);
+                                        let text = if own {
+                                            format!("{part} *")
+                                        } else {
+                                            part.clone()
+                                        };
+                                        if ui
+                                            .selectable_label(chosen, picked(&text, chosen))
+                                            .on_hover_text(if own {
+                                                "A PART WITH SETTINGS OF ITS OWN"
+                                            } else {
+                                                "A PART OF THE MODEL"
+                                            })
+                                            .clicked()
+                                        {
+                                            clicked = Some((index, Some(part)));
+                                        }
+                                    }
+                                });
                             }
                         });
                     if response.header_response.clicked() {
@@ -140,8 +190,9 @@ impl Editor {
             });
         self.reveal_selection = false;
         self.zone_delete_dialog(ui, scene, output);
-        if let Some(index) = clicked {
+        if let Some((index, part)) = clicked {
             self.select(scene, Some(index));
+            self.selected_part = part;
         }
         if let Some(target) = zone_clicked {
             self.select(scene, None);
@@ -354,6 +405,27 @@ impl Editor {
             },
         )
     }
+}
+
+/// The parts of the object's model, if it is one (from the loaded file).
+fn model_parts(object: &Object, parts: &super::ModelParts) -> Vec<String> {
+    object
+        .components
+        .iter()
+        .find_map(|c| match c {
+            Component::Model(m) => parts.get(&m.path),
+            _ => None,
+        })
+        .map(|parts| parts.iter().map(|(name, _)| name.clone()).collect())
+        .unwrap_or_default()
+}
+
+/// Whether the object's model gives `part` settings of its own.
+fn has_own_settings(object: &Object, part: &str) -> bool {
+    object.components.iter().any(|c| match c {
+        Component::Model(m) => m.part(part).is_some(),
+        _ => false,
+    })
 }
 
 /// Whether an object's name or one of its components (e.g. "light",

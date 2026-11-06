@@ -3,7 +3,7 @@
 
 use crate::render::mesh::{MeshData, Shape, Vertex, WHITE};
 use crate::render::texture::{Image, linear_to_srgb, srgb_to_linear};
-use crate::scene::Geometry;
+use crate::scene::{Geometry, Parts};
 use glam::{Mat3, Mat4, Vec3};
 use std::collections::HashMap;
 use std::ops::Range;
@@ -43,6 +43,71 @@ impl Default for ModelData {
 pub struct Part {
     pub indices: Range<u32>,
     pub image: usize,
+    /// The part's name in the file (its glTF node's, or mesh's). Several
+    /// ranges share a name when a part uses several materials.
+    pub name: String,
+}
+
+impl ModelData {
+    /// The names of the model's parts, in file order, each once.
+    pub fn part_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = Vec::new();
+        for part in &self.parts {
+            if !names.contains(&part.name) {
+                names.push(part.name.clone());
+            }
+        }
+        names
+    }
+
+    /// The center of the part named `name`'s bounding box, in the model's
+    /// own space.
+    pub fn part_center(&self, name: &str) -> Option<Vec3> {
+        let mut bounds: Option<(Vec3, Vec3)> = None;
+        for part in self.parts.iter().filter(|p| p.name == name) {
+            for &i in &self.mesh.indices[part.indices.start as usize..part.indices.end as usize] {
+                let p = Vec3::from(self.mesh.vertices[i as usize].position);
+                bounds = Some(bounds.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))));
+            }
+        }
+        bounds.map(|(lo, hi)| (lo + hi) / 2.0)
+    }
+
+    /// The model with only the parts `parts` includes. With none of them
+    /// left it has no parts, and one empty triangle so it can still be
+    /// uploaded.
+    pub fn subset(&self, parts: Parts) -> ModelData {
+        let mut indices = Vec::new();
+        let mut kept = Vec::new();
+        for part in self.parts.iter().filter(|p| parts.includes(&p.name)) {
+            let start = indices.len() as u32;
+            indices.extend_from_slice(
+                &self.mesh.indices[part.indices.start as usize..part.indices.end as usize],
+            );
+            kept.push(Part {
+                indices: start..indices.len() as u32,
+                ..part.clone()
+            });
+        }
+        let mut vertices = self.mesh.vertices.clone();
+        if indices.is_empty() {
+            indices = vec![0; 3];
+            if vertices.is_empty() {
+                vertices.push(Vertex {
+                    position: [0.0; 3],
+                    normal: [0.0, 1.0, 0.0],
+                    uv: [0.0; 2],
+                    color: WHITE,
+                });
+            }
+        }
+        ModelData {
+            mesh: MeshData { vertices, indices },
+            parts: kept,
+            images: self.images.clone(),
+            surface: self.surface,
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -191,9 +256,14 @@ impl Assets {
     pub fn resolve(&mut self, geometry: Geometry) -> Resolved {
         match geometry {
             Geometry::Shape(shape) => Resolved::Shape(shape),
-            Geometry::Model(path) => match self.model(path) {
-                Some(model) => Resolved::Model(model),
-                None => Resolved::Shape(PLACEHOLDER),
+            Geometry::Model(path, parts) => match self.model(path) {
+                Some(model) if parts == Parts::All => Resolved::Model(model),
+                Some(model) => Resolved::Model(Arc::new(model.subset(parts))),
+                // The placeholder stands in once, for the whole model.
+                None if matches!(parts, Parts::All | Parts::Except(_)) => {
+                    Resolved::Shape(PLACEHOLDER)
+                }
+                None => Resolved::Model(Arc::new(ModelData::default().subset(parts))),
             },
         }
     }
@@ -239,6 +309,10 @@ impl Loader<'_> {
         let normal_matrix = Mat3::from_mat4(world).inverse().transpose();
         let buffers = self.buffers;
         if let Some(node_mesh) = node.mesh() {
+            let name = node
+                .name()
+                .or(node_mesh.name())
+                .map_or_else(|| format!("part {}", node.index() + 1), str::to_owned);
             for primitive in node_mesh.primitives() {
                 if primitive.mode() != gltf::mesh::Mode::Triangles {
                     continue;
@@ -315,6 +389,7 @@ impl Loader<'_> {
                 self.model.parts.push(Part {
                     indices: start..end,
                     image,
+                    name: name.clone(),
                 });
             }
         }
@@ -422,7 +497,8 @@ mod tests {
             model.parts,
             vec![Part {
                 indices: 0..3,
-                image: 0
+                image: 0,
+                name: "part 1".into(),
             }]
         );
         let image = &model.images[0];

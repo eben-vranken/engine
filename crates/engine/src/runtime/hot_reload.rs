@@ -4,6 +4,7 @@
 use super::Running;
 use crate::player::settings::PlayerSettings;
 use crate::player::tuning::TuningAction;
+use crate::scene::Component;
 use std::time::{Duration, Instant};
 
 /// How often `player.ron` is checked for changes.
@@ -32,6 +33,40 @@ impl Running {
         self.rebuild_physics();
         if let Some(editor) = &mut self.editor {
             editor.show_message(format!("RELOADED {}", changed.join(", ")));
+            for path in &changed {
+                editor.model_parts.remove(path);
+            }
+        }
+    }
+
+    /// Editor: the parts of every model in the scene, for the scene panel
+    /// and the light markers (each model looked up once).
+    pub(super) fn update_model_parts(&mut self) {
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        for object in &self.scene.objects {
+            for component in &object.components {
+                let Component::Model(model) = component else {
+                    continue;
+                };
+                if editor.model_parts.contains_key(&model.path) {
+                    continue;
+                }
+                let parts = self
+                    .assets
+                    .model(&model.path)
+                    .map_or_else(Vec::new, |data| {
+                        data.part_names()
+                            .into_iter()
+                            .map(|name| {
+                                let center = data.part_center(&name).unwrap_or_default();
+                                (name, center)
+                            })
+                            .collect()
+                    });
+                editor.model_parts.insert(model.path.clone(), parts);
+            }
         }
     }
 

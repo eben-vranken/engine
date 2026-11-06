@@ -53,6 +53,9 @@ impl AcousticGeometry {
                 continue;
             }
             let resolved = assets.resolve(geometry);
+            if matches!(&resolved, Resolved::Model(model) if model.parts.is_empty()) {
+                continue;
+            }
             let shape_mesh;
             let mesh = match &resolved {
                 Resolved::Shape(shape) => {

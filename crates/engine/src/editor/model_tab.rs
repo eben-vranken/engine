@@ -62,6 +62,8 @@ pub struct ModelDoc {
     pub(super) tools: super::model_tools::ToolSettings,
     /// Where a box selection started (egui points).
     box_start: Option<Pos2>,
+    /// The PARTS panel's name field: which part, and the name typed.
+    pub(super) part_name: Option<(u32, String)>,
 }
 
 impl ModelDoc {
@@ -80,6 +82,7 @@ impl ModelDoc {
             changed: true,
             tools: Default::default(),
             box_start: None,
+            part_name: None,
         }
     }
 
@@ -139,7 +142,7 @@ impl ModelDoc {
         self.faces.clear();
     }
 
-    fn set_mode(&mut self, mode: SelectMode) {
+    pub(super) fn set_mode(&mut self, mode: SelectMode) {
         if mode != self.mode {
             self.mode = mode;
             self.clear_selection();
@@ -412,6 +415,7 @@ pub fn stage(key: &str) -> Scene {
                     color: Vec3::ONE,
                     emissive: Vec3::ZERO,
                     collision: false,
+                    parts: Vec::new(),
                 })],
             },
             Object {
@@ -648,6 +652,7 @@ impl Editor {
             .map(|f| f.verts.len().saturating_sub(2))
             .sum();
         ui.label(dim(&format!("{triangles} TRIANGLES")));
+        model.parts_panel(ui);
     }
 
     /// Saves the active model tab. Returns whether it saved.

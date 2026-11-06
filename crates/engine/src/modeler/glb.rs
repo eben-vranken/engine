@@ -149,28 +149,48 @@ fn encode(mesh: &EditMesh, texture: Option<(Vec<u8>, &str)>) -> Vec<u8> {
         version: VERSION,
         mesh: mesh.clone(),
     };
+    // One node and mesh per part, named after it; the parts share the
+    // vertex data and each has its own stretch of the indices. The
+    // editable mesh rides along on the first.
+    let mut accessors = vec![
+        json!({"bufferView": 0, "componentType": FLOAT, "count": count, "type": "VEC3",
+               "min": [min.x, min.y, min.z], "max": [max.x, max.y, max.z]}),
+        json!({"bufferView": 1, "componentType": FLOAT, "count": count, "type": "VEC3"}),
+        json!({"bufferView": 2, "componentType": FLOAT, "count": count, "type": "VEC2"}),
+        json!({"bufferView": 3, "componentType": FLOAT, "count": count, "type": "VEC4"}),
+    ];
+    let mut nodes = Vec::new();
+    let mut meshes = Vec::new();
+    for part in &model.parts {
+        accessors.push(json!({
+            "bufferView": 4,
+            "byteOffset": part.indices.start * 4,
+            "componentType": UNSIGNED_INT,
+            "count": part.indices.len(),
+            "type": "SCALAR",
+        }));
+        let mut gltf_mesh = json!({
+            "name": part.name,
+            "primitives": [{
+                "attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2, "COLOR_0": 3},
+                "indices": accessors.len() - 1,
+                "material": 0,
+            }],
+        });
+        if meshes.is_empty() {
+            gltf_mesh["extras"] = json!({EXTRAS_KEY: extras});
+        }
+        nodes.push(json!({"name": part.name, "mesh": meshes.len()}));
+        meshes.push(gltf_mesh);
+    }
     let mut document = json!({
         "asset": {"version": "2.0", "generator": format!("{} modeler {}", crate::NAME, crate::VERSION)},
         "scene": 0,
-        "scenes": [{"nodes": [0]}],
-        "nodes": [{"mesh": 0}],
-        "meshes": [{
-            "primitives": [{
-                "attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2, "COLOR_0": 3},
-                "indices": 4,
-                "material": 0,
-            }],
-            "extras": {EXTRAS_KEY: extras},
-        }],
+        "scenes": [{"nodes": (0..nodes.len()).collect::<Vec<_>>()}],
+        "nodes": nodes,
+        "meshes": meshes,
         "materials": [material],
-        "accessors": [
-            {"bufferView": 0, "componentType": FLOAT, "count": count, "type": "VEC3",
-             "min": [min.x, min.y, min.z], "max": [max.x, max.y, max.z]},
-            {"bufferView": 1, "componentType": FLOAT, "count": count, "type": "VEC3"},
-            {"bufferView": 2, "componentType": FLOAT, "count": count, "type": "VEC2"},
-            {"bufferView": 3, "componentType": FLOAT, "count": count, "type": "VEC4"},
-            {"bufferView": 4, "componentType": UNSIGNED_INT, "count": indices.len(), "type": "SCALAR"},
-        ],
+        "accessors": accessors,
         "bufferViews": buffer_views,
     });
     if !images.is_empty() {

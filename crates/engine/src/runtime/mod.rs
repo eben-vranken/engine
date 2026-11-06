@@ -484,6 +484,7 @@ impl Running {
         let mut actions = HudActions::default();
         self.handle_keys(&mut actions);
         self.poll_files();
+        self.update_model_parts();
         self.update_mouse_capture();
         self.run_game(dt);
 

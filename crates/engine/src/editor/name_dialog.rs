@@ -18,9 +18,9 @@ pub(super) enum Naming {
 }
 
 /// What a new model starts as.
-const STARTS: [&str; 4] = ["BOX", "PLANE", "CYLINDER", "SPHERE"];
+pub(super) const STARTS: [&str; 4] = ["BOX", "PLANE", "CYLINDER", "SPHERE"];
 
-fn start_mesh(index: usize) -> EditMesh {
+pub(super) fn start_mesh(index: usize) -> EditMesh {
     match index {
         1 => EditMesh::plane(glam::Vec2::ONE),
         2 => EditMesh::cylinder(0.5, 1.0, 8),

@@ -109,6 +109,7 @@ impl Editor {
                 color: Vec3::ONE,
                 emissive: Vec3::ZERO,
                 collision: true,
+                parts: Vec::new(),
             })],
         };
         self.message = Some((format!("ADDED {path}"), false));

@@ -123,14 +123,17 @@ struct Draw {
 #[derive(Debug, Clone, PartialEq)]
 enum GeometryKey {
     Shape(Shape),
-    Model(String),
+    /// The model's path, and which of its parts.
+    Model(String, String),
 }
 
 impl From<Geometry<'_>> for GeometryKey {
     fn from(geometry: Geometry) -> Self {
         match geometry {
             Geometry::Shape(shape) => GeometryKey::Shape(shape),
-            Geometry::Model(path) => GeometryKey::Model(path.to_owned()),
+            Geometry::Model(path, parts) => {
+                GeometryKey::Model(path.to_owned(), format!("{parts:?}"))
+            }
         }
     }
 }
@@ -218,9 +221,10 @@ struct SceneLight {
     position: Vec3,
 }
 
-fn scene_lights(scene: &Scene) -> Vec<SceneLight> {
+fn scene_lights(scene: &Scene, assets: &mut Assets) -> Vec<SceneLight> {
     scene
-        .lights()
+        .lights(|path, part| assets.model(path)?.part_center(part))
+        .into_iter()
         .map(|(object, light, position)| SceneLight {
             object,
             light: light.clone(),
@@ -982,7 +986,7 @@ impl Renderer {
     pub fn set_scene(&mut self, scene: &Scene, assets: &mut Assets) {
         self.environment = scene.environment.clone();
         self.zone_fogs = scene.zones.iter().map(|z| z.fog.clone()).collect();
-        self.lights = scene_lights(scene);
+        self.lights = scene_lights(scene, assets);
         self.shadows.invalidate();
         self.textures.clear();
         self.fog.set_regions(
@@ -1055,24 +1059,13 @@ impl Renderer {
     /// color and lights, and its mesh if the geometry changed.
     pub fn update_object(&mut self, scene: &Scene, index: usize, assets: &mut Assets) {
         let object = &scene.objects[index];
-        let lights: Vec<&LightSource> = object
-            .components
-            .iter()
-            .filter_map(|c| match c {
-                Component::LightSource(l) => Some(l),
-                _ => None,
-            })
-            .collect();
-        if lights.len() != self.lights.iter().filter(|l| l.object == index).count() {
-            // A light was added or removed.
-            self.lights = scene_lights(scene);
-        } else {
-            let kept = self.lights.iter_mut().filter(|l| l.object == index);
-            for (kept, &light) in kept.zip(&lights) {
-                kept.light = light.clone();
-                kept.position = object.transform.position;
-            }
-        }
+        // The object's lights (its own and its parts'), as they are now.
+        self.lights.retain(|l| l.object != index);
+        self.lights.extend(
+            scene_lights(scene, assets)
+                .into_iter()
+                .filter(|l| l.object == index),
+        );
 
         if object
             .components
@@ -1137,7 +1130,7 @@ impl Renderer {
     pub fn reload_object(&mut self, scene: &Scene, index: usize, assets: &mut Assets) {
         for draw in self.draws.iter_mut().filter(|d| d.object == index) {
             // A key no object has, so `update_object` rebuilds the mesh.
-            draw.geometry = GeometryKey::Model(String::new());
+            draw.geometry = GeometryKey::Model(String::new(), String::new());
         }
         self.update_object(scene, index, assets);
     }

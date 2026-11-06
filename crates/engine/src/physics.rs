@@ -77,6 +77,8 @@ impl PhysicsWorld {
             let collider = match assets.resolve(geometry) {
                 Resolved::Shape(shape) => collider_for(shape, transform),
                 // Moving triangle meshes don't collide well; a hull does.
+                // A group of parts that turned out empty.
+                Resolved::Model(model) if model.parts.is_empty() => None,
                 Resolved::Model(model) => mesh_collider(&model.mesh, transform, body.is_some()),
             };
             let Some(mut collider) = collider else {

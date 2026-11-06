@@ -16,7 +16,14 @@ pub struct EditMesh {
     /// The model's one texture, relative to the project (`None` = plain).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture: Option<String>,
+    /// Names of the model's parts (`Face::part` indexes this); scenes give
+    /// parts settings of their own by name. Empty = one part.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<String>,
 }
+
+/// What the only part of a model is called until it's renamed.
+pub const FIRST_PART: &str = "body";
 
 /// A polygon: indices into `positions`, counter-clockwise seen from the
 /// side it faces. Assumed roughly flat and convex.
@@ -34,6 +41,13 @@ pub struct Face {
     /// Smooth shading: normals blend with neighbouring smooth faces.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub smooth: bool,
+    /// Which of the mesh's parts the face belongs to.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub part: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Face {
@@ -43,6 +57,16 @@ impl Face {
             uvs: Vec::new(),
             colors: Vec::new(),
             smooth: false,
+            part: 0,
+        }
+    }
+
+    /// A new face made from this one keeps its shading and part.
+    pub fn like(&self, verts: Vec<u32>) -> Self {
+        Self {
+            smooth: self.smooth,
+            part: self.part,
+            ..Self::new(verts)
         }
     }
 
@@ -70,6 +94,90 @@ impl EditMesh {
             positions,
             faces: faces.into_iter().map(Face::new).collect(),
             texture: None,
+            parts: Vec::new(),
+        }
+    }
+
+    /// The parts' names; a mesh without any has one.
+    pub fn part_names(&self) -> Vec<String> {
+        if self.parts.is_empty() {
+            vec![FIRST_PART.to_owned()]
+        } else {
+            self.parts.clone()
+        }
+    }
+
+    /// Which part `face` is in (faces pointing past the list go to the last).
+    pub fn part_of(&self, face: usize) -> u32 {
+        let last = self.parts.len().saturating_sub(1) as u32;
+        self.faces[face].part.min(last)
+    }
+
+    /// Adds `other` as a new part named `name` (its faces join it).
+    /// Returns the new part's index.
+    pub fn add_part(&mut self, name: String, other: EditMesh) -> u32 {
+        if self.parts.is_empty() {
+            self.parts.push(FIRST_PART.to_owned());
+        }
+        let part = self.parts.len() as u32;
+        self.parts.push(name);
+        let base = self.positions.len() as u32;
+        self.positions.extend(other.positions);
+        for mut face in other.faces {
+            face.verts.iter_mut().for_each(|v| *v += base);
+            face.part = part;
+            self.faces.push(face);
+        }
+        part
+    }
+
+    /// A name for a new part: `base`, or `base 2`, `base 3`… if taken.
+    pub fn free_part_name(&self, base: &str) -> String {
+        let names = self.part_names();
+        std::iter::once(base.to_owned())
+            .chain((2..).map(|n| format!("{base} {n}")))
+            .find(|name| !names.contains(name))
+            .expect("some number is free")
+    }
+
+    /// Removes part `part` and its faces (not the last part). Faces of
+    /// later parts move down one.
+    pub fn remove_part(&mut self, part: u32) -> bool {
+        if self.parts.len() < 2 || part as usize >= self.parts.len() {
+            return false;
+        }
+        self.faces.retain(|f| f.part != part);
+        for face in &mut self.faces {
+            if face.part > part {
+                face.part -= 1;
+            }
+        }
+        self.parts.remove(part as usize);
+        self.remove_unused_positions();
+        true
+    }
+
+    /// Drops positions no face uses, renumbering the faces' corners.
+    pub fn remove_unused_positions(&mut self) {
+        let mut used = vec![false; self.positions.len()];
+        for face in &self.faces {
+            for &v in &face.verts {
+                used[v as usize] = true;
+            }
+        }
+        let mut new_index = vec![0u32; self.positions.len()];
+        let mut kept = Vec::new();
+        for (i, p) in self.positions.iter().enumerate() {
+            if used[i] {
+                new_index[i] = kept.len() as u32;
+                kept.push(*p);
+            }
+        }
+        self.positions = kept;
+        for face in &mut self.faces {
+            face.verts
+                .iter_mut()
+                .for_each(|v| *v = new_index[*v as usize]);
         }
     }
 
@@ -282,7 +390,36 @@ impl EditMesh {
         let smooth = self.smooth_normals();
         let unpainted = self.unpainted();
         let mut mesh = MeshData::default();
-        for face in 0..self.faces.len() {
+        let mut parts = Vec::new();
+        // Part by part, so each part's triangles are one range.
+        for (part, name) in self.part_names().into_iter().enumerate() {
+            let start = mesh.indices.len() as u32;
+            for face in (0..self.faces.len()).filter(|&f| self.part_of(f) == part as u32) {
+                self.face_triangles(face, &smooth, unpainted, &mut mesh);
+            }
+            let end = mesh.indices.len() as u32;
+            if end > start {
+                parts.push(Part {
+                    indices: start..end,
+                    image: 0,
+                    name,
+                });
+            }
+        }
+        let image = texture
+            .cloned()
+            .unwrap_or_else(|| Image::new(1, 1, vec![255; 4]));
+        ModelData {
+            mesh,
+            parts,
+            images: vec![image],
+            ..Default::default()
+        }
+    }
+
+    /// Appends `face`'s triangles to `mesh`, each corner its own vertex.
+    fn face_triangles(&self, face: usize, smooth: &[Vec3], unpainted: Vec3, mesh: &mut MeshData) {
+        {
             let f = &self.faces[face];
             let flat = self.face_normal(face);
             for corners in self.fan(face) {
@@ -299,19 +436,6 @@ impl EditMesh {
                 }
                 mesh.indices.extend([base, base + 1, base + 2]);
             }
-        }
-        let count = mesh.indices.len() as u32;
-        let image = texture
-            .cloned()
-            .unwrap_or_else(|| Image::new(1, 1, vec![255; 4]));
-        ModelData {
-            mesh,
-            parts: vec![Part {
-                indices: 0..count,
-                image: 0,
-            }],
-            images: vec![image],
-            ..Default::default()
         }
     }
 }

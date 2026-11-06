@@ -3,12 +3,13 @@
 
 use super::history::Change;
 use super::player_panel::player_inspector;
+use super::settings_panel::own_toggle;
 use super::{Editor, EditorOutput, dim, inspector, section};
 use crate::player::settings::PlayerSettings;
 use crate::render::mesh::Shape;
 use crate::scene::{
-    AcousticMaterial, Component, Door, Floating, FogVolume, LightSource, Material, PhysicsBody,
-    Portal, Scene, SoundSource, Switch, ZoneVolume,
+    AcousticMaterial, Component, Door, Floating, FogVolume, LightSource, Material, ModelPart,
+    Object, PhysicsBody, Portal, Scene, SoundSource, Switch, ZoneVolume,
 };
 use egui::{Align, Layout, RichText, Ui};
 
@@ -39,6 +40,16 @@ impl Editor {
         let zones = &scene.zones;
         let object = &mut scene.objects[index];
         let before = object.clone();
+        if let Some(part) = self.selected_part.clone() {
+            if part_inspector(ui, object, &part, &names) {
+                self.selected_part = None;
+            }
+            if *object != before {
+                self.begin_edit(index, &before);
+                output.changed.push(Change::Modified(index));
+            }
+            return;
+        }
         let player_before = player.clone();
         let project_dir = self.project_dir.as_path();
 
@@ -176,4 +187,63 @@ pub(super) fn component_header(ui: &mut Ui, title: &str) -> bool {
         .inner;
     ui.separator();
     removed
+}
+
+/// The settings of one part of the object's model. Returns true if BACK TO
+/// THE OBJECT was clicked.
+fn part_inspector(ui: &mut Ui, object: &mut Object, part: &str, names: &inspector::Names) -> bool {
+    let Some(model) = object.components.iter_mut().find_map(|c| match c {
+        Component::Model(m) => Some(m),
+        _ => None,
+    }) else {
+        return true;
+    };
+    let mut back = false;
+    egui::ScrollArea::vertical()
+        .auto_shrink(false)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                inspector::field_label(ui, "PART");
+                ui.label(part.to_uppercase());
+            });
+            ui.horizontal(|ui| {
+                inspector::field_label(ui, "OF");
+                ui.label(object.name.to_uppercase());
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    back = ui.small_button("BACK TO THE OBJECT").clicked();
+                });
+            });
+            section(ui, "SETTINGS");
+            let own = model.parts.iter().position(|p| p.name == part);
+            let Some(own) = own else {
+                ui.label(dim("USES THE MODEL'S COLOR, GLOW AND COLLISION"));
+                if ui.small_button("GIVE IT ITS OWN").clicked() {
+                    model.parts.push(ModelPart {
+                        name: part.to_owned(),
+                        color: model.color,
+                        emissive: model.emissive,
+                        collision: model.collision,
+                        light: None,
+                    });
+                }
+                return;
+            };
+            let settings = &mut model.parts[own];
+            inspector::fields_except(ui, settings, names, &["name", "light"]);
+            section(ui, "LIGHT");
+            ui.label(dim("SHINES FROM THE PART'S CENTER"));
+            own_toggle(ui, "LIGHT", &mut settings.light, &LightSource::default());
+            if let Some(light) = &mut settings.light {
+                inspector::fields(ui, light, names);
+            }
+            ui.add_space(10.0);
+            if ui
+                .small_button("USE THE MODEL'S SETTINGS")
+                .on_hover_text("DROP THIS PART'S OWN SETTINGS AND LIGHT")
+                .clicked()
+            {
+                model.parts.remove(own);
+            }
+        });
+    back
 }

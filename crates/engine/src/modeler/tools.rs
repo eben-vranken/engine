@@ -99,12 +99,11 @@ impl EditMesh {
                 let j = (i + 1) % n;
                 let (a, b) = (face.verts[i], face.verts[j]);
                 if uses[&edge(a, b)] == 1 {
-                    let mut wall = Face::new(vec![a, b, copies[&b], copies[&a]]);
+                    let mut wall = face.like(vec![a, b, copies[&b], copies[&a]]);
                     if !face.colors.is_empty() {
                         let (ca, cb) = (face.colors[i], face.colors[j]);
                         wall.colors = vec![ca, cb, cb, ca];
                     }
-                    wall.smooth = face.smooth;
                     walls.push(wall);
                 }
             }
@@ -138,7 +137,7 @@ impl EditMesh {
             let face = &self.faces[f];
             for i in 0..n {
                 let j = (i + 1) % n;
-                let mut quad = Face::new(vec![face.verts[i], face.verts[j], inner[j], inner[i]]);
+                let mut quad = face.like(vec![face.verts[i], face.verts[j], inner[j], inner[i]]);
                 if !face.uvs.is_empty() {
                     let (a, b) = (face.uvs[i], face.uvs[j]);
                     quad.uvs = vec![a, b, b.lerp(uv_center, amount), a.lerp(uv_center, amount)];
@@ -147,7 +146,6 @@ impl EditMesh {
                     let (a, b) = (face.colors[i], face.colors[j]);
                     quad.colors = vec![a, b, b, a];
                 }
-                quad.smooth = face.smooth;
                 ring.push(quad);
             }
             let face = &mut self.faces[f];
@@ -230,8 +228,7 @@ impl EditMesh {
         }
         let had_uvs = !self.faces[f].uvs.is_empty();
         let had_colors = !self.faces[f].colors.is_empty();
-        let mut out = Face::new(Vec::new());
-        out.smooth = self.faces[f].smooth;
+        let mut out = self.faces[f].like(Vec::new());
         for i in 0..n {
             let j = (i + 1) % n;
             let (a, b) = (self.faces[f].verts[i], self.faces[f].verts[j]);
@@ -304,10 +301,8 @@ impl EditMesh {
             let v = |i: usize| self.faces[f].verts[k(i)];
             let (m1, m2) = (mids[&edge(v(0), v(1))], mids[&edge(v(2), v(3))]);
             let face = &self.faces[f];
-            let mut a = Face::new(vec![v(0), m1, m2, v(3)]);
-            let mut b = Face::new(vec![m1, v(1), v(2), m2]);
-            a.smooth = face.smooth;
-            b.smooth = face.smooth;
+            let mut a = face.like(vec![v(0), m1, m2, v(3)]);
+            let mut b = face.like(vec![m1, v(1), v(2), m2]);
             if !face.uvs.is_empty() {
                 let uv = |i: usize| self.corner_uv(f, k(i));
                 let (u1, u2) = ((uv(0) + uv(1)) / 2.0, (uv(2) + uv(3)) / 2.0);

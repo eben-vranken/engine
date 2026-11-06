@@ -71,6 +71,7 @@ impl Editor {
         self.zone_pending = None;
         self.player_pending = None;
         self.renaming = None;
+        self.selected_part = None;
         self.reveal_selection = true;
     }
 
@@ -292,8 +293,11 @@ impl Editor {
                             ui.close();
                         }
                     }
-                    ui.separator();
-                    for path in model_files(&self.project_dir) {
+                    let models = model_files(&self.project_dir);
+                    if !models.is_empty() {
+                        ui.separator();
+                    }
+                    for path in models {
                         let open = self.tab_of(&path);
                         let mut text = path.display().to_string().to_uppercase();
                         if open.is_some() {
