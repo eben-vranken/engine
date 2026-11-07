@@ -8,20 +8,33 @@ pub const GRID_TEXELS_PER_METER: u32 = 32;
 /// Meters covered by one repeat of the grid texture (the shader needs this).
 pub const GRID_METERS: u32 = 2;
 
-/// An RGBA8 image in sRGB, with its mip chain (level 0 first).
+/// An RGBA8 image with its mip chain (level 0 first): a color in sRGB, or
+/// data (normals, roughness, occlusion) stored as is.
 #[derive(Debug, Clone)]
 pub struct Image {
     pub width: u32,
     pub height: u32,
     pub mips: Vec<Vec<u8>>,
+    /// Data, not color: no sRGB decoding when sampled or averaged.
+    pub linear: bool,
 }
 
 impl Image {
-    /// Mips are generated for square power-of-two images; other sizes get
-    /// only level 0 (they still point-sample fine, but may shimmer far away).
+    /// A color image. Mips are generated for square power-of-two images;
+    /// other sizes get only level 0 (they still point-sample fine, but may
+    /// shimmer far away).
     pub fn new(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        Self::build(width, height, pixels, false)
+    }
+
+    /// A data image (normals, roughness, occlusion), mipped like `new`.
+    pub fn data(width: u32, height: u32, pixels: Vec<u8>) -> Self {
+        Self::build(width, height, pixels, true)
+    }
+
+    fn build(width: u32, height: u32, pixels: Vec<u8>, linear: bool) -> Self {
         let mips = if width == height && width.is_power_of_two() {
-            mip_chain(pixels, width)
+            mip_chain(pixels, width, linear)
         } else {
             vec![pixels]
         };
@@ -29,6 +42,7 @@ impl Image {
             width,
             height,
             mips,
+            linear,
         }
     }
 
@@ -59,9 +73,9 @@ pub fn grid_image() -> Image {
     Image::new(size, size, pixels)
 }
 
-/// Box-filters each level down to 1×1. Averaging happens in linear light,
-/// otherwise distant grid lines get too dark.
-fn mip_chain(level0: Vec<u8>, size: u32) -> Vec<Vec<u8>> {
+/// Box-filters each level down to 1×1. Colors average in linear light,
+/// otherwise distant grid lines get too dark; data averages as stored.
+fn mip_chain(level0: Vec<u8>, size: u32, linear: bool) -> Vec<Vec<u8>> {
     let mut mips = vec![level0];
     let mut size = size;
     while size > 1 {
@@ -76,7 +90,7 @@ fn mip_chain(level0: Vec<u8>, size: u32) -> Vec<Vec<u8>> {
                         prev[i]
                     };
                     let samples = [texel(0, 0), texel(1, 0), texel(0, 1), texel(1, 1)];
-                    next.push(if c == 3 {
+                    next.push(if c == 3 || linear {
                         (samples.iter().map(|&s| s as u32).sum::<u32>() / 4) as u8
                     } else {
                         let linear = samples.iter().map(|&s| srgb_to_linear(s)).sum::<f32>() / 4.0;
@@ -109,7 +123,7 @@ pub fn linear_to_srgb(linear: f32) -> u8 {
     (c.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// Uploads an image as an sRGB texture with all its mips.
+/// Uploads an image (sRGB for colors) with all its mips.
 pub fn upload(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu::Texture {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("texture"),
@@ -121,7 +135,11 @@ pub fn upload(device: &wgpu::Device, queue: &wgpu::Queue, image: &Image) -> wgpu
         mip_level_count: image.mips.len() as u32,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        format: if image.linear {
+            wgpu::TextureFormat::Rgba8Unorm
+        } else {
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        },
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
@@ -166,6 +184,15 @@ mod tests {
             let size = (image.width >> level) as usize;
             assert_eq!(data.len(), size * size * 4);
         }
+    }
+
+    #[test]
+    fn data_mips_average_as_stored() {
+        // A flat normal (128, 128, 255) stays flat; as a color it wouldn't.
+        let image = Image::data(2, 2, [128, 128, 255, 255].repeat(4));
+        assert_eq!(image.mips[1], vec![128, 128, 255, 255]);
+        let mixed = Image::data(2, 2, [[0, 0, 0, 0], [255; 4], [0; 4], [255; 4]].concat());
+        assert_eq!(mixed.mips[1], vec![127; 4]);
     }
 
     #[test]

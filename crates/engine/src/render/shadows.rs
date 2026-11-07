@@ -9,13 +9,11 @@
 //!   static room cost nothing after the first frame.
 
 use super::frustum::Frustum;
-use super::lights::{self, CASCADES, FrameLight, MAX_SHADOWED};
+use super::lights::{self, CASCADES, FrameLight};
 use glam::{Mat4, Vec3};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-/// Pass matrices: the sun's cascades first, then six per shadow slot.
-const PASSES: usize = CASCADES + MAX_SHADOWED * 6;
 
 /// Something that casts shadows, as the frame sees it.
 pub struct Caster<'a> {
@@ -47,8 +45,9 @@ pub struct Shadows {
     pass_buffer: wgpu::Buffer,
     pass_bind_group: wgpu::BindGroup,
     pass_stride: u64,
-    /// Per slot: what its six faces were last rendered for.
-    cache: [Option<u64>; MAX_SHADOWED],
+    /// Per slot: what its six faces were last rendered for. Its length is
+    /// how many point lights can have shadows at once.
+    cache: Vec<Option<u64>>,
 }
 
 impl Shadows {
@@ -57,6 +56,7 @@ impl Shadows {
         object_layout: &wgpu::BindGroupLayout,
         sun_size: u32,
         point_size: u32,
+        slots: usize,
     ) -> Self {
         let texture = |label, size, layers| {
             device.create_texture(&wgpu::TextureDescriptor {
@@ -90,7 +90,7 @@ impl Shadows {
                 })
             })
             .collect();
-        let layers = (MAX_SHADOWED * 6) as u32;
+        let layers = (slots * 6) as u32;
         let point = texture("point shadows", point_size, layers);
         let point_view = point.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
@@ -108,7 +108,7 @@ impl Shadows {
             .collect();
         let face_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("shadow faces"),
-            size: (size_of::<Mat4>() * MAX_SHADOWED * 6) as u64,
+            size: (size_of::<Mat4>() * slots * 6) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -117,7 +117,8 @@ impl Shadows {
         let pass_stride = (size_of::<Mat4>() as u64).next_multiple_of(alignment);
         let pass_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("shadow passes"),
-            size: pass_stride * PASSES as u64,
+            // The sun's cascades first, then six faces per slot.
+            size: pass_stride * (CASCADES + slots * 6) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -196,13 +197,18 @@ impl Shadows {
             pass_buffer,
             pass_bind_group,
             pass_stride,
-            cache: [None; MAX_SHADOWED],
+            cache: vec![None; slots],
         }
+    }
+
+    /// How many point lights can have shadows at once.
+    pub fn slots(&self) -> usize {
+        self.cache.len()
     }
 
     /// Forget every cached point-light map (the scene was rebuilt).
     pub fn invalidate(&mut self) {
-        self.cache = [None; MAX_SHADOWED];
+        self.cache.fill(None);
     }
 
     /// Renders the sun's map (if `sun` is given) and every shadowed light's
@@ -217,7 +223,7 @@ impl Shadows {
         sun: Option<[Mat4; CASCADES]>,
         lights: &[FrameLight],
     ) {
-        let mut faces = vec![Mat4::ZERO; MAX_SHADOWED * 6];
+        let mut faces = vec![Mat4::ZERO; self.slots() * 6];
         let mut todo: Vec<(usize, &FrameLight)> = Vec::new();
         for light in lights {
             let Some(slot) = light.shadow else { continue };
@@ -230,7 +236,7 @@ impl Shadows {
             }
         }
         queue.write_buffer(&self.face_buffer, 0, bytemuck::cast_slice(&faces));
-        let mut passes = vec![Mat4::ZERO; PASSES];
+        let mut passes = vec![Mat4::ZERO; CASCADES + faces.len()];
         passes[..CASCADES].copy_from_slice(&sun.unwrap_or([Mat4::ZERO; CASCADES]));
         passes[CASCADES..].copy_from_slice(&faces);
         for (i, m) in passes.iter().enumerate() {
