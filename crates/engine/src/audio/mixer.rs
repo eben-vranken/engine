@@ -32,7 +32,7 @@ pub const LISTENER_REVERB: u32 = u32::MAX;
 /// Seconds over which a new reflection result replaces the previous one.
 /// Each pass traces random rays, so results differ a little; switching
 /// instantly made the reverb jump.
-const BLEND: f32 = 0.2;
+const BLEND: f32 = 0.35;
 /// Seconds for a zone's stylized reverb to fade in or out when the listener
 /// changes zones.
 const ZONE_FADE: f32 = 1.0;
@@ -52,9 +52,6 @@ pub struct Voice {
     /// The sound's own room (scene sounds only). Two effects each, so a new
     /// room response can fade in while the previous one fades out.
     pub reflection: Option<[ReflectionEffect<Convolution>; 2]>,
-    /// The listener's room, for sound that reaches it through walls and the
-    /// player's own sounds.
-    pub room: [ReflectionEffect<Convolution>; 2],
 }
 
 pub enum Command {
@@ -184,6 +181,8 @@ impl ZoneReverbBus {
 pub struct BusEffects {
     pub binaural: AmbisonicsDecodeEffect,
     pub panning: AmbisonicsDecodeEffect,
+    /// Shared listener-room convolution for through-wall/player sounds.
+    pub listener_room: [ReflectionEffect<Convolution>; 2],
     pub zone_reverb: ReflectionEffect<Parametric>,
 }
 
@@ -202,6 +201,7 @@ pub struct Mixer {
     shared: Shared,
     reflections: SharedSimulationOutput<ReflectionsOutput<u32, Convolution>>,
     decoders: Decoders,
+    listener_room: [ReflectionEffect<Convolution>; 2],
     zone_reverb: ZoneReverbBus,
     /// The current frame (deinterleaved stereo) and how much of it is played.
     mix: Vec<f32>,
@@ -244,6 +244,7 @@ impl Mixer {
                 binaural: buses.binaural,
                 panning: buses.panning,
             },
+            listener_room: buses.listener_room,
             zone_reverb: ZoneReverbBus::new(buses.zone_reverb, frame_size, rate),
             mix: vec![0.0; frame_size * 2],
             cursor: frame_size,
@@ -330,7 +331,9 @@ impl Mixer {
         ];
         self.mix.fill(0.0);
         self.reverb_bus.fill(0.0);
+        self.through.fill(0.0);
         let mut reverb = false;
+        let mut through_send = false;
         let zone = &mut self.zone_reverb;
         zone.follow(self.shared.stylized.filter(|_| toggles.reflections));
         zone.send.fill(0.0);
@@ -432,20 +435,24 @@ impl Mixer {
                 };
                 if through > 0.001 {
                     for (out, sample) in self.through.iter_mut().zip(&self.input) {
-                        *out = sample * through;
+                        *out += sample * through;
                     }
-                    reverb |= convolve(
-                        &mut voice.room,
-                        slot,
-                        rooms,
-                        LISTENER_REVERB,
-                        &self.through,
-                        fade,
-                        &mut self.reflected,
-                        &mut self.reverb_bus,
-                    );
+                    through_send = true;
                 }
             }
+        }
+
+        if toggles.reflections && through_send {
+            reverb |= convolve(
+                &mut self.listener_room,
+                slot,
+                rooms,
+                LISTENER_REVERB,
+                &self.through,
+                fade,
+                &mut self.reflected,
+                &mut self.reverb_bus,
+            );
         }
 
         if reverb

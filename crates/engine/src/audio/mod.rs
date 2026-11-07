@@ -55,20 +55,23 @@ use std::time::{Duration, Instant};
 const FRAME_SIZE: u32 = 512;
 /// How often edits to static geometry are picked up (rebuilding is cheap,
 /// but not every frame of a drag).
-const GEOMETRY_CHECK: Duration = Duration::from_millis(250);
+const GEOMETRY_CHECK: Duration = Duration::from_millis(100);
 /// Rays per source for volumetric occlusion: more = smoother fades.
 const OCCLUSION_SAMPLES: u32 = 32;
 /// Seconds for occlusion changes to settle, so a door opening fades the
 /// sound in rather than switching it.
-const OCCLUSION_SMOOTHING: f32 = 0.1;
+const OCCLUSION_SMOOTHING: f32 = 0.08;
 /// Longest reverb tail simulated (seconds); enough for a large stone hall.
 const MAX_REVERB: f32 = 3.0;
+/// Footsteps don't need to reserve the full hall tail: keeping this shorter
+/// avoids choking the one-shot pool while sprinting.
+const FOOTSTEP_TAIL: f32 = 1.0;
 /// Seconds for a sound leaving (or re-entering) the simulation radius to
 /// fade out (or in).
 const RADIUS_FADE: f32 = 1.0;
 /// Voices kept ready for one-shot sounds (claps, footsteps); enough for
 /// sprinting footsteps that each ring out for the full reverb tail.
-const ONE_SHOT_VOICES: usize = 10;
+const ONE_SHOT_VOICES: usize = 24;
 
 type DirectSimulator = Simulator<DefaultRayTracer, Direct>;
 type ReflectionSimulator = Simulator<DefaultRayTracer, (), Reflections, (), Convolution>;
@@ -249,6 +252,10 @@ impl Audio {
         let buses = BusEffects {
             binaural: decoder(Rendering::Binaural)?,
             panning: decoder(Rendering::Panning)?,
+            listener_room: [
+                self::reverb_effect(&context, &settings)?,
+                self::reverb_effect(&context, &settings)?,
+            ],
             // The zone's stylized reverb: one channel, widened in the mixer.
             zone_reverb: ReflectionEffect::<Parametric>::try_new(
                 &context,
@@ -551,7 +558,7 @@ impl Audio {
     pub fn clap(&mut self, position: Vec3) {
         let rate = self.rate;
         let clip = self.clip_or("audio/clap.wav", || clip::clap(rate));
-        self.play(clip, position, 1.0);
+        self.play(clip, position, 1.0, MAX_REVERB);
     }
 
     /// A footstep on a surface of `material` at `position`: the project's
@@ -577,7 +584,7 @@ impl Audio {
                 } else {
                     (clip, 1.0)
                 };
-                self.play(clip, position, volume * gain);
+                self.play(clip, position, volume * gain, FOOTSTEP_TAIL);
                 return;
             }
             // A missing or broken file (logged once): the default step instead.
@@ -589,14 +596,14 @@ impl Audio {
         let clip = self.clip_or(&format!("audio/footsteps/{name}.wav"), || {
             clip::footstep(&name, variant, rate)
         });
-        self.play(clip, position, volume);
+        self.play(clip, position, volume, FOOTSTEP_TAIL);
     }
 
     /// Plays a clip once from the one-shot pool: a free voice, or the one
-    /// that has been busy longest.
-    fn play(&mut self, clip: Clip, position: Vec3, volume: f32) {
+    /// that has just finished ringing out.
+    fn play(&mut self, clip: Clip, position: Vec3, volume: f32, tail: f32) {
         let now = Instant::now();
-        let ring = Duration::from_secs_f32(clip.len() as f32 / self.rate as f32 + MAX_REVERB);
+        let ring = Duration::from_secs_f32(clip.len() as f32 / self.rate as f32 + tail.max(0.0));
         let Some(entry) = self
             .voices
             .iter_mut()
@@ -604,9 +611,11 @@ impl Audio {
                 Kind::OneShot { until } => Some((until, e)),
                 Kind::Scene { .. } => None,
             })
-            .min_by_key(|(until, _)| *until)
+            .find(|(until, _)| until.is_none_or(|t| t <= now))
             .map(|(_, e)| e)
         else {
+            // All one-shot voices are still ringing: skip this event instead
+            // of restarting an active tail, which sounds robotic.
             return;
         };
         entry.kind = Kind::OneShot {
@@ -752,7 +761,6 @@ impl Audio {
             } else {
                 None
             },
-            room: [self.reverb()?, self.reverb()?],
         })
     }
 
@@ -830,6 +838,21 @@ impl Audio {
             })
             .clone()
     }
+}
+
+fn reverb_effect(
+    context: &Context,
+    settings: &AudioSettings,
+) -> Result<ReflectionEffect<Convolution>, AudioError> {
+    ReflectionEffect::try_new(
+        context,
+        settings,
+        &ReflectionEffectSettings {
+            impulse_response_size: (MAX_REVERB * settings.sampling_rate as f32) as u32,
+            num_channels: AMBISONIC_CHANNELS as u32,
+        },
+    )
+    .map_err(steam)
 }
 
 /// The output stream, asking the device for a buffer as small as one mixer
