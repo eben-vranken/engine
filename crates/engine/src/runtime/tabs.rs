@@ -67,13 +67,16 @@ impl Running {
                 let doc = crate::editor::ModelDoc::new(mesh, key.clone());
                 let stage = crate::editor::stage(&key);
                 editor.open_model_tab(path, doc, stage, &mut self.scene, &self.fly);
-                // Look at the model from the front, a little above.
-                let eye = Vec3::new(1.8, 1.6, 2.6);
-                let forward = -eye.normalize();
-                let camera = &mut self.fly.camera;
-                camera.position = eye;
-                camera.yaw = forward.x.atan2(-forward.z);
-                camera.pitch = forward.y.asin();
+                // Look at the model from the front, a little above, far
+                // enough back to see all of it.
+                let forward = -Vec3::new(1.8, 1.6, 2.6).normalize();
+                if let Some(model) = &mut editor.model {
+                    let camera = &mut self.fly.camera;
+                    model.orbit.yaw = forward.x.atan2(-forward.z);
+                    model.orbit.pitch = forward.y.asin();
+                    model.frame(camera, false);
+                    model.orbit.apply(camera);
+                }
                 self.scene_swapped();
             }
             Err(err) => {

@@ -19,6 +19,9 @@ pub struct ToolSettings {
     pub repeats: f32,
     /// Linear RGB.
     pub color: Vec3,
+    /// RANDOMIZE moves each vertex up to this far either way, per axis
+    /// (meters).
+    pub randomize: Vec3,
 }
 
 impl Default for ToolSettings {
@@ -28,6 +31,7 @@ impl Default for ToolSettings {
             inset: 0.25,
             repeats: 1.0,
             color: Vec3::new(0.8, 0.3, 0.2),
+            randomize: Vec3::splat(0.05),
         }
     }
 }
@@ -39,6 +43,7 @@ pub enum Tool {
     Inset,
     Delete,
     Merge,
+    Randomize,
     Weld,
     Subdivide,
     LoopCut,
@@ -78,7 +83,7 @@ impl ModelDoc {
         let count = self.selection_count();
         match tool {
             Tool::Extrude | Tool::Inset => self.mode == SelectMode::Face && count > 0,
-            Tool::Delete => count > 0,
+            Tool::Delete | Tool::Randomize => count > 0,
             Tool::Merge => self.mode == SelectMode::Vertex && count > 1,
             Tool::Subdivide => self.mode == SelectMode::Edge && count > 0,
             Tool::LoopCut => self.mode == SelectMode::Edge && count == 1,
@@ -94,6 +99,7 @@ impl ModelDoc {
         self.finish_drag();
         let before = self.mesh.clone();
         let faces = self.target_faces();
+        let verts = self.selected_verts();
         let mut message = None;
         let nothing_selected = self.selection_count() == 0;
         let mesh = &mut self.mesh;
@@ -113,6 +119,14 @@ impl ModelDoc {
                 let merged = mesh.merge(&self.verts);
                 self.clear_selection();
                 self.verts.extend(merged);
+            }
+            Tool::Randomize => {
+                let mut random = Random::seeded();
+                let most = self.tools.randomize;
+                for &v in &verts {
+                    let offset = Vec3::new(random.signed(), random.signed(), random.signed());
+                    mesh.positions[v as usize] += offset * most;
+                }
             }
             Tool::Weld => {
                 let count = mesh.weld();
@@ -170,9 +184,9 @@ impl ModelDoc {
             run = run.take().or(pick(
                 ui,
                 self,
-                "EXTRUDE  CTRL+E",
+                "EXTRUDE  E",
                 Tool::Extrude,
-                "PULL THE SELECTED FACES OUT, WITH SIDE WALLS",
+                "PULL THE SELECTED FACES OUT BY THIS MUCH, WITH SIDE WALLS (E: FOLLOW THE MOUSE)",
             ));
             editing |= ui
                 .add(
@@ -232,6 +246,28 @@ impl ModelDoc {
                 "MERGE VERTICES THAT SIT ON TOP OF EACH OTHER",
             ));
         });
+        section(ui, "RANDOMIZE");
+        ui.horizontal(|ui| {
+            for (axis, value) in ["X", "Y", "Z"].iter().zip(self.tools.randomize.as_mut()) {
+                ui.label(dim(axis));
+                editing |= ui
+                    .add(
+                        egui::DragValue::new(value)
+                            .speed(0.01)
+                            .range(0.0..=100.0)
+                            .suffix(" M"),
+                    )
+                    .on_hover_text("THE MOST A VERTEX MOVES ALONG THIS AXIS, EITHER WAY")
+                    .dragged();
+            }
+        });
+        run = run.take().or(pick(
+            ui,
+            self,
+            "RANDOMIZE",
+            Tool::Randomize,
+            "MOVE EACH SELECTED VERTEX BY A RANDOM AMOUNT, UP TO THE DISTANCES ABOVE EITHER WAY",
+        ));
         section(ui, "MESH");
         ui.horizontal(|ui| {
             run = run.take().or(pick(
@@ -294,12 +330,14 @@ impl ModelDoc {
             ));
         });
 
-        section(ui, "TEXTURE");
+        section(ui, "MATERIAL");
+        self.surface_sliders(ui);
         let current = self.mesh.texture.clone();
         let label = current
             .clone()
             .unwrap_or_else(|| "NONE".into())
             .to_uppercase();
+        ui.label(dim("TEXTURE"));
         egui::ComboBox::from_id_salt("model_texture")
             .selected_text(label)
             .show_ui(ui, |ui| {
@@ -376,6 +414,73 @@ impl ModelDoc {
     }
 }
 
+impl ModelDoc {
+    /// ROUGHNESS and METALNESS: the model changes as a slider moves; one
+    /// undo step when it's let go (or a value is typed).
+    fn surface_sliders(&mut self, ui: &mut Ui) {
+        let mut dragging = false;
+        for (label, hint, metal) in [
+            ("ROUGHNESS", "0 = MIRROR-SMOOTH, 1 = FULLY MATTE", false),
+            (
+                "METALNESS",
+                "0 = STONE, WOOD, PLASTER; 1 = BARE METAL",
+                true,
+            ),
+        ] {
+            ui.horizontal(|ui| {
+                ui.label(dim(label));
+                let surface = self.mesh.surface;
+                let mut value = if metal {
+                    surface.metalness
+                } else {
+                    surface.roughness
+                };
+                let response = ui
+                    .add(egui::Slider::new(&mut value, 0.0..=1.0))
+                    .on_hover_text(hint);
+                if response.changed() {
+                    // Before the first change: what undo goes back to.
+                    self.surface_before.get_or_insert_with(|| self.mesh.clone());
+                    let field = if metal {
+                        &mut self.mesh.surface.metalness
+                    } else {
+                        &mut self.mesh.surface.roughness
+                    };
+                    *field = value;
+                    self.changed = true;
+                }
+                dragging |= response.dragged();
+            });
+        }
+        if !dragging && let Some(before) = self.surface_before.take() {
+            self.record(before);
+        }
+    }
+}
+
+/// Random numbers for RANDOMIZE (splitmix64), seeded from the clock.
+struct Random(u64);
+
+impl Random {
+    fn seeded() -> Self {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        Self(nanos)
+    }
+
+    /// Evenly spread in -1..1.
+    fn signed(&mut self) -> f32 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        // The top 24 bits as 0..1, then stretched to -1..1.
+        (z >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0
+    }
+}
+
 /// A tool button, greyed out when the tool can't run; the tool if clicked.
 fn pick(ui: &mut Ui, doc: &ModelDoc, label: &str, tool: Tool, hint: &str) -> Option<Tool> {
     ui.add_enabled(doc.can(&tool), egui::Button::new(label))
@@ -439,6 +544,25 @@ mod tests {
         doc.apply(Tool::LoopCut);
         assert_eq!(doc.mesh.faces.len(), 10);
         assert_eq!(doc.selection_count(), 4, "the new loop is selected");
+
+        // Randomize stays within the distances, and moves shared corners
+        // together (faces stay joined).
+        doc.clear_selection();
+        doc.mode = SelectMode::Vertex;
+        doc.select_all();
+        doc.tools.randomize = Vec3::new(0.0, 0.5, 0.0);
+        let before = doc.mesh.clone();
+        doc.apply(Tool::Randomize);
+        let mut moved = false;
+        for (a, b) in doc.mesh.positions.iter().zip(&before.positions) {
+            assert_eq!((a.x, a.z), (b.x, b.z), "X and Z are 0: untouched");
+            assert!((a.y - b.y).abs() <= 0.5 + 1e-6);
+            moved |= a.y != b.y;
+        }
+        assert!(moved);
+        assert_eq!(doc.mesh.faces, before.faces);
+        doc.undo();
+        assert_eq!(doc.mesh, before, "one undo step");
 
         // With nothing selected, surface tools act on everything.
         doc.clear_selection();

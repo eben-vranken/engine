@@ -316,6 +316,7 @@ mod tests {
             fov_y: 70.0,
             near: 0.1,
             far: 100.0,
+            ortho: None,
         };
         let view = View {
             camera: &camera,
@@ -345,6 +346,7 @@ mod tests {
             fov_y: 70.0,
             near: 0.1,
             far: 100.0,
+            ortho: None,
         };
         let view = View {
             camera: &camera,

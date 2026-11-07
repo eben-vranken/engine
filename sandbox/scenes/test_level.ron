@@ -12,6 +12,10 @@
             wisps: 0.5,
             wisp_size: 2.0,
             wisp_speed: 0.15,
+            dust: 0.0,
+            dust_size: 1.0,
+            dust_brightness: 4.0,
+            dust_speed: 0.05,
         ),
         fog_anisotropy: 0.35,
         fog_distance: 60.0,
@@ -909,6 +913,12 @@
             zone: "ground",
             transform: (position: (12.040365, 0.7676718, -2.2778687), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
             components: [Primitive((shape: Box(size: (1.0, 1.0, 1.0)), color: (0.8, 0.8, 0.8))), Floating((height: 0.25, speed: 0.5, phase: 0.5))],
+        ),
+        (
+            name: "ground volume",
+            zone: "ground",
+            transform: (position: (0.0, 0.0, 0.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [ZoneVolume((size: (200.0, 150.0, 200.0), probe_spacing: 0.5, probe_height: 1.5))],
         ),
     ],
 )

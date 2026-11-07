@@ -8,6 +8,7 @@ mod hot_reload;
 mod hud;
 mod keys;
 mod project;
+pub(crate) use project::start_editor;
 mod tabs;
 
 use crate::assets::Assets;
@@ -129,7 +130,8 @@ struct Running {
     focused: bool,
     /// Player mode: Esc gave the mouse back; a click takes it again.
     mouse_released: bool,
-    /// Fly mode: right mouse button held (and pressed outside the UI).
+    /// Fly mode: the look button held (pressed outside the UI): the right
+    /// one, or the middle one in the modeler, where it orbits.
     rmb_look: bool,
     last_frame: Instant,
     fps: FpsCounter,
@@ -257,8 +259,18 @@ impl ApplicationHandler for App {
                     .viewport
                     .is_some_and(|v| v.contains(egui::pos2(app.cursor.x, app.cursor.y)))
                     && !app.overlay.wants_pointer();
+                // Scenes look around with the right button; the modeler
+                // orbits with the middle one, as in Blender.
+                let modeling = app.editor.as_ref().is_some_and(|e| e.model.is_some());
+                let look = if modeling {
+                    MouseButton::Middle
+                } else {
+                    MouseButton::Right
+                };
                 match button {
-                    MouseButton::Right => app.rmb_look = state.is_pressed() && in_viewport,
+                    button if button == look => {
+                        app.rmb_look = state.is_pressed() && in_viewport;
+                    }
                     MouseButton::Left if state.is_pressed() && in_viewport && !app.rmb_look => {
                         if app.play.is_some() {
                             app.mouse_released = false;
@@ -498,7 +510,17 @@ impl Running {
                 self.player.camera(&self.settings)
             }
             CameraMode::Fly => {
-                self.fly.update(&self.input, dt);
+                let image_height = self.renderer.image_rect()[3];
+                match self.editor.as_mut().and_then(|e| e.model.as_mut()) {
+                    Some(model) => {
+                        model.update_camera(&mut self.fly.camera, &self.input, image_height)
+                    }
+                    None => {
+                        // Only the modeler looks orthographically.
+                        self.fly.camera.ortho = None;
+                        self.fly.update(&self.input, dt);
+                    }
+                }
                 self.fly.camera.clone()
             }
         };
@@ -654,6 +676,12 @@ impl Running {
             }
         }
 
+        // A model from the MODELS list: placed like a file dropped there
+        // (next frame), at the drop point or the middle of the view.
+        if let Some((path, at)) = editor_output.as_mut().and_then(|o| o.place_model.take()) {
+            let cursor = at.map_or(Vec2::splat(-1.0), |p| Vec2::new(p.x, p.y) * ppp);
+            self.dropped.push((self.game_dir.join(path), cursor));
+        }
         self.import_dropped(&camera);
 
         if let Some(output) = &editor_output {

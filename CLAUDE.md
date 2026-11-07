@@ -45,6 +45,7 @@ cargo build
 cargo run -p app                                 # play the sandbox
 cargo run -p app -- --editor                     # edit the sandbox
 cargo run -p app -- --editor --game <path>       # edit another game project
+cargo run -p app -- --launcher                   # pick a project (recent list), then edit it
 cargo test
 cargo clippy --all-targets
 cargo fmt

@@ -3,7 +3,11 @@
 //!   cargo run -p app                                -> play the sandbox
 //!   cargo run -p app -- --editor                    -> edit the sandbox
 //!   cargo run -p app -- --editor --game ../my-game  -> edit another game project
+//!   cargo run -p app -- --launcher                  -> pick a project to edit
 //!
+//! `--launcher` opens a small window listing the projects edited before
+//! (most recent first), plus OPEN PROJECT… and NEW PROJECT…; the one picked
+//! opens in the editor.
 //! `--game <path>` picks the game project folder (default: `sandbox`), or a
 //! project package (`.gamepack`), which is unpacked next to it and opened.
 //! `--scene <path>` opens another scene than the project's start scene
@@ -11,6 +15,11 @@
 //! `--quality low` uses the low preset (for integrated graphics);
 //! `--perf-log` logs FPS and GPU times every couple of seconds.
 //! Game projects are content-only folders; they never contain engine code.
+//!
+//! Release builds on Windows are window-only apps (no console window);
+//! debug builds keep the console for the log.
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use engine::project::Project;
 use std::path::PathBuf;
@@ -19,6 +28,7 @@ use std::path::PathBuf;
 enum Mode {
     Play,
     Editor,
+    Launcher,
 }
 
 struct Args {
@@ -40,6 +50,7 @@ fn parse_args() -> Args {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--editor" => mode = Mode::Editor,
+            "--launcher" => mode = Mode::Launcher,
             "--game" => {
                 if let Some(path) = args.next() {
                     game = PathBuf::from(path);
@@ -71,6 +82,13 @@ fn main() -> anyhow::Result<()> {
     )
     .init();
     let args = parse_args();
+    if args.mode == Mode::Launcher {
+        engine::launcher::run(engine::launcher::LaunchConfig {
+            quality: args.quality,
+            perf_log: args.perf_log,
+        })?;
+        return Ok(());
+    }
     log::info!(
         "{} v{} | mode: {:?} | game: {}",
         engine::NAME,
@@ -103,6 +121,10 @@ fn main() -> anyhow::Result<()> {
     );
 
     let editor = args.mode == Mode::Editor;
+    if editor {
+        // For the launcher's list.
+        engine::recent::record(&project.dir, &project.settings.name);
+    }
     engine::run(engine::RunConfig {
         title: format!(
             "{} — {}{}",

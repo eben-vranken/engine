@@ -133,8 +133,8 @@ fn encode(mesh: &EditMesh, texture: Option<(Vec<u8>, &str)>) -> Vec<u8> {
     let mut material = json!({
         "pbrMetallicRoughness": {
             "baseColorFactor": [1.0, 1.0, 1.0, 1.0],
-            "metallicFactor": 0.0,
-            "roughnessFactor": 1.0,
+            "metallicFactor": mesh.surface.metalness,
+            "roughnessFactor": mesh.surface.roughness,
         },
     });
     let mut images = Vec::new();
@@ -241,10 +241,17 @@ mod tests {
         let path = dir.join("pillar.glb");
         let mut mesh = EditMesh::cylinder(0.3, 2.0, 6);
         mesh.faces[0].colors = vec![Vec3::new(1.0, 0.0, 0.0); 4];
+        mesh.surface.roughness = 0.25;
+        mesh.surface.metalness = 0.75;
         save(&path, &mesh, &dir).unwrap();
 
         assert_eq!(load(&path).unwrap(), mesh);
         let model = crate::assets::load_gltf(&path).unwrap();
+        assert_eq!(
+            model.surface,
+            [0.25, 0.75],
+            "the material reaches the engine"
+        );
         assert_eq!(
             model.mesh.indices.len(),
             mesh.to_model(None).mesh.indices.len()

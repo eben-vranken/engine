@@ -16,9 +16,12 @@ pub mod import;
 pub mod inspector;
 pub mod markers;
 mod menu_bar;
+mod model_list;
 mod model_parts;
 mod model_tab;
 mod model_tools;
+mod model_transform;
+mod model_view;
 mod name_dialog;
 mod object_panel;
 mod objects;
@@ -38,7 +41,7 @@ use files::{model_files, scene_files};
 use gizmo::{TransformGizmo, View};
 use glam::Vec3;
 use history::{Change, Edit, History};
-pub use model_tab::{ModelDoc, stage};
+pub use model_tab::{ModelDoc, SelectMode, stage};
 pub use objects::{NEW_OBJECT_DISTANCE, placement};
 pub use selection::Pick;
 pub use settings_panel::SettingsTarget;
@@ -90,6 +93,8 @@ pub struct Editor {
     zone_delete: Option<(String, String)>,
     /// Text typed in the hierarchy's search bar.
     search: String,
+    /// The MODELS list under the scene panel.
+    models: model_list::ModelList,
     /// The reverb bake's state for the BAKE menu (set by the runtime).
     pub bake_status: String,
     /// The light bake's state for the BAKE menu (set by the runtime).
@@ -170,6 +175,9 @@ pub struct EditorOutput {
     pub close_tab: Option<usize>,
     /// Open this model (relative to the project) in a model tab.
     pub open_model: Option<PathBuf>,
+    /// Place this model (relative to the project) in the scene: where it
+    /// was dropped on the scene image (points), or in front of the camera.
+    pub place_model: Option<(PathBuf, Option<egui::Pos2>)>,
     /// Use this render scale now (`None` = automatic).
     pub render_scale: Option<Option<u32>>,
     /// The game was renamed (the window title follows).
@@ -195,6 +203,7 @@ impl EditorOutput {
             new_tab: None,
             close_tab: None,
             open_model: None,
+            place_model: None,
             open_project: None,
             render_scale: None,
             rename: None,
@@ -228,6 +237,7 @@ impl Editor {
             renaming: None,
             zone_delete: None,
             search: String::new(),
+            models: Default::default(),
             bake_status: String::new(),
             light_status: String::new(),
             probes: Vec::new(),
@@ -291,6 +301,14 @@ impl Editor {
                     if add_zone {
                         output.changed.push(self.add_zone(scene));
                     }
+                    // The panel's lower part: the project's models.
+                    egui::Panel::bottom("editor_models")
+                        .resizable(true)
+                        .default_size(240.0)
+                        .min_size(120.0)
+                        .show(ui, |ui| {
+                            ui.add_enabled_ui(!playing, |ui| self.model_list(ui, &mut output));
+                        });
                     ui.add_enabled_ui(!playing, |ui| self.hierarchy(ui, scene, &mut output));
                 });
         } else {
@@ -320,6 +338,9 @@ impl Editor {
             );
         }
         egui::Panel::top("editor_tabs").show(ui, |ui| self.tab_strip(ui, &mut output));
+        if !self.playing {
+            self.drop_model(ui, view.image, &mut output);
+        }
 
         if let Some(index) = self
             .selected

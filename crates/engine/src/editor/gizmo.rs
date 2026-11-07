@@ -136,13 +136,17 @@ impl TransformGizmo {
     }
 }
 
-/// Muted axis colors that sit with the amber UI; amber when hovered.
+/// Muted X, Y and Z colors that sit with the amber UI.
+pub const AXIS_RGB: [[u8; 3]; 3] = [[220, 70, 60], [110, 190, 80], [70, 130, 230]];
+
+/// The axis colors; amber when hovered.
 fn visuals() -> GizmoVisuals {
     let amber = theme::AMBER;
+    let [x, y, z] = AXIS_RGB.map(|[r, g, b]| transform_gizmo::Color32::from_rgb(r, g, b));
     GizmoVisuals {
-        x_color: transform_gizmo::Color32::from_rgb(220, 70, 60),
-        y_color: transform_gizmo::Color32::from_rgb(110, 190, 80),
-        z_color: transform_gizmo::Color32::from_rgb(70, 130, 230),
+        x_color: x,
+        y_color: y,
+        z_color: z,
         s_color: transform_gizmo::Color32::from_rgb(210, 200, 190),
         highlight_color: Some(transform_gizmo::Color32::from_rgb(
             amber.r(),

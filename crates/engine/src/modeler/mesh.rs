@@ -20,6 +20,31 @@ pub struct EditMesh {
     /// parts settings of their own by name. Empty = one part.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<String>,
+    /// How the whole model reflects light.
+    #[serde(default)]
+    pub surface: Surface,
+}
+
+/// A model's material besides its texture: one for the whole model, as
+/// the renderer draws it (a scene's Material component still overrides
+/// it).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Surface {
+    /// 0 = mirror-smooth (polished marble, still water), 1 = fully matte.
+    pub roughness: f32,
+    /// 0 = stone, wood, plaster; 1 = bare metal (reflections take its color).
+    pub metalness: f32,
+}
+
+impl Default for Surface {
+    /// Matte, not metal: what models were before they had a material.
+    fn default() -> Self {
+        Self {
+            roughness: 1.0,
+            metalness: 0.0,
+        }
+    }
 }
 
 /// What the only part of a model is called until it's renamed.
@@ -95,6 +120,7 @@ impl EditMesh {
             faces: faces.into_iter().map(Face::new).collect(),
             texture: None,
             parts: Vec::new(),
+            surface: Surface::default(),
         }
     }
 
@@ -413,7 +439,7 @@ impl EditMesh {
             mesh,
             parts,
             images: vec![image],
-            ..Default::default()
+            surface: [self.surface.roughness, self.surface.metalness],
         }
     }
 

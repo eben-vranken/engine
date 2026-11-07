@@ -444,6 +444,7 @@ impl Player {
             fov_y: camera.fov + camera.sprint_fov_kick * smoothstep(self.fov_kick),
             near: 0.05,
             far: 500.0,
+            ortho: None,
         }
     }
 }

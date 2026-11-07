@@ -61,6 +61,7 @@ mod tests {
             fov_y: 90.0,
             near: 0.1,
             far: 100.0,
+            ortho: None,
         };
         Frustum::new(camera.view_projection(1.0))
     }

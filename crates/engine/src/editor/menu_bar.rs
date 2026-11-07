@@ -55,28 +55,38 @@ impl Editor {
                 }
                 ui.add_space(12.0);
             }
-            ui.add_enabled_ui(!self.playing, |ui| {
-                for (kind, text) in [
-                    (GizmoModeKind::Translate, "MOVE W"),
-                    (GizmoModeKind::Rotate, "ROTATE E"),
-                    (GizmoModeKind::Scale, "SCALE R"),
-                ] {
-                    let label = if self.gizmo.kind == kind {
-                        format!("[{text}]")
-                    } else {
-                        format!(" {text} ")
-                    };
-                    if ui.small_button(label).clicked() {
-                        self.gizmo.kind = kind;
-                    }
-                }
-                ui.label(dim("CTRL SNAP"));
-            });
+            if modeling {
+                // The modeler moves things with keys, as in Blender.
+                ui.label(dim("G MOVE  R ROTATE  S SCALE  CTRL SNAP"));
+            } else {
+                self.gizmo_buttons(ui);
+            }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(dim(&self.game_name.to_uppercase()))
                     .on_hover_text(self.project_dir.display().to_string());
             });
+        });
+    }
+
+    /// The scene editor's gizmo modes.
+    fn gizmo_buttons(&mut self, ui: &mut Ui) {
+        ui.add_enabled_ui(!self.playing, |ui| {
+            for (kind, text) in [
+                (GizmoModeKind::Translate, "MOVE W"),
+                (GizmoModeKind::Rotate, "ROTATE E"),
+                (GizmoModeKind::Scale, "SCALE R"),
+            ] {
+                let label = if self.gizmo.kind == kind {
+                    format!("[{text}]")
+                } else {
+                    format!(" {text} ")
+                };
+                if ui.small_button(label).clicked() {
+                    self.gizmo.kind = kind;
+                }
+            }
+            ui.label(dim("CTRL SNAP"));
         });
     }
 

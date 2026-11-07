@@ -118,7 +118,7 @@ impl Running {
 }
 
 /// Starts another editor process on the project in `dir`.
-fn start_editor(dir: &Path, quality: Quality, perf_log: bool) -> Result<(), String> {
+pub(crate) fn start_editor(dir: &Path, quality: Quality, perf_log: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut command = std::process::Command::new(exe);
     command

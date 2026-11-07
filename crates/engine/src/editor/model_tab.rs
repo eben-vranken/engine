@@ -1,19 +1,21 @@
 //! Model tabs: the modeler inside the editor. The tab's live "scene" is a
-//! small stage (the model on a grid floor) that the renderer draws as
-//! usual; the model itself is an [`EditMesh`] edited here, its vertices,
-//! edges and faces drawn and picked over the viewport.
+//! small stage (just the model) that the renderer draws as usual; the
+//! model itself is an [`EditMesh`] edited here, its vertices, edges and
+//! faces drawn and picked over the viewport. The controls follow Blender's.
 
 use super::gizmo::View;
 use super::markers::{project, project_segment};
 use super::model_tools::Tool;
+use super::model_transform::{Axis, Kind, Modal};
+use super::model_view::Orbit;
 use super::{Editor, EditorOutput, Side, collapsed_panel, dim, panel_header};
 use crate::modeler::glb;
 use crate::modeler::mesh::{Edge, EditMesh, edge};
-use crate::render::mesh::Shape;
-use crate::scene::{Component, Model, Object, Primitive, Scene, Transform, Zone};
+use crate::scene::{Component, Model, Object, Scene, Transform, Zone};
 use crate::ui::theme;
 use egui::{Color32, Pos2, Stroke, Ui};
 use glam::{Vec2, Vec3};
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -50,9 +52,10 @@ pub struct ModelDoc {
     pub(super) verts: BTreeSet<u32>,
     pub(super) edges: BTreeSet<Edge>,
     pub(super) faces: BTreeSet<usize>,
-    /// A gizmo drag in progress: the mesh before it, the pivot where it
-    /// started and where it is now.
-    pub(super) drag: Option<(EditMesh, Transform, Transform)>,
+    /// A move / rotate / scale in progress (G, R, S).
+    pub(super) modal: Option<Modal>,
+    /// Where the camera turns around.
+    pub orbit: Orbit,
     /// What the stage's model object is drawn from in the asset cache: a
     /// name of its own, so scenes using the file don't see unsaved edits.
     pub key: String,
@@ -64,6 +67,8 @@ pub struct ModelDoc {
     box_start: Option<Pos2>,
     /// The PARTS panel's name field: which part, and the name typed.
     pub(super) part_name: Option<(u32, String)>,
+    /// The mesh before a MATERIAL slider started moving (its undo step).
+    pub(super) surface_before: Option<EditMesh>,
 }
 
 impl ModelDoc {
@@ -77,17 +82,19 @@ impl ModelDoc {
             verts: BTreeSet::new(),
             edges: BTreeSet::new(),
             faces: BTreeSet::new(),
-            drag: None,
+            modal: None,
+            orbit: Orbit::default(),
             key,
             changed: true,
             tools: Default::default(),
             box_start: None,
             part_name: None,
+            surface_before: None,
         }
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.drag.is_some() || self.mesh != self.saved
+        self.modal.is_some() || self.mesh != self.saved
     }
 
     pub fn mark_saved(&mut self) {
@@ -104,7 +111,7 @@ impl ModelDoc {
     }
 
     pub fn undo(&mut self) {
-        self.finish_drag();
+        self.cancel_transform();
         if let Some(before) = self.undo.pop() {
             self.redo.push(std::mem::replace(&mut self.mesh, before));
             self.after_history();
@@ -112,7 +119,7 @@ impl ModelDoc {
     }
 
     pub fn redo(&mut self) {
-        self.finish_drag();
+        self.cancel_transform();
         if let Some(after) = self.redo.pop() {
             self.undo.push(std::mem::replace(&mut self.mesh, after));
             self.after_history();
@@ -130,10 +137,57 @@ impl ModelDoc {
         self.changed = true;
     }
 
+    /// Keeps a transform in progress, as one undo step.
     pub(super) fn finish_drag(&mut self) {
-        if let Some((before, _, _)) = self.drag.take() {
-            self.record(before);
+        if let Some(modal) = self.modal.take() {
+            self.record(modal.before);
         }
+    }
+
+    /// Puts back what a transform in progress changed.
+    pub(super) fn cancel_transform(&mut self) {
+        if let Some(modal) = self.modal.take() {
+            self.mesh = modal.before;
+            self.after_history();
+        }
+    }
+
+    /// A move / rotate / scale is in progress (so Esc and number keys
+    /// belong to it).
+    pub fn transforming(&self) -> bool {
+        self.modal.is_some()
+    }
+
+    /// Starts moving, turning or scaling the selection from `pointer`.
+    fn start_transform(&mut self, kind: Kind, pointer: Pos2) {
+        let verts = self.selected_verts();
+        if !verts.is_empty() {
+            self.modal = Some(Modal::new(
+                kind,
+                self.mesh.clone(),
+                &self.mesh,
+                &verts,
+                pointer,
+            ));
+        }
+    }
+
+    /// E: extrudes the selected faces and moves the new ones along their
+    /// normal; cancelling takes the extrusion back too.
+    fn extrude_and_move(&mut self, pointer: Pos2) {
+        if !self.can(&Tool::Extrude) {
+            return;
+        }
+        let before = self.mesh.clone();
+        let normal: Vec3 = self.faces.iter().map(|&f| self.mesh.face_normal(f)).sum();
+        self.mesh.extrude(&self.faces, 0.0);
+        self.changed = true;
+        let verts = self.selected_verts();
+        let mut modal = Modal::new(Kind::Move, before, &self.mesh, &verts, pointer);
+        if let Some(normal) = normal.try_normalize() {
+            modal.axis = Some(Axis::Normal(normal));
+        }
+        self.modal = Some(modal);
     }
 
     pub(super) fn clear_selection(&mut self) {
@@ -142,7 +196,7 @@ impl ModelDoc {
         self.faces.clear();
     }
 
-    pub(super) fn set_mode(&mut self, mode: SelectMode) {
+    pub fn set_mode(&mut self, mode: SelectMode) {
         if mode != self.mode {
             self.mode = mode;
             self.clear_selection();
@@ -157,20 +211,13 @@ impl ModelDoc {
         }
     }
 
-    /// Selects everything, or nothing if everything already is.
-    fn toggle_all(&mut self) {
-        let all = match self.mode {
-            SelectMode::Vertex => self.verts.len() == self.mesh.positions.len(),
-            SelectMode::Edge => self.edges.len() == self.mesh.edges().len(),
-            SelectMode::Face => self.faces.len() == self.mesh.faces.len(),
-        };
+    /// Selects everything (in the current mode).
+    pub(super) fn select_all(&mut self) {
         self.clear_selection();
-        if !all {
-            match self.mode {
-                SelectMode::Vertex => self.verts = (0..self.mesh.positions.len() as u32).collect(),
-                SelectMode::Edge => self.edges = self.mesh.edges().into_iter().collect(),
-                SelectMode::Face => self.faces = (0..self.mesh.faces.len()).collect(),
-            }
+        match self.mode {
+            SelectMode::Vertex => self.verts = (0..self.mesh.positions.len() as u32).collect(),
+            SelectMode::Edge => self.edges = self.mesh.edges().into_iter().collect(),
+            SelectMode::Face => self.faces = (0..self.mesh.faces.len()).collect(),
         }
     }
 
@@ -194,7 +241,7 @@ impl ModelDoc {
     }
 
     /// The corners the selection moves.
-    fn selected_verts(&self) -> BTreeSet<u32> {
+    pub(super) fn selected_verts(&self) -> BTreeSet<u32> {
         match self.mode {
             SelectMode::Vertex => self.verts.clone(),
             SelectMode::Edge => self.edges.iter().flatten().copied().collect(),
@@ -206,18 +253,11 @@ impl ModelDoc {
         }
     }
 
-    fn pivot(&self, verts: &BTreeSet<u32>) -> Transform {
-        let sum: Vec3 = verts.iter().map(|&v| self.mesh.positions[v as usize]).sum();
-        Transform::at(sum / verts.len().max(1) as f32)
-    }
-
     /// Whether `point` on the mesh can be seen from the camera (no face in
     /// front of it).
-    fn visible(&self, view: &View, point: Vec3) -> bool {
-        let eye = view.camera.position;
-        let to = point - eye;
-        let distance = to.length();
-        match self.mesh.pick_face(eye, to / distance.max(1e-6)) {
+    pub(super) fn visible(&self, view: &View, point: Vec3) -> bool {
+        let (eye, direction, distance) = view.camera.ray_to(point);
+        match self.mesh.pick_face(eye, direction) {
             Some((_, t)) => t >= distance * 0.999 - 1e-4,
             None => true,
         }
@@ -400,39 +440,24 @@ fn segment_distance(p: Pos2, a: Pos2, b: Pos2) -> f32 {
     (a + ab * t).distance(p)
 }
 
-/// The stage a model tab shows: the model at the origin on a grid floor.
+/// The stage a model tab shows: the model at the origin, nothing else
+/// (the axes are drawn over it).
 pub fn stage(key: &str) -> Scene {
     let zone = "model".to_string();
     let mut scene = Scene {
         zones: vec![Zone::new(zone.clone())],
-        objects: vec![
-            Object {
-                name: "model".into(),
-                zone: zone.clone(),
-                transform: Transform::default(),
-                components: vec![Component::Model(Model {
-                    path: key.into(),
-                    color: Vec3::ONE,
-                    emissive: Vec3::ZERO,
-                    collision: false,
-                    parts: Vec::new(),
-                })],
-            },
-            Object {
-                name: "floor".into(),
-                zone,
-                // Just under the origin, so faces at y = 0 don't flicker.
-                transform: Transform::at(Vec3::new(0.0, -0.002, 0.0)),
-                components: vec![Component::Primitive(Primitive {
-                    shape: Shape::Plane {
-                        size: Vec2::splat(10.0),
-                    },
-                    color: Vec3::splat(0.35),
-                    emissive: Vec3::ZERO,
-                    collision: false,
-                })],
-            },
-        ],
+        objects: vec![Object {
+            name: "model".into(),
+            zone: zone.clone(),
+            transform: Transform::default(),
+            components: vec![Component::Model(Model {
+                path: key.into(),
+                color: Vec3::ONE,
+                emissive: Vec3::ZERO,
+                collision: false,
+                parts: Vec::new(),
+            })],
+        }],
         ..Default::default()
     };
     scene.environment.fog.density = 0.0;
@@ -462,27 +487,57 @@ impl Editor {
         view: &View,
         output: &mut EditorOutput,
     ) {
+        // Keys. 1/2/3 (select modes) and the numpad (views) come from the
+        // runtime, which can tell the number row from the numpad.
         let typing = ui.ctx().memory(|m| m.focused().is_some());
+        let modal_open = self.confirm.is_some() || self.naming.is_some();
+        let pointer = ui
+            .input(|i| i.pointer.latest_pos())
+            .filter(|&p| view.image.contains(p));
         let mut run = None;
         if let Some(model) = &mut self.model
             && !typing
             && !view.looking
+            && !modal_open
         {
             ui.input_mut(|i| {
-                for (key, mode) in [
-                    (egui::Key::Num1, SelectMode::Vertex),
-                    (egui::Key::Num2, SelectMode::Edge),
-                    (egui::Key::Num3, SelectMode::Face),
-                ] {
-                    if i.consume_key(egui::Modifiers::NONE, key) {
-                        model.set_mode(mode);
+                if let Some(modal) = &mut model.modal {
+                    for (key, axis) in [(egui::Key::X, 0), (egui::Key::Y, 1), (egui::Key::Z, 2)] {
+                        if i.consume_key(egui::Modifiers::NONE, key) {
+                            modal.lock(axis);
+                        }
                     }
+                    if i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace) {
+                        modal.backspace();
+                    }
+                    for event in &i.events {
+                        if let egui::Event::Text(text) = event {
+                            modal.type_text(text);
+                        }
+                    }
+                    return;
                 }
                 if i.consume_key(egui::Modifiers::NONE, egui::Key::A) {
-                    model.toggle_all();
+                    model.select_all();
+                }
+                if i.consume_key(egui::Modifiers::ALT, egui::Key::A) {
+                    model.clear_selection();
+                }
+                if let Some(pointer) = pointer {
+                    for (key, kind) in [
+                        (egui::Key::G, Kind::Move),
+                        (egui::Key::R, Kind::Rotate),
+                        (egui::Key::S, Kind::Scale),
+                    ] {
+                        if i.consume_key(egui::Modifiers::NONE, key) {
+                            model.start_transform(kind, pointer);
+                        }
+                    }
+                    if i.consume_key(egui::Modifiers::NONE, egui::Key::E) {
+                        model.extrude_and_move(pointer);
+                    }
                 }
                 for (modifiers, key, tool) in [
-                    (egui::Modifiers::CTRL, egui::Key::E, Tool::Extrude),
                     (egui::Modifiers::NONE, egui::Key::I, Tool::Inset),
                     (egui::Modifiers::NONE, egui::Key::X, Tool::Delete),
                     (egui::Modifiers::NONE, egui::Key::M, Tool::Merge),
@@ -545,41 +600,48 @@ impl Editor {
             return;
         };
 
-        // Move / rotate / scale the selection about its center.
-        let verts = model.selected_verts();
-        if !verts.is_empty() && !modal {
-            let pivot = match &model.drag {
-                Some((_, _, now)) => *now,
-                None => model.pivot(&verts),
-            };
-            if let Some(moved) = self.gizmo.ui(ui, view, &pivot) {
-                let (before, start, now) = model
-                    .drag
-                    .get_or_insert_with(|| (model.mesh.clone(), pivot, pivot));
-                *now = moved;
-                let delta = moved.matrix() * start.matrix().inverse();
-                for &v in &verts {
-                    model.mesh.positions[v as usize] =
-                        delta.transform_point3(before.positions[v as usize]);
-                }
+        model.draw_axes(ui, view);
+        let on_gizmo = !modal && model.view_gizmo(ui, view);
+
+        // A move / rotate / scale in progress: the selection follows the
+        // pointer; click or Enter keeps it, right-click or Esc puts it back.
+        let pointer = ui.input(|i| i.pointer.latest_pos());
+        if let Some(modal) = &mut model.modal {
+            let (snap, confirm, cancel) = ui.input_mut(|i| {
+                let confirm = i.pointer.primary_pressed()
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+                let cancel = i.pointer.secondary_pressed()
+                    || i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
+                (i.modifiers.ctrl, confirm, cancel)
+            });
+            if let Some(pointer) = pointer {
+                modal.update(&mut model.mesh, view, pointer, snap);
                 model.changed = true;
             }
-            output.gizmo_hovered = self.gizmo.hovered() || self.gizmo.dragging();
-        }
-        if !self.gizmo.dragging() {
-            model.finish_drag();
+            modal.draw(ui, view, pointer);
+            if cancel {
+                model.cancel_transform();
+            } else if confirm {
+                model.finish_drag();
+            }
+            model.draw(ui, view, None);
+            model.box_start = None;
+            self.confirm_dialog(ui, scene, player, output);
+            self.name_dialog(ui, output);
+            output.viewport = viewport;
+            self.hints(ui, viewport);
+            return;
         }
 
-        let pointer = ui.input(|i| i.pointer.latest_pos());
         let over_viewport = pointer.is_some_and(|p| viewport.contains(p) && view.image.contains(p));
         let hovered = pointer
-            .filter(|_| over_viewport && !modal && !view.looking && !output.gizmo_hovered)
+            .filter(|_| over_viewport && !modal && !view.looking && !on_gizmo)
             .and_then(|p| model.pick(view, p));
         model.draw(ui, view, hovered);
 
         // Click selects what's under the pointer; dragging from empty space
         // or anything selects what's inside the box.
-        let free = over_viewport && !modal && !view.looking && !output.gizmo_hovered;
+        let free = over_viewport && !modal && !view.looking && !on_gizmo;
         let (pressed, released, shift) = ui.input(|i| {
             (
                 i.pointer.primary_pressed(),
@@ -607,7 +669,7 @@ impl Editor {
                 model.box_start = None;
                 if dragged {
                     model.box_select(view, rect, shift);
-                } else if !output.gizmo_hovered {
+                } else {
                     model.click(hovered, shift);
                 }
             }
@@ -692,7 +754,7 @@ mod tests {
         doc.click(Some(Element::Face(1)), true);
         assert_eq!(doc.selection_count(), 1);
 
-        // Lift the top face, as a gizmo drag would.
+        // Lift the top face, as a move would.
         let before = doc.mesh.clone();
         for v in doc.selected_verts() {
             doc.mesh.positions[v as usize].y += 1.0;
@@ -706,9 +768,9 @@ mod tests {
         doc.mark_saved();
         assert!(!doc.is_dirty());
 
-        doc.toggle_all();
+        doc.select_all();
         assert_eq!(doc.selection_count(), 6);
-        doc.toggle_all();
+        doc.clear_selection();
         assert_eq!(doc.selection_count(), 0);
     }
 }

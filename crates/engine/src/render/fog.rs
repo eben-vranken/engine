@@ -589,6 +589,7 @@ mod tests {
             fov_y: 70.0,
             near: 0.05,
             far: 500.0,
+            ortho: None,
         };
         let aspect = 16.0 / 9.0;
         let [f, r, u] = ray_basis(&camera, aspect);

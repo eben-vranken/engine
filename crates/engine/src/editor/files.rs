@@ -16,6 +16,29 @@ pub(super) fn model_files(project_dir: &Path) -> Vec<PathBuf> {
     files
 }
 
+/// Every model the scene can place: `.glb` and `.gltf` files anywhere in
+/// the project's `models/` folder, relative to the project, sorted.
+pub(super) fn all_models(project_dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut folders = vec![project_dir.join("models")];
+    while let Some(folder) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for path in entries.flatten().map(|e| e.path()) {
+            if path.is_dir() {
+                folders.push(path);
+            } else if import::is_model(&path)
+                && let Ok(relative) = path.strip_prefix(project_dir)
+            {
+                found.push(relative.to_path_buf());
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 /// The `.<extension>` files directly in `<project>/<folder>`, relative to
 /// the project, sorted.
 fn files_in(project_dir: &Path, folder: &str, extension: &str) -> Vec<PathBuf> {
@@ -64,4 +87,20 @@ pub(super) fn sound_files(project_dir: &Path) -> Vec<String> {
     }
     found.sort();
     found
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_sandbox_models_are_listed() {
+        let sandbox = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sandbox");
+        let models = all_models(&sandbox);
+        assert!(
+            models.contains(&PathBuf::from("models/arch.gltf")),
+            "{models:?}"
+        );
+        assert!(models.iter().all(|p| import::is_model(p)));
+    }
 }

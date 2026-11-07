@@ -16,6 +16,9 @@ pub struct Camera {
     pub fov_y: f32,
     pub near: f32,
     pub far: f32,
+    /// Orthographic, showing this many meters above and below the middle
+    /// of the screen; `None` for perspective.
+    pub ortho: Option<f32>,
 }
 
 impl Camera {
@@ -36,7 +39,34 @@ impl Camera {
 
     pub fn projection(&self, aspect: f32) -> Mat4 {
         // wgpu clip space: depth 0..1, Y up (glam calls this "directx").
-        rh::proj::directx::perspective(self.fov_y.to_radians(), aspect, self.near, self.far)
+        match self.ortho {
+            Some(h) => {
+                rh::proj::directx::orthographic(-h * aspect, h * aspect, -h, h, self.near, self.far)
+            }
+            None => {
+                rh::proj::directx::perspective(self.fov_y.to_radians(), aspect, self.near, self.far)
+            }
+        }
+    }
+
+    /// Half the height the screen shows at `depth` meters in front.
+    pub fn half_height(&self, depth: f32) -> f32 {
+        self.ortho
+            .unwrap_or_else(|| depth * (self.fov_y.to_radians() / 2.0).tan())
+    }
+
+    /// The ray the camera sees `point` along: origin, unit direction and
+    /// how far along it the point is. Orthographic rays all run forward.
+    pub fn ray_to(&self, point: Vec3) -> (Vec3, Vec3, f32) {
+        if self.ortho.is_some() {
+            let forward = self.forward();
+            let depth = (point - self.position).dot(forward);
+            (point - forward * depth, forward, depth)
+        } else {
+            let to = point - self.position;
+            let distance = to.length();
+            (self.position, to / distance.max(1e-6), distance)
+        }
     }
 
     pub fn view_projection(&self, aspect: f32) -> Mat4 {
@@ -77,6 +107,7 @@ impl FlyCamera {
                 fov_y: 70.0,
                 near: 0.05,
                 far: 500.0,
+                ortho: None,
             },
             speed: 6.0,
             sensitivity: 0.0025,
