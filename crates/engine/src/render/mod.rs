@@ -526,6 +526,7 @@ impl Renderer {
             &object_layout,
             settings.sun_shadow,
             settings.point_shadow,
+            settings.shadowed_lights,
         );
         // Linear filtering on a comparison sampler compares four texels
         // and blends the results: soft shadow edges for free.
@@ -1419,6 +1420,7 @@ impl Renderer {
             self.lights.iter().map(|l| (l.object, &l.light, l.position)),
             camera.position,
             time,
+            self.shadows.slots(),
         );
         let mut gpu_lights: Vec<GpuLight> = frame_lights.iter().map(|l| l.gpu()).collect();
         let surface_lights = gpu_lights.len();

@@ -18,6 +18,10 @@ pub struct Settings {
     pub sun_shadow: u32,
     /// Texels per side of each point-light cube face.
     pub point_shadow: u32,
+    /// Most point lights with shadows at once (the nearest that want
+    /// one). Each takes six faces of memory; a moving one is re-rendered
+    /// every frame.
+    pub shadowed_lights: usize,
     /// Fog cells across, down and deep.
     pub fog_grid: [u32; 3],
     /// Fog samples per cell per frame.
@@ -33,6 +37,7 @@ impl Quality {
             Quality::High => Settings {
                 sun_shadow: 2048,
                 point_shadow: 512,
+                shadowed_lights: 16,
                 fog_grid: [192, 108, 96],
                 fog_samples: 4,
                 max_lines: 720,
@@ -40,6 +45,7 @@ impl Quality {
             Quality::Low => Settings {
                 sun_shadow: 1024,
                 point_shadow: 256,
+                shadowed_lights: 8,
                 fog_grid: [128, 72, 64],
                 fog_samples: 2,
                 // Measured on integrated graphics: the scene itself is
@@ -77,6 +83,7 @@ mod tests {
     fn low_does_less_than_high() {
         let (h, l) = (Quality::High.settings(), Quality::Low.settings());
         assert!(l.sun_shadow < h.sun_shadow && l.point_shadow < h.point_shadow);
+        assert!(l.shadowed_lights <= h.shadowed_lights);
         assert!(l.fog_grid.iter().product::<u32>() < h.fog_grid.iter().product::<u32>());
         assert!(l.max_lines <= h.max_lines);
         assert_eq!("LOW".parse::<Quality>(), Ok(Quality::Low));

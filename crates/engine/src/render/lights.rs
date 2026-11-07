@@ -14,8 +14,6 @@ use glam::{Mat4, Vec3, Vec4};
 
 /// Most lights shaded at once (the nearest ones).
 pub const MAX_LIGHTS: usize = 32;
-/// Most lights with shadow maps at once (the nearest that want one).
-pub const MAX_SHADOWED: usize = 8;
 /// Most emissive surfaces glowing in the fog at once (the nearest).
 pub const MAX_FOG_LIGHTS: usize = 32;
 /// Near plane of the cube shadow faces, meters.
@@ -82,26 +80,32 @@ pub fn flicker(amount: f32, time: f32, seed: f32) -> f32 {
 }
 
 /// The lights to shade this frame, nearest to the camera first; the first
-/// [`MAX_SHADOWED`] that want shadows get a shadow slot.
+/// `shadow_slots` that want shadows get a shadow slot.
+///
+/// "Nearest" is how far the camera is outside a light's range, so a big
+/// light just out of reach beats a small one nearer by; lights whose range
+/// reaches the camera all score zero and are ordered by plain distance.
 pub fn select<'a>(
     lights: impl Iterator<Item = (usize, &'a LightSource, Vec3)>,
     camera: Vec3,
     time: f32,
+    shadow_slots: usize,
 ) -> Vec<FrameLight> {
-    let mut candidates: Vec<(f32, usize, &LightSource, Vec3)> = lights
+    let mut candidates: Vec<(f32, f32, usize, &LightSource, Vec3)> = lights
         .filter(|(_, l, _)| l.intensity > 0.0 && l.range > 0.0)
         .map(|(object, light, position)| {
-            let reach = (position.distance(camera) - light.range).max(0.0);
-            (reach, object, light, position)
+            let distance = position.distance(camera);
+            let reach = (distance - light.range).max(0.0);
+            (reach, distance, object, light, position)
         })
         .collect();
-    candidates.sort_by(|a, b| a.0.total_cmp(&b.0));
+    candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
     let mut slots = 0;
     candidates
         .into_iter()
         .take(MAX_LIGHTS)
-        .map(|(_, object, light, position)| {
-            let shadow = (light.shadows && slots < MAX_SHADOWED).then(|| {
+        .map(|(_, _, object, light, position)| {
+            let shadow = (light.shadows && slots < shadow_slots).then(|| {
                 slots += 1;
                 slots - 1
             });
@@ -212,6 +216,7 @@ mod tests {
                 .map(|(i, (l, p))| (i, l, p)),
             Vec3::ZERO,
             0.0,
+            8,
         );
         let order: Vec<usize> = picked.iter().map(|l| l.object).collect();
         assert_eq!(order, [2, 1, 0]);
@@ -221,7 +226,7 @@ mod tests {
 
     #[test]
     fn shadow_slots_run_out() {
-        let lights: Vec<LightSource> = (0..MAX_SHADOWED + 3).map(|_| light(4.0, true)).collect();
+        let lights: Vec<LightSource> = (0..11).map(|_| light(4.0, true)).collect();
         let picked = select(
             lights
                 .iter()
@@ -229,11 +234,32 @@ mod tests {
                 .map(|(i, l)| (i, l, Vec3::X * i as f32)),
             Vec3::ZERO,
             0.0,
+            8,
         );
-        assert_eq!(
-            picked.iter().filter(|l| l.shadow.is_some()).count(),
-            MAX_SHADOWED
+        assert_eq!(picked.iter().filter(|l| l.shadow.is_some()).count(), 8);
+    }
+
+    #[test]
+    fn lights_reaching_the_camera_go_by_distance() {
+        // All three reach the camera; listed farthest first.
+        let lights = [light(12.0, true), light(12.0, true), light(12.0, true)];
+        let positions = [Vec3::X * 9.0, Vec3::X * 6.0, Vec3::X * 2.0];
+        let picked = select(
+            lights
+                .iter()
+                .zip(positions)
+                .enumerate()
+                .map(|(i, (l, p))| (i, l, p)),
+            Vec3::ZERO,
+            0.0,
+            2,
         );
+        let shadowed: Vec<usize> = picked
+            .iter()
+            .filter(|l| l.shadow.is_some())
+            .map(|l| l.object)
+            .collect();
+        assert_eq!(shadowed, [2, 1]);
     }
 
     #[test]
