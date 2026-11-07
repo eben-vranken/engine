@@ -20,6 +20,9 @@ pub struct ModelData {
     /// One per material: its base color texture times its base color
     /// factor, or a single texel of the factor if it has no texture.
     pub images: Vec<Image>,
+    /// The materials' other maps, by the same index as `images` (missing
+    /// = none).
+    pub maps: Vec<SurfaceMaps>,
     /// Roughness and metalness of the first material (glTF factors); a
     /// model draws with one value for both.
     pub surface: [f32; 2],
@@ -31,11 +34,26 @@ impl Default for ModelData {
             mesh: MeshData::default(),
             parts: Vec::new(),
             images: Vec::new(),
+            maps: Vec::new(),
             // Matte, not metal (glTF's own default metalness is 1, which
             // would turn models without materials black).
             surface: [1.0, 0.0],
         }
     }
+}
+
+/// A material's maps besides its base color, as glTF stores them. Each is
+/// data, not color.
+#[derive(Debug, Clone, Default)]
+pub struct SurfaceMaps {
+    /// Tangent-space normals in rgb (OpenGL convention: green = up),
+    /// already scaled by the material's normal strength.
+    pub normal: Option<Image>,
+    /// Roughness in green, metalness in blue; the model's roughness and
+    /// metalness multiply them.
+    pub metal_rough: Option<Image>,
+    /// Ambient occlusion in red, already scaled by its strength.
+    pub occlusion: Option<Image>,
 }
 
 /// A range of `mesh.indices` drawn with one image.
@@ -105,6 +123,7 @@ impl ModelData {
             mesh: MeshData { vertices, indices },
             parts: kept,
             images: self.images.clone(),
+            maps: self.maps.clone(),
             surface: self.surface,
         }
     }
@@ -413,16 +432,65 @@ impl Loader<'_> {
             .and_then(|info| self.images.get(info.texture().source().index()))
             .and_then(|data| base_color_image(data, [r, g, b]))
             .unwrap_or_else(|| Image::solid([r, g, b]));
+        let data = |texture: gltf::Texture| self.images.get(texture.source().index());
+        let maps = SurfaceMaps {
+            normal: material.normal_texture().and_then(|info| {
+                let scale = info.scale();
+                data_image(data(info.texture())?, |texel| {
+                    if scale != 1.0 {
+                        for c in &mut texel[..2] {
+                            let v = (*c as f32 / 255.0 * 2.0 - 1.0) * scale;
+                            *c = ((v.clamp(-1.0, 1.0) * 0.5 + 0.5) * 255.0).round() as u8;
+                        }
+                    }
+                })
+            }),
+            metal_rough: pbr
+                .metallic_roughness_texture()
+                .and_then(|info| data_image(data(info.texture())?, |_| {})),
+            occlusion: material.occlusion_texture().and_then(|info| {
+                let strength = info.strength().clamp(0.0, 1.0);
+                data_image(data(info.texture())?, |texel| {
+                    let ao = 1.0 - strength * (1.0 - texel[0] as f32 / 255.0);
+                    texel[0] = (ao * 255.0).round() as u8;
+                })
+            }),
+        };
         self.model.images.push(image);
+        self.model.maps.push(maps);
         let index = self.model.images.len() - 1;
         self.materials.insert(material.index(), index);
         index
     }
 }
 
+/// A glTF image as RGBA8 data, each texel passed through `edit`. `None`
+/// for pixel formats we don't read (16-bit and float).
+fn data_image(data: &gltf::image::Data, edit: impl Fn(&mut [u8])) -> Option<Image> {
+    let mut pixels = rgba8(data)?;
+    for texel in pixels.chunks_exact_mut(4) {
+        edit(texel);
+    }
+    Some(Image::data(data.width, data.height, pixels))
+}
+
 /// A glTF image as sRGB RGBA8, multiplied by `factor` (linear RGB). `None`
 /// for pixel formats we don't read (16-bit and float).
 fn base_color_image(data: &gltf::image::Data, factor: [f32; 3]) -> Option<Image> {
+    let mut pixels = rgba8(data)?;
+    if factor != [1.0; 3] {
+        for texel in pixels.chunks_exact_mut(4) {
+            for c in 0..3 {
+                texel[c] = linear_to_srgb(srgb_to_linear(texel[c]) * factor[c]);
+            }
+        }
+    }
+    Some(Image::new(data.width, data.height, pixels))
+}
+
+/// A glTF image's texels as RGBA8 (grey fills rgb, alpha defaults to
+/// opaque). `None` for 16-bit and float formats.
+fn rgba8(data: &gltf::image::Data) -> Option<Vec<u8>> {
     use gltf::image::Format;
     let channels = match data.format {
         Format::R8 => 1,
@@ -430,7 +498,7 @@ fn base_color_image(data: &gltf::image::Data, factor: [f32; 3]) -> Option<Image>
         Format::R8G8B8 => 3,
         Format::R8G8B8A8 => 4,
         other => {
-            log::warn!("unsupported texture format {other:?}; using the flat base color");
+            log::warn!("unsupported texture format {other:?}; leaving the texture out");
             return None;
         }
     };
@@ -449,14 +517,7 @@ fn base_color_image(data: &gltf::image::Data, factor: [f32; 3]) -> Option<Image>
         pixels.extend(rgb);
         pixels.push(alpha);
     }
-    if factor != [1.0; 3] {
-        for texel in pixels.chunks_exact_mut(4) {
-            for c in 0..3 {
-                texel[c] = linear_to_srgb(srgb_to_linear(texel[c]) * factor[c]);
-            }
-        }
-    }
-    Some(Image::new(data.width, data.height, pixels))
+    Some(pixels)
 }
 
 #[cfg(test)]
@@ -509,6 +570,40 @@ mod tests {
             vec![255, 0, 0, 255, 128, half_grey, 128, 255]
         );
         assert_eq!(model.mesh.vertices[1].uv, [1.0, 0.0]);
+    }
+
+    #[test]
+    fn surface_maps_load_as_data_with_their_strengths() {
+        // The same 2×1 texture (red, grey) as normal map at half strength,
+        // roughness/metal, and occlusion at half strength.
+        let gltf = r#"{"asset":{"version":"2.0"},"scenes":[{"nodes":[0]}],"nodes":[{"mesh":0}],"meshes":[{"primitives":[{"attributes":{"POSITION":0,"TEXCOORD_0":1},"material":0}]}],"materials":[{"pbrMetallicRoughness":{"metallicRoughnessTexture":{"index":0}},"normalTexture":{"index":0,"scale":0.5},"occlusionTexture":{"index":0,"strength":0.5}}],"textures":[{"source":0}],"images":[{"uri":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAIAAAB7QOjdAAAAD0lEQVR4nGP4z8DQ0NAAAAkBAoCZxGkyAAAAAElFTkSuQmCC"}],"buffers":[{"byteLength":60,"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/"}],"bufferViews":[{"buffer":0,"byteLength":36},{"buffer":0,"byteOffset":36,"byteLength":24}],"accessors":[{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},{"bufferView":1,"componentType":5126,"count":3,"type":"VEC2"}]}"#;
+        let path = std::env::temp_dir().join("engine-mapped-triangle.gltf");
+        std::fs::write(&path, gltf).unwrap();
+        let model = load_gltf(&path).unwrap();
+        let maps = &model.maps[0];
+
+        let normal = maps.normal.as_ref().expect("normal map");
+        assert!(normal.linear);
+        // Red (x = +1, y = -1) bent halfway back toward flat; grey stays.
+        assert_eq!(normal.mips[0], vec![191, 64, 0, 255, 128, 128, 128, 255]);
+
+        let metal_rough = maps.metal_rough.as_ref().expect("roughness/metal map");
+        assert_eq!(
+            metal_rough.mips[0],
+            vec![255, 0, 0, 255, 128, 128, 128, 255]
+        );
+
+        let occlusion = &maps.occlusion.as_ref().expect("occlusion map").mips[0];
+        assert_eq!(occlusion[0], 255);
+        assert!((191..=192).contains(&occlusion[4]), "{}", occlusion[4]);
+    }
+
+    #[test]
+    fn models_without_maps_have_none() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sandbox");
+        let model = load_gltf(&root.join("models/arch.gltf")).unwrap();
+        let maps = &model.maps[0];
+        assert!(maps.normal.is_none() && maps.metal_rough.is_none() && maps.occlusion.is_none());
     }
 
     #[test]

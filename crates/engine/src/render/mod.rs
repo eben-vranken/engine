@@ -274,9 +274,14 @@ pub struct Renderer {
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     object_layout: wgpu::BindGroupLayout,
-    /// Group 2: one texture and the point sampler.
+    /// Group 2: base color, the point sampler, then normal,
+    /// roughness/metal and occlusion maps.
     material_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// Stand-ins for missing maps: a flat normal, and white (full
+    /// roughness/metal factor, no occlusion).
+    flat_normal: wgpu::Texture,
+    white_data: wgpu::Texture,
     grid_material: wgpu::BindGroup,
     object_stride: u64,
     object_buffer: wgpu::Buffer,
@@ -456,6 +461,36 @@ impl Renderer {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -646,7 +681,18 @@ impl Renderer {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
-        let grid_material = material_bind_group(&device, &material_layout, &grid, &sampler);
+        let flat_normal = texture::upload(
+            &device,
+            &queue,
+            &Image::data(1, 1, vec![128, 128, 255, 255]),
+        );
+        let white_data = texture::upload(&device, &queue, &Image::data(1, 1, vec![255; 4]));
+        let grid_material = material_bind_group(
+            &device,
+            &material_layout,
+            &sampler,
+            [&grid, &flat_normal, &white_data, &white_data],
+        );
 
         let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
         let object_stride = (size_of::<ObjectUniform>() as u64).next_multiple_of(alignment);
@@ -822,6 +868,8 @@ impl Renderer {
             object_layout,
             material_layout,
             sampler,
+            flat_normal,
+            white_data,
             grid_material,
             object_stride,
             object_buffer,
@@ -953,8 +1001,17 @@ impl Renderer {
         }
         let image = assets.texture(path)?;
         let texture = texture::upload(&self.device, &self.queue, &image);
-        let group =
-            material_bind_group(&self.device, &self.material_layout, &texture, &self.sampler);
+        let group = material_bind_group(
+            &self.device,
+            &self.material_layout,
+            &self.sampler,
+            [
+                &texture,
+                &self.flat_normal,
+                &self.white_data,
+                &self.white_data,
+            ],
+        );
         self.textures.insert(path.to_owned(), group.clone());
         Some(group)
     }
@@ -1187,24 +1244,36 @@ impl Renderer {
             }
             Resolved::Model(model) => {
                 let max = self.device.limits().max_texture_dimension_2d;
+                let upload = |image: Option<&Image>| {
+                    let image = image?;
+                    if image.width.max(image.height) > max {
+                        log::warn!("texture larger than {max} px; leaving it out");
+                        return None;
+                    }
+                    Some(texture::upload(&self.device, &self.queue, image))
+                };
                 let materials: Vec<wgpu::BindGroup> = model
                     .images
                     .iter()
-                    .map(|image| {
-                        let fallback;
-                        let image = if image.width.max(image.height) > max {
-                            log::warn!("texture larger than {max} px; using white");
-                            fallback = Image::solid([1.0; 3]);
-                            &fallback
-                        } else {
-                            image
-                        };
-                        let texture = texture::upload(&self.device, &self.queue, image);
+                    .enumerate()
+                    .map(|(i, image)| {
+                        let maps = model.maps.get(i);
+                        let color = upload(Some(image)).unwrap_or_else(|| {
+                            texture::upload(&self.device, &self.queue, &Image::solid([1.0; 3]))
+                        });
+                        let normal = upload(maps.and_then(|m| m.normal.as_ref()));
+                        let metal_rough = upload(maps.and_then(|m| m.metal_rough.as_ref()));
+                        let occlusion = upload(maps.and_then(|m| m.occlusion.as_ref()));
                         material_bind_group(
                             &self.device,
                             &self.material_layout,
-                            &texture,
                             &self.sampler,
+                            [
+                                &color,
+                                normal.as_ref().unwrap_or(&self.flat_normal),
+                                metal_rough.as_ref().unwrap_or(&self.white_data),
+                                occlusion.as_ref().unwrap_or(&self.white_data),
+                            ],
                         )
                     })
                     .collect();
@@ -1648,26 +1717,31 @@ impl Renderer {
     }
 }
 
+/// Group 2 for one material: `[base color, normal, roughness/metal,
+/// occlusion]` and the sampler.
 fn material_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    texture: &wgpu::Texture,
     sampler: &wgpu::Sampler,
+    textures: [&wgpu::Texture; 4],
 ) -> wgpu::BindGroup {
+    let views = textures.map(|t| t.create_view(&Default::default()));
+    let view = |binding, view| wgpu::BindGroupEntry {
+        binding,
+        resource: wgpu::BindingResource::TextureView(view),
+    };
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("material"),
         layout,
         entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(
-                    &texture.create_view(&Default::default()),
-                ),
-            },
+            view(0, &views[0]),
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
+            view(2, &views[1]),
+            view(3, &views[2]),
+            view(4, &views[3]),
         ],
     })
 }

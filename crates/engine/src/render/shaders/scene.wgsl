@@ -80,6 +80,13 @@ const HIGHLIGHT: vec3<f32> = vec3<f32>(1.0, 0.34, 0.025);
 // The grid for primitives; a model part's base color texture.
 @group(2) @binding(0) var albedo_texture: texture_2d<f32>;
 @group(2) @binding(1) var albedo_sampler: sampler;
+// A model part's other maps (glTF); flat / white when it has none.
+// Normals in tangent space, OpenGL convention (green = up).
+@group(2) @binding(2) var normal_texture: texture_2d<f32>;
+// g: roughness, b: metalness, multiplying the object's values.
+@group(2) @binding(3) var metal_rough_texture: texture_2d<f32>;
+// r: ambient occlusion (how much indirect light reaches the texel).
+@group(2) @binding(4) var occlusion_texture: texture_2d<f32>;
 // The zone's baked bounce, sky and emissive light.
 @group(3) @binding(0) var lightmap: texture_2d<f32>;
 @group(3) @binding(1) var lightmap_sampler: sampler;
@@ -197,6 +204,29 @@ fn point_visibility(light: Light, world: vec3<f32>, n: vec3<f32>, distance: f32)
     return lit * 0.25;
 }
 
+// The surface normal with the normal map applied. The tangent frame comes
+// from how the position and UV change across the pixel (screen-space
+// derivatives), so meshes need no tangents. glTF's V runs down the image,
+// so "up" in the map is toward smaller V.
+fn mapped_normal(n: vec3<f32>, world: vec3<f32>, uv: vec2<f32>, texel: vec3<f32>) -> vec3<f32> {
+    let dp1 = dpdx(world);
+    let dp2 = dpdy(world);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+    let dp2perp = cross(dp2, n);
+    let dp1perp = cross(n, dp1);
+    let t = dp2perp * duv1.x + dp1perp * duv2.x;
+    let b = -(dp2perp * duv1.y + dp1perp * duv2.y);
+    let len2 = max(dot(t, t), dot(b, b));
+    let local = texel * 2.0 - 1.0;
+    // No UVs (or a flat-normal map): nothing to bend.
+    if len2 < 1e-20 || all(abs(local.xy) < vec2<f32>(0.004)) {
+        return n;
+    }
+    let scale = inverseSqrt(len2);
+    return normalize(t * scale * local.x + b * scale * local.y + n * local.z);
+}
+
 // How glossy a surface is, for the lighting functions.
 struct Surface {
     n: vec3<f32>,
@@ -294,11 +324,14 @@ fn reflectance(f0: vec3<f32>, roughness: f32, ndv: f32) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
-    let n = normalize(in.normal);
+    let geometric = normalize(in.normal);
     let uv = in.uv * object.highlight.y;
     let albedo = textureSample(albedo_texture, albedo_sampler, uv).rgb * object.color.rgb * in.color;
-    let roughness = object.surface.x;
-    let metalness = object.surface.y;
+    let n = mapped_normal(geometric, in.world, uv, textureSample(normal_texture, albedo_sampler, uv).rgb);
+    let metal_rough = textureSample(metal_rough_texture, albedo_sampler, uv);
+    let occlusion = textureSample(occlusion_texture, albedo_sampler, uv).r;
+    let roughness = object.surface.x * metal_rough.g;
+    let metalness = object.surface.y * metal_rough.b;
     let to_camera = normalize(frame.camera_pos.xyz - in.world);
     let s = Surface(n, to_camera, roughness, mix(vec3<f32>(0.04), albedo, metalness), roughness < 0.99);
 
@@ -314,7 +347,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
             + n2.z * select(a[5], a[4], n.z >= 0.0).rgb;
     }
 
-    var diffuse = ambient;
+    var diffuse = ambient * occlusion;
     var specular = vec3<f32>(0.0);
     let facing_sun = max(dot(n, -frame.sun_dir.xyz), 0.0);
     if facing_sun > 0.0 {
@@ -328,12 +361,12 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if s.glossy {
         let ndv = max(dot(n, to_camera), 1e-4);
         let r = reflect(-to_camera, n);
-        specular += reflected(in.world, r, roughness) * reflectance(s.f0, roughness, ndv);
+        specular += reflected(in.world, r, roughness) * reflectance(s.f0, roughness, ndv) * occlusion;
     }
     var color = albedo * (1.0 - metalness) * diffuse + specular + object.emissive.rgb;
 
     // Selected: amber tint, stronger toward the silhouette.
-    let rim = pow(1.0 - max(dot(n, to_camera), 0.0), 2.0);
+    let rim = pow(1.0 - max(dot(geometric, to_camera), 0.0), 2.0);
     color = mix(color, HIGHLIGHT * 1.5, object.highlight.x * (0.3 + 0.6 * rim));
 
     return vec4<f32>(fog(color, in.clip.xy, in.world), 1.0);

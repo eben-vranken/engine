@@ -439,6 +439,7 @@ impl EditMesh {
             mesh,
             parts,
             images: vec![image],
+            maps: Vec::new(),
             surface: [self.surface.roughness, self.surface.metalness],
         }
     }
