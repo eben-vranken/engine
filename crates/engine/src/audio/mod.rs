@@ -18,6 +18,7 @@ mod clip;
 mod geometry;
 mod mixer;
 mod steps;
+mod timing;
 
 use crate::assets::Assets;
 use crate::camera::Camera;
@@ -49,6 +50,8 @@ use std::path::PathBuf;
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+pub use timing::Report as TimingReport;
+use timing::Timing;
 
 /// Samples per channel processed at a time (about 11 ms at 48 kHz): small,
 /// so sounds start soon after what triggers them.
@@ -113,6 +116,8 @@ impl Default for Toggles {
 
 pub struct Audio {
     _stream: cpal::Stream,
+    /// How the output callback keeps up (for `--perf-log`).
+    timing: Arc<Timing>,
     rate: u32,
     context: Context,
     settings: AudioSettings,
@@ -278,11 +283,13 @@ impl Audio {
             reflections.output(),
             buses,
         );
-        let stream = open_stream(&device, &supported, channels, mixer)?;
+        let timing = Arc::new(Timing::default());
+        let stream = open_stream(&device, &supported, channels, rate, mixer, timing.clone())?;
         log::info!("audio: {rate} Hz, {channels} channels");
 
         let mut audio = Self {
             _stream: stream,
+            timing,
             rate,
             context,
             settings,
@@ -324,6 +331,11 @@ impl Audio {
     /// the `active` zones fade out and aren't simulated. In a zone with
     /// baked probes, the listener's reverb comes from those; a zone with its
     /// own `reverb` adds that tail to every sound.
+    /// The output callback's worst timings since the last call.
+    pub fn take_timing(&self) -> TimingReport {
+        self.timing.take()
+    }
+
     pub fn update(
         &mut self,
         scene: &Scene,
@@ -861,20 +873,32 @@ fn open_stream(
     device: &cpal::Device,
     supported: &cpal::SupportedStreamConfig,
     channels: usize,
+    rate: u32,
     mixer: Mixer,
+    timing: Arc<Timing>,
 ) -> Result<cpal::Stream, AudioError> {
     let mixer = Arc::new(Mutex::new(mixer));
     let build = |config: cpal::StreamConfig| {
         let mixer = mixer.clone();
+        let (timing, errors) = (timing.clone(), timing.clone());
+        let mut previous = None;
         device.build_output_stream::<f32, _, _>(
             config,
             move |out, _| {
+                let start = Instant::now();
                 // Only this callback ever locks it.
                 if let Ok(mut mixer) = mixer.lock() {
                     mixer.fill(out, channels);
                 }
+                timing.record(previous, start, out.len() / channels, rate);
+                previous = Some(start);
             },
-            |err| log::error!("audio output: {err}"),
+            move |err| {
+                if err.kind() == cpal::ErrorKind::Xrun {
+                    errors.underrun();
+                }
+                log::error!("audio output: {err}");
+            },
             None,
         )
     };

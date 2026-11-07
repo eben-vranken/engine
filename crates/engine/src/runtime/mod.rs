@@ -494,6 +494,16 @@ impl Running {
                 self.renderer.layout().factor,
                 self.renderer.quality().name(),
             );
+            if let Some(audio) = &self.audio {
+                let t = audio.take_timing();
+                log::info!(
+                    "perf: audio buffer {:.1} ms | slowest fill {:.2} ms | longest gap {:.2} ms | {} underruns",
+                    t.buffer,
+                    t.slowest_fill,
+                    t.longest_gap,
+                    t.underruns,
+                );
+            }
         }
 
         let mut actions = HudActions::default();

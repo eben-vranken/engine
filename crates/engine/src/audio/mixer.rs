@@ -8,8 +8,8 @@
 //! parameters through a `try_lock`, reflection results through a lock-free
 //! swap.
 
-use super::Toggles;
 use super::clip::Clip;
+use super::{MAX_REVERB, Toggles};
 use audionimbus::wiring::{ReflectionsOutput, SharedSimulationOutput};
 use audionimbus::{
     AmbisonicsDecodeEffect, AmbisonicsDecodeEffectParams, AudioBufferMut, AudioBufferRef,
@@ -211,7 +211,14 @@ pub struct Mixer {
     spatial: Vec<f32>,
     reflected: Vec<f32>,
     reverb_bus: Vec<f32>,
+    /// Every voice's share of the listener's room, summed: they all use the
+    /// same response, so one convolution gives the same result as one per
+    /// voice (convolution is linear) at a fraction of the cost.
     through: Vec<f32>,
+    /// Frames since anything was fed to `listener_room`, and how many it takes for its
+    /// tail to ring out (it is skipped after that).
+    room_quiet: usize,
+    room_ring: usize,
     /// The latest reflection result and the one fading out; which of each
     /// voice's two effects plays the latest; how far the fade is (0–1).
     current: Option<Room>,
@@ -254,6 +261,8 @@ impl Mixer {
             reflected: vec![0.0; frame_size * AMBISONIC_CHANNELS],
             reverb_bus: vec![0.0; frame_size * AMBISONIC_CHANNELS],
             through: vec![0.0; frame_size],
+            room_quiet: usize::MAX,
+            room_ring: (MAX_REVERB * rate as f32 / frame_size as f32).ceil() as usize + 1,
             current: None,
             previous: None,
             slot: 0,
@@ -333,10 +342,11 @@ impl Mixer {
         self.reverb_bus.fill(0.0);
         self.through.fill(0.0);
         let mut reverb = false;
-        let mut through_send = false;
         let zone = &mut self.zone_reverb;
         zone.follow(self.shared.stylized.filter(|_| toggles.reflections));
         zone.send.fill(0.0);
+        self.through.fill(0.0);
+        let mut fed_room = false;
 
         for voice in &mut self.voices {
             let Some(params) = self
@@ -437,12 +447,19 @@ impl Mixer {
                     for (out, sample) in self.through.iter_mut().zip(&self.input) {
                         *out += sample * through;
                     }
-                    through_send = true;
+                    fed_room = true;
                 }
             }
         }
 
-        if toggles.reflections && through_send {
+        // Keeps convolving silence until the tail has rung out, instead of
+        // cutting it off the frame nothing feeds it.
+        self.room_quiet = if fed_room {
+            0
+        } else {
+            self.room_quiet.saturating_add(1)
+        };
+        if toggles.reflections && self.room_quiet < self.room_ring {
             reverb |= convolve(
                 &mut self.listener_room,
                 slot,
