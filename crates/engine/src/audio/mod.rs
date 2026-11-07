@@ -31,7 +31,7 @@ use audionimbus::{
     ConvolutionSettings, CoordinateSystem, DefaultRayTracer, Direct, DirectEffect,
     DirectEffectSettings, DirectSimulationParameters, DirectSimulationSettings,
     DistanceAttenuationModel, Hrtf, HrtfSettings, Occlusion, OcclusionAlgorithm, PanningEffect,
-    PanningEffectSettings, ReflectionEffect, ReflectionEffectSettings, Reflections,
+    PanningEffectSettings, Parametric, ReflectionEffect, ReflectionEffectSettings, Reflections,
     ReflectionsSharedInputs, Rendering, SimulationInputs, SimulationParameters, SimulationSettings,
     SimulationSharedInputs, Simulator, Source, SpeakerLayout, Transmission, TransmissionParameters,
     Vector3,
@@ -41,7 +41,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use geometry::AcousticGeometry;
 use glam::Vec3;
 use mixer::{
-    AMBISONIC_CHANNELS, Command, Decoders, LISTENER_REVERB, Mixer, Shared, Voice, VoiceParams,
+    AMBISONIC_CHANNELS, BusEffects, Command, LISTENER_REVERB, Mixer, Shared, Stylized, Voice,
+    VoiceParams,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -245,9 +246,19 @@ impl Audio {
             )
             .map_err(steam)
         };
-        let decoders = Decoders {
+        let buses = BusEffects {
             binaural: decoder(Rendering::Binaural)?,
             panning: decoder(Rendering::Panning)?,
+            // The zone's stylized reverb: one channel, widened in the mixer.
+            zone_reverb: ReflectionEffect::<Parametric>::try_new(
+                &context,
+                &settings,
+                &ReflectionEffectSettings {
+                    impulse_response_size: FRAME_SIZE,
+                    num_channels: 1,
+                },
+            )
+            .map_err(steam)?,
         };
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (commands, receive_commands) = channel();
@@ -258,7 +269,7 @@ impl Audio {
             receive_commands,
             shared.clone(),
             reflections.output(),
-            decoders,
+            buses,
         );
         let stream = open_stream(&device, &supported, channels, mixer)?;
         log::info!("audio: {rate} Hz, {channels} channels");
@@ -304,7 +315,8 @@ impl Audio {
     /// Call every frame: follows the scene's geometry and sound sources and
     /// the listener, and runs the direct simulation. Scene sounds outside
     /// the `active` zones fade out and aren't simulated. In a zone with
-    /// baked probes, the listener's reverb comes from those.
+    /// baked probes, the listener's reverb comes from those; a zone with its
+    /// own `reverb` adds that tail to every sound.
     pub fn update(
         &mut self,
         scene: &Scene,
@@ -454,6 +466,14 @@ impl Audio {
             shared.voices = voices;
             shared.listener = listener_frame;
             shared.toggles = self.toggles;
+            shared.stylized = listener_zone
+                .and_then(|name| scene.zones.iter().find(|z| z.name == name))
+                .and_then(|z| z.reverb.as_ref())
+                .map(|r| Stylized {
+                    decays: r.band_decays(),
+                    level: r.level,
+                    replace: r.replace_simulated,
+                });
         }
     }
 

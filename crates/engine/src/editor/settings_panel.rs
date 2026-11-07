@@ -3,7 +3,7 @@
 
 use super::history::Change;
 use super::{Editor, EditorOutput, dim, inspector, section};
-use crate::scene::{Component, Environment, Scene};
+use crate::scene::{Component, Environment, Scene, ZoneReverb};
 use crate::ui::theme;
 use egui::{Align, Layout, RichText, Ui};
 use glam::Vec3;
@@ -128,6 +128,20 @@ impl Editor {
                         own_toggle(ui, "OWN FOG", &mut zone.fog, &env.fog);
                         if let Some(fog) = &mut zone.fog {
                             inspector::fields(ui, fog, &names);
+                        }
+
+                        section(ui, "REVERB");
+                        own_toggle(ui, "OWN REVERB", &mut zone.reverb, &ZoneReverb::default());
+                        match &mut zone.reverb {
+                            Some(reverb) => {
+                                inspector::fields(ui, reverb, &names);
+                                ui.label(dim(
+                                    "A TAIL ON EVERY SOUND WHILE YOU'RE IN THIS ZONE, WALLS OR NOT",
+                                ));
+                            }
+                            None => {
+                                ui.label(dim("ONLY THE SIMULATED ROOM'S (NONE IN OPEN SPACE)"));
+                            }
                         }
 
                         section(ui, "COLOR GRADE");

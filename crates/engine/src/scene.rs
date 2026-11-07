@@ -32,6 +32,49 @@ pub struct Zone {
     /// Fog inside this zone's volumes; `None` = the environment's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fog: Option<Fog>,
+    /// Reverb added to every sound while the listener is in this zone,
+    /// whatever the geometry; `None` = only the simulated room's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reverb: Option<ZoneReverb>,
+}
+
+/// A non-physical reverb tail for a zone: a void can sound like a cathedral,
+/// a small room impossibly long. Rendered by Steam Audio's parametric
+/// reverb (a feedback delay network), so it needs no walls.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct ZoneReverb {
+    /// Seconds for the tail to fade away (by 60 dB); 0.1–30.
+    pub decay: f32,
+    /// How long the highs ring compared to the lows: 1 = as long (bright),
+    /// 0.2 = they die off quickly (dark, like a stone hall).
+    pub brightness: f32,
+    /// How loud the tail is: 0 = off, 1 = strong, up to 4.
+    pub level: f32,
+    /// On: the simulated room reverb is muted in this zone, so only this
+    /// tail rings. Off: both.
+    pub replace_simulated: bool,
+}
+
+impl Default for ZoneReverb {
+    fn default() -> Self {
+        Self {
+            decay: 4.0,
+            brightness: 0.5,
+            level: 0.5,
+            replace_simulated: false,
+        }
+    }
+}
+
+impl ZoneReverb {
+    /// Decay times (RT60) for the low, mid and high bands, clamped to a
+    /// range the reverb handles.
+    pub fn band_decays(&self) -> [f32; 3] {
+        let decay = self.decay.clamp(0.1, 30.0);
+        let high = (decay * self.brightness.clamp(0.05, 1.0)).max(0.1);
+        [decay, (decay + high) * 0.5, high]
+    }
 }
 
 /// Volumetric fog: a medium that light scatters through, so lit air glows
@@ -931,6 +974,38 @@ mod tests {
         let text = ron::ser::to_string_pretty(&scene, Default::default()).unwrap();
         let back: Scene = ron::from_str(&text).unwrap();
         assert_eq!(scene, back);
+    }
+
+    #[test]
+    fn a_zone_reverb_is_saved_only_when_set() {
+        let mut scene = sample();
+        assert!(!ron::to_string(&scene).unwrap().contains("reverb"));
+        scene.zones[0].reverb = Some(ZoneReverb::default());
+        let text = ron::to_string(&scene).unwrap();
+        assert_eq!(ron::from_str::<Scene>(&text).unwrap(), scene);
+    }
+
+    #[test]
+    fn zone_reverb_highs_decay_faster_when_dark() {
+        let dark = ZoneReverb {
+            decay: 6.0,
+            brightness: 0.25,
+            ..Default::default()
+        };
+        assert_eq!(dark.band_decays(), [6.0, 3.75, 1.5]);
+        let bright = ZoneReverb {
+            brightness: 1.0,
+            ..dark.clone()
+        };
+        assert_eq!(bright.band_decays(), [6.0; 3]);
+        // Out-of-range values are kept to what the reverb handles.
+        let wild = ZoneReverb {
+            decay: 500.0,
+            brightness: -1.0,
+            ..dark
+        };
+        let [low, _, high] = wild.band_decays();
+        assert!(low == 30.0 && high >= 0.1);
     }
 
     #[test]

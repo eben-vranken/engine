@@ -15,7 +15,7 @@ use audionimbus::{
     AmbisonicsDecodeEffect, AmbisonicsDecodeEffectParams, AudioBufferMut, AudioBufferRef,
     BinauralEffect, BinauralEffectParams, Convolution, CoordinateSystem, DirectEffect,
     DirectEffectParams, Direction, Equalizer, Hrtf, HrtfInterpolation, PanningEffect,
-    PanningEffectParams, ReflectionEffect, Transmission,
+    PanningEffectParams, Parametric, ReflectionEffect, ReflectionEffectParams, Transmission,
 };
 use std::ops::Deref;
 use std::sync::mpsc::Receiver;
@@ -33,6 +33,9 @@ pub const LISTENER_REVERB: u32 = u32::MAX;
 /// Each pass traces random rays, so results differ a little; switching
 /// instantly made the reverb jump.
 const BLEND: f32 = 0.2;
+/// Seconds for a zone's stylized reverb to fade in or out when the listener
+/// changes zones.
+const ZONE_FADE: f32 = 1.0;
 
 /// A reflection result, kept alive while it's still being faded out.
 type Room = Arc<dyn Deref<Target = ReflectionsOutput<u32, Convolution>> + Send + Sync>;
@@ -107,12 +110,87 @@ pub struct Shared {
     pub voices: Vec<(u32, VoiceParams)>,
     pub listener: CoordinateSystem,
     pub toggles: Toggles,
+    /// The listener's zone's stylized reverb, if it has one.
+    pub stylized: Option<Stylized>,
 }
 
-/// The ambisonic decoders for the reverb bus, one per HRTF setting.
-pub struct Decoders {
+/// A zone's non-physical reverb, as the mixer renders it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stylized {
+    /// Decay times (RT60) for the low, mid and high bands.
+    pub decays: [f32; 3],
+    pub level: f32,
+    /// Mute the simulated reverb meanwhile.
+    pub replace: bool,
+}
+
+/// The stylized reverb: every voice feeds one mono send, which goes through
+/// a single parametric reverb (a feedback delay network). Steam Audio
+/// renders that tail into one channel only (an ambisonic bus's
+/// omnidirectional one), so each ear gets it through its own chain of
+/// allpass filters: same tone, scrambled phase, which sounds wide instead of
+/// inside the head.
+struct ZoneReverbBus {
+    effect: ReflectionEffect<Parametric>,
+    send: Vec<f32>,
+    tail: Vec<f32>,
+    ears: [Decorrelator; 2],
+    /// Smoothed gains, so zone changes fade: the tail's level, and how much
+    /// of the simulated reverb is muted (0–1).
+    level: f32,
+    muted: f32,
+    /// Decay times last used, kept while the tail fades out.
+    decays: [f32; 3],
+    /// Gain change per frame for a full fade.
+    step: f32,
+}
+
+impl ZoneReverbBus {
+    fn new(effect: ReflectionEffect<Parametric>, frame_size: usize, rate: u32) -> Self {
+        Self {
+            effect,
+            send: vec![0.0; frame_size],
+            tail: vec![0.0; frame_size],
+            ears: Decorrelator::pair(rate),
+            level: 0.0,
+            muted: 0.0,
+            decays: [1.0; 3],
+            step: frame_size as f32 / (ZONE_FADE * rate as f32),
+        }
+    }
+
+    /// Moves the smoothed gains one frame toward `target`.
+    fn follow(&mut self, target: Option<Stylized>) {
+        let (level, muted) = match target {
+            Some(s) => {
+                self.decays = s.decays;
+                (s.level.clamp(0.0, 4.0), if s.replace { 1.0 } else { 0.0 })
+            }
+            None => (0.0, 0.0),
+        };
+        let toward = |from: f32, to: f32, step: f32| from + (to - from).clamp(-step, step);
+        // Level fades relative to its own size, so 4 takes as long as 0.5.
+        self.level = toward(
+            self.level,
+            level,
+            self.step * level.max(self.level).max(0.01),
+        );
+        self.muted = toward(self.muted, muted, self.step);
+    }
+}
+
+/// Effects applied once per frame to a shared bus: the ambisonic decoders
+/// for the reverb bus (one per HRTF setting), and the zone's stylized reverb.
+pub struct BusEffects {
     pub binaural: AmbisonicsDecodeEffect,
     pub panning: AmbisonicsDecodeEffect,
+    pub zone_reverb: ReflectionEffect<Parametric>,
+}
+
+/// The ambisonic decoders for the reverb bus.
+struct Decoders {
+    binaural: AmbisonicsDecodeEffect,
+    panning: AmbisonicsDecodeEffect,
 }
 
 pub struct Mixer {
@@ -124,6 +202,7 @@ pub struct Mixer {
     shared: Shared,
     reflections: SharedSimulationOutput<ReflectionsOutput<u32, Convolution>>,
     decoders: Decoders,
+    zone_reverb: ZoneReverbBus,
     /// The current frame (deinterleaved stereo) and how much of it is played.
     mix: Vec<f32>,
     cursor: usize,
@@ -151,7 +230,7 @@ impl Mixer {
         commands: Receiver<Command>,
         shared_in: Arc<Mutex<Shared>>,
         reflections: SharedSimulationOutput<ReflectionsOutput<u32, Convolution>>,
-        decoders: Decoders,
+        buses: BusEffects,
     ) -> Self {
         Self {
             hrtf,
@@ -161,7 +240,11 @@ impl Mixer {
             shared_in,
             shared: Shared::default(),
             reflections,
-            decoders,
+            decoders: Decoders {
+                binaural: buses.binaural,
+                panning: buses.panning,
+            },
+            zone_reverb: ZoneReverbBus::new(buses.zone_reverb, frame_size, rate),
             mix: vec![0.0; frame_size * 2],
             cursor: frame_size,
             input: vec![0.0; frame_size],
@@ -248,6 +331,9 @@ impl Mixer {
         self.mix.fill(0.0);
         self.reverb_bus.fill(0.0);
         let mut reverb = false;
+        let zone = &mut self.zone_reverb;
+        zone.follow(self.shared.stylized.filter(|_| toggles.reflections));
+        zone.send.fill(0.0);
 
         for voice in &mut self.voices {
             let Some(params) = self
@@ -265,6 +351,14 @@ impl Mixer {
             let Ok(input) = AudioBufferRef::try_from(&self.input[..]) else {
                 continue;
             };
+            if self.zone_reverb.level > 0.0 {
+                // Reverb fades with distance more slowly than the direct
+                // sound, so far-off sounds come out wetter.
+                let send = params.distance_attenuation.sqrt();
+                for (out, sample) in self.zone_reverb.send.iter_mut().zip(&self.input) {
+                    *out += sample * send;
+                }
+            }
             let direct = DirectEffectParams {
                 distance_attenuation: Some(params.distance_attenuation),
                 air_absorption: toggles
@@ -371,14 +465,88 @@ impl Mixer {
                 &mut self.decoders.panning
             };
             if decoder.apply(&params, &bus, &mut spatial).is_ok() {
+                let gain = 1.0 - self.zone_reverb.muted;
                 for (mix, sample) in self.mix.iter_mut().zip(&self.spatial) {
-                    *mix += sample;
+                    *mix += sample * gain;
                 }
             }
         }
+        self.zone_reverb.render(&mut self.mix);
 
         let (left, right) = self.mix.split_at_mut(self.frame_size);
         self.limiter.process(left, right);
+    }
+}
+
+impl ZoneReverbBus {
+    /// Adds the send's reverb to the stereo `mix` (deinterleaved); once
+    /// faded out, clears the tail so it doesn't come back later.
+    fn render(&mut self, mix: &mut [f32]) {
+        if self.level <= 0.0 {
+            self.effect.reset();
+            self.ears.iter_mut().for_each(Decorrelator::clear);
+            return;
+        }
+        let frame = self.send.len();
+        let params = ReflectionEffectParams::<Parametric>::new(self.decays, 1, frame as u32);
+        let applied = match (
+            AudioBufferRef::try_from(&self.send[..]),
+            AudioBufferMut::try_new(&mut self.tail, 1),
+        ) {
+            (Ok(send), Ok(mut tail)) => self.effect.apply(&params, &send, &mut tail).is_ok(),
+            _ => false,
+        };
+        if applied {
+            for (ear, mix) in self.ears.iter_mut().zip(mix.chunks_mut(frame)) {
+                for (out, &sample) in mix.iter_mut().zip(&self.tail) {
+                    *out += ear.process(sample) * self.level;
+                }
+            }
+        }
+    }
+}
+
+/// A chain of Schroeder allpass filters: passes every frequency at the same
+/// level but smears its phase. Two chains with different delays turn one
+/// signal into two that sound alike but don't line up.
+struct Decorrelator {
+    stages: Vec<(Vec<f32>, usize)>,
+}
+
+impl Decorrelator {
+    /// Allpass gain: higher smears more but rings longer itself.
+    const GAIN: f32 = 0.7;
+
+    /// One chain per ear. Delays in ms, mutually prime-ish so the two never
+    /// line up.
+    fn pair(rate: u32) -> [Self; 2] {
+        let chain = |ms: [f32; 6]| Self {
+            stages: ms
+                .iter()
+                .map(|ms| (vec![0.0; ((ms * rate as f32 / 1000.0) as usize).max(1)], 0))
+                .collect(),
+        };
+        [
+            chain([3.1, 7.7, 11.3, 17.9, 23.3, 31.7]),
+            chain([4.3, 8.9, 13.7, 19.1, 27.1, 29.3]),
+        ]
+    }
+
+    fn process(&mut self, mut x: f32) -> f32 {
+        for (line, pos) in &mut self.stages {
+            let delayed = line[*pos];
+            let v = x + Self::GAIN * delayed;
+            line[*pos] = v;
+            *pos = (*pos + 1) % line.len();
+            x = delayed - Self::GAIN * v;
+        }
+        x
+    }
+
+    fn clear(&mut self) {
+        for (line, _) in &mut self.stages {
+            line.fill(0.0);
+        }
     }
 }
 
@@ -478,6 +646,27 @@ impl Limiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_two_ears_get_the_same_energy_but_different_signals() {
+        let [mut left, mut right] = Decorrelator::pair(48_000);
+        // White noise (xorshift), like a dense reverb tail.
+        let mut state = 0x2545_f491_u32;
+        let noise = (0..96_000).map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state >> 8) as f32 / 8_388_608.0 - 1.0
+        });
+        let (mut l2, mut r2, mut lr) = (0.0f64, 0.0f64, 0.0f64);
+        for x in noise {
+            let (l, r) = (left.process(x) as f64, right.process(x) as f64);
+            (l2, r2, lr) = (l2 + l * l, r2 + r * r, lr + l * r);
+        }
+        assert!((l2 / r2 - 1.0).abs() < 0.1, "balanced: {l2} vs {r2}");
+        let correlation = lr / (l2 * r2).sqrt();
+        assert!(correlation.abs() < 0.3, "decorrelated: {correlation}");
+    }
 
     #[test]
     fn limiter_never_lets_the_mix_past_the_ceiling() {

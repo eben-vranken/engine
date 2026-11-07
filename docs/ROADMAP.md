@@ -224,6 +224,15 @@ The game's own settings, edited from the editor instead of by hand in `game.ron`
 
 **Acceptance:** the user sets their game to ×5, restarts the editor and plays, and both start at ×5 while the sandbox still starts on AUTO.
 
+## 10.8 Stylized reverb
+Reverb that doesn't come from geometry, so an open void or an empty plain can still ring (BRIEF.md: "Stylized reverb").
+
+- [ ] Per zone, optional: decay, brightness, level, and whether it replaces the simulated reverb; saved in the scene, edited under REVERB in the zone inspector
+- [ ] Every sound in the listener's zone gets the tail (Steam Audio parametric reverb); it fades over about a second when crossing into or out of the zone
+- [ ] F7 (reflections) switches it off along with the simulated reverb
+
+**Acceptance:** in a zone with no walls, the user gives the zone a long dark tail, hears footsteps and claps ring out, walks out of the zone and hears it fade, and the void sounds the way they want.
+
 ## 11. Gameplay systems
 - [ ] Abilities + gates, save system, map from zone data
 
