@@ -45,7 +45,8 @@ pub struct Shadows {
     pass_buffer: wgpu::Buffer,
     pass_bind_group: wgpu::BindGroup,
     pass_stride: u64,
-    /// Per slot: what its six faces were last rendered for. Its length is
+    /// Per cube face (slot × 6 + face): what it was last rendered for, so
+    /// only faces whose view changed are rendered again. Its length / 6 is
     /// how many point lights can have shadows at once.
     cache: Vec<Option<u64>>,
 }
@@ -197,13 +198,13 @@ impl Shadows {
             pass_buffer,
             pass_bind_group,
             pass_stride,
-            cache: vec![None; slots],
+            cache: vec![None; slots * 6],
         }
     }
 
     /// How many point lights can have shadows at once.
     pub fn slots(&self) -> usize {
-        self.cache.len()
+        self.cache.len() / 6
     }
 
     /// Forget every cached point-light map (the scene was rebuilt).
@@ -229,10 +230,13 @@ impl Shadows {
             let Some(slot) = light.shadow else { continue };
             let matrices = lights::cube_faces(light.position, light.range);
             faces[slot * 6..slot * 6 + 6].copy_from_slice(&matrices);
-            let key = cache_key(light, casters);
-            if self.cache[slot] != Some(key) {
-                self.cache[slot] = Some(key);
-                todo.push((slot, light));
+            for (face, matrix) in matrices.iter().enumerate() {
+                let layer = slot * 6 + face;
+                let key = cache_key(light, *matrix, casters);
+                if self.cache[layer] != Some(key) {
+                    self.cache[layer] = Some(key);
+                    todo.push((layer, light));
+                }
             }
         }
         queue.write_buffer(&self.face_buffer, 0, bytemuck::cast_slice(&faces));
@@ -259,22 +263,19 @@ impl Shadows {
             return;
         }
         // Cube faces re-rendered: each is a pass over the casters in reach.
-        crate::perf::count("CUBE FACES", todo.len() * 6);
+        crate::perf::count("CUBE FACES", todo.len());
         crate::perf::time("CUBE SHADOW PASSES", || {
-            for (slot, light) in todo {
-                for face in 0..6 {
-                    let layer = slot * 6 + face;
-                    let range = Some((light.object, light.position, light.range));
-                    self.pass(
-                        encoder,
-                        &self.face_views[layer],
-                        CASCADES + layer,
-                        faces[layer],
-                        object_bind_group,
-                        casters,
-                        range,
-                    );
-                }
+            for (layer, light) in todo {
+                let range = Some((light.object, light.position, light.range));
+                self.pass(
+                    encoder,
+                    &self.face_views[layer],
+                    CASCADES + layer,
+                    faces[layer],
+                    object_bind_group,
+                    casters,
+                    range,
+                );
             }
         });
     }
@@ -329,16 +330,22 @@ impl Shadows {
     }
 }
 
-/// Identifies what a light's shadow map shows: the light, and every
-/// caster in its reach with where it is.
-fn cache_key(light: &FrameLight, casters: &[Caster]) -> u64 {
+/// Identifies what one cube face of a light's shadow map shows: the light,
+/// the face, and every caster that face sees (in reach and in its view),
+/// with where it is.
+fn cache_key(light: &FrameLight, face: Mat4, casters: &[Caster]) -> u64 {
     let mut hasher = DefaultHasher::new();
     let bits = |v: Vec3| v.to_array().map(f32::to_bits);
     bits(light.position).hash(&mut hasher);
     light.range.to_bits().hash(&mut hasher);
     light.object.hash(&mut hasher);
+    face.to_cols_array().map(f32::to_bits).hash(&mut hasher);
+    let frustum = Frustum::new(face);
     for caster in casters {
-        if caster.sphere.0.distance(light.position) <= light.range + caster.sphere.1 {
+        if caster.object != light.object
+            && caster.sphere.0.distance(light.position) <= light.range + caster.sphere.1
+            && frustum.sees_sphere(caster.sphere.0, caster.sphere.1)
+        {
             caster.object.hash(&mut hasher);
             caster.index_count.hash(&mut hasher);
             caster

@@ -942,7 +942,14 @@ impl Scene {
 
     /// Everything visible.
     pub fn renderables(&self) -> impl Iterator<Item = Renderable<'_>> {
-        self.shown().flat_map(|(index, object)| {
+        self.renderables_with_hidden()
+            .filter(|r| !self.objects[r.object].hidden)
+    }
+
+    /// `renderables`, hidden objects too (the renderer keeps them, to show
+    /// them again without a rebuild).
+    pub fn renderables_with_hidden(&self) -> impl Iterator<Item = Renderable<'_>> {
+        self.objects.iter().enumerate().flat_map(|(index, object)| {
             let material = object.components.iter().find_map(|c| match c {
                 Component::Material(m) => Some(m),
                 _ => None,
@@ -1010,7 +1017,16 @@ impl Scene {
     /// Everything with a collider: object index, geometry, transform, and
     /// whether it blocks the player.
     pub fn colliders(&self) -> impl Iterator<Item = (usize, Geometry<'_>, &Transform, bool)> {
-        self.shown().flat_map(|(index, object)| {
+        self.colliders_with_hidden()
+            .filter(|(index, ..)| !self.objects[*index].hidden)
+    }
+
+    /// `colliders`, hidden objects too (physics keeps them switched off, to
+    /// switch them on again without a rebuild).
+    pub fn colliders_with_hidden(
+        &self,
+    ) -> impl Iterator<Item = (usize, Geometry<'_>, &Transform, bool)> {
+        self.objects.iter().enumerate().flat_map(|(index, object)| {
             object.components.iter().flat_map(move |c| {
                 let groups: Vec<(Geometry, bool)> = match c {
                     Component::Primitive(p) => vec![(Geometry::Shape(p.shape), p.collision)],

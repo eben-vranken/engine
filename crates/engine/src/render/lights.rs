@@ -80,7 +80,10 @@ pub fn flicker(amount: f32, time: f32, seed: f32) -> f32 {
 }
 
 /// The lights to shade this frame, nearest to the camera first; the first
-/// `shadow_slots` that want shadows get a shadow slot.
+/// `shadow_slots` that want shadows get a shadow slot. `owners[slot]` is the
+/// light (object) that had the slot last frame: a light keeps its slot, so
+/// its cached shadow map stays valid while the order changes as the camera
+/// moves. `owners` is updated.
 ///
 /// "Nearest" is how far the camera is outside a light's range, so a big
 /// light just out of reach beats a small one nearer by; lights whose range
@@ -89,8 +92,9 @@ pub fn select<'a>(
     lights: impl Iterator<Item = (usize, &'a LightSource, Vec3)>,
     camera: Vec3,
     time: f32,
-    shadow_slots: usize,
+    owners: &mut Vec<Option<usize>>,
 ) -> Vec<FrameLight> {
+    let shadow_slots = owners.len();
     let mut candidates: Vec<(f32, f32, usize, &LightSource, Vec3)> = lights
         .filter(|(_, l, _)| l.intensity > 0.0 && l.range > 0.0)
         .map(|(object, light, position)| {
@@ -100,24 +104,42 @@ pub fn select<'a>(
         })
         .collect();
     candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    let mut slots = 0;
-    candidates
+    let mut shadowed = 0;
+    let mut picked: Vec<FrameLight> = candidates
         .into_iter()
         .take(MAX_LIGHTS)
         .map(|(_, _, object, light, position)| {
-            let shadow = (light.shadows && slots < shadow_slots).then(|| {
-                slots += 1;
-                slots - 1
-            });
+            let wants = light.shadows && shadowed < shadow_slots;
+            shadowed += wants as usize;
             FrameLight {
                 object,
                 position,
                 range: light.range,
                 color: light.color * light.intensity * flicker(light.flicker, time, object as f32),
-                shadow,
+                // Marks who gets one; the slot is chosen below.
+                shadow: wants.then_some(usize::MAX),
             }
         })
-        .collect()
+        .collect();
+    // Lights that had a slot keep it; the others take the free ones.
+    let mut next: Vec<Option<usize>> = vec![None; shadow_slots];
+    for light in picked.iter_mut().filter(|l| l.shadow.is_some()) {
+        let kept = owners.iter().position(|&o| o == Some(light.object));
+        if let Some(slot) = kept {
+            next[slot] = Some(light.object);
+            light.shadow = Some(slot);
+        }
+    }
+    for light in picked.iter_mut().filter(|l| l.shadow == Some(usize::MAX)) {
+        let slot = next
+            .iter()
+            .position(Option::is_none)
+            .expect("a slot per light");
+        next[slot] = Some(light.object);
+        light.shadow = Some(slot);
+    }
+    *owners = next;
+    picked
 }
 
 /// Look direction and up vector of each cube face, in the order the shader
@@ -216,12 +238,41 @@ mod tests {
                 .map(|(i, (l, p))| (i, l, p)),
             Vec3::ZERO,
             0.0,
-            8,
+            &mut vec![None; 8],
         );
         let order: Vec<usize> = picked.iter().map(|l| l.object).collect();
         assert_eq!(order, [2, 1, 0]);
         let slots: Vec<Option<usize>> = picked.iter().map(|l| l.shadow).collect();
         assert_eq!(slots, [None, Some(0), Some(1)]);
+    }
+
+    /// As the camera moves and the order changes, lights keep their slots.
+    #[test]
+    fn lights_keep_their_shadow_slots() {
+        let lights = [light(2.0, true), light(2.0, true)];
+        let positions = [Vec3::X * 5.0, Vec3::NEG_X * 10.0];
+        let pick = |camera: Vec3, owners: &mut Vec<Option<usize>>| -> Vec<(usize, usize)> {
+            let picked = select(
+                lights
+                    .iter()
+                    .zip(positions)
+                    .enumerate()
+                    .map(|(i, (l, p))| (i, l, p)),
+                camera,
+                0.0,
+                owners,
+            );
+            let mut slots: Vec<(usize, usize)> = picked
+                .iter()
+                .map(|l| (l.object, l.shadow.unwrap()))
+                .collect();
+            slots.sort();
+            slots
+        };
+        let mut owners = vec![None; 2];
+        assert_eq!(pick(Vec3::ZERO, &mut owners), [(0, 0), (1, 1)]);
+        // Now light 1 is nearer, but both keep their slots.
+        assert_eq!(pick(Vec3::NEG_X * 9.0, &mut owners), [(0, 0), (1, 1)]);
     }
 
     #[test]
@@ -234,7 +285,7 @@ mod tests {
                 .map(|(i, l)| (i, l, Vec3::X * i as f32)),
             Vec3::ZERO,
             0.0,
-            8,
+            &mut vec![None; 8],
         );
         assert_eq!(picked.iter().filter(|l| l.shadow.is_some()).count(), 8);
     }
@@ -252,7 +303,7 @@ mod tests {
                 .map(|(i, (l, p))| (i, l, p)),
             Vec3::ZERO,
             0.0,
-            2,
+            &mut vec![None; 2],
         );
         let shadowed: Vec<usize> = picked
             .iter()

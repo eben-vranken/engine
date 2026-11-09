@@ -117,6 +117,8 @@ struct Draw {
     texture: String,
     /// The model's own roughness and metalness (primitives: matte).
     surface: [f32; 2],
+    /// The object is hidden (picked up, an open gate): kept, not drawn.
+    hidden: bool,
     uniform: ObjectUniform,
 }
 
@@ -241,6 +243,8 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     adapter_name: String,
+    /// Which light (object) had each shadow slot last frame.
+    shadow_owners: Vec<Option<usize>>,
     /// What the surface supports, to tell which mode `Auto*` picked.
     present_modes: Vec<wgpu::PresentMode>,
 
@@ -306,6 +310,10 @@ pub struct Renderer {
     zone: Option<usize>,
     started: Instant,
     last_frame: Instant,
+    /// When the last swapchain image was handed out, and the time between
+    /// the last two: the display's rhythm, steadier than the CPU's.
+    acquired: Option<Instant>,
+    acquire_interval: Option<f32>,
     quality: Quality,
     /// `None` if the GPU can't time its stages.
     timer: Option<GpuTimer>,
@@ -840,6 +848,7 @@ impl Renderer {
         let mut post = Post::new(&device, format);
         post.set_scene_view(&device, &targets.color, layout.internal);
 
+        let shadow_owners = vec![None; shadows.slots()];
         Ok(Self {
             instance,
             window,
@@ -885,12 +894,15 @@ impl Renderer {
             lights: Vec::new(),
             light_buffer,
             shadows,
+            shadow_owners,
             present_modes: caps.present_modes.clone(),
             fog,
             post,
             zone: None,
             started: Instant::now(),
             last_frame: Instant::now(),
+            acquired: None,
+            acquire_interval: None,
             quality,
             timer,
         })
@@ -1062,7 +1074,9 @@ impl Renderer {
         self.fog.reset();
         self.post
             .set_grades(&self.device, &self.queue, scene, assets.root());
-        let renderables: Vec<_> = scene.renderables().collect();
+        // Hidden objects too: showing one again is then `update_object`.
+        // (`draw_keys` also has one key per draw of every object.)
+        let renderables: Vec<_> = scene.renderables_with_hidden().collect();
         let (buffer, bind_group) = create_object_buffer(
             &self.device,
             &self.object_layout,
@@ -1113,6 +1127,7 @@ impl Renderer {
                 lightmap,
                 texture,
                 surface,
+                hidden: scene.objects[r.object].hidden,
                 uniform: object_uniform(&r, highlighted, &look),
             });
         }
@@ -1121,8 +1136,9 @@ impl Renderer {
         }
     }
 
-    /// Re-uploads one object after it was edited or moved: its transform,
-    /// color and lights, and its mesh if the geometry changed.
+    /// Re-uploads one object after it was edited, moved, shown or hidden:
+    /// its transform, color, visibility and lights, and its mesh if the
+    /// geometry changed.
     pub fn update_object(&mut self, scene: &Scene, index: usize, assets: &mut Assets) {
         let object = &scene.objects[index];
         // The object's lights (its own and its parts'), as they are now.
@@ -1143,7 +1159,10 @@ impl Renderer {
                 &fog::regions(scene, |zone| self.zone_light(zone)),
             );
         }
-        let renderables: Vec<_> = scene.renderables().filter(|r| r.object == index).collect();
+        let renderables: Vec<_> = scene
+            .renderables_with_hidden()
+            .filter(|r| r.object == index)
+            .collect();
         let slots: Vec<usize> = (0..self.draws.len())
             .filter(|&i| self.draws[i].object == index)
             .collect();
@@ -1186,6 +1205,7 @@ impl Renderer {
                 surface: self.draws[slot].surface,
                 reflection: self.reflection_of(scene, index),
             };
+            self.draws[slot].hidden = object.hidden;
             self.draws[slot].uniform = object_uniform(&r, highlighted, &look);
             self.write_draw(slot);
         }
@@ -1412,6 +1432,11 @@ impl Renderer {
             .unwrap_or(Fifo)
     }
 
+    /// Seconds between the last two swapchain images (a frame late).
+    pub fn acquire_interval(&self) -> Option<f32> {
+        self.acquire_interval
+    }
+
     pub fn vsync(&self) -> bool {
         self.config.present_mode == wgpu::PresentMode::AutoVsync
     }
@@ -1490,6 +1515,9 @@ impl Renderer {
                 return;
             }
         };
+        let acquired = Instant::now();
+        self.acquire_interval = self.acquired.map(|t| (acquired - t).as_secs_f32());
+        self.acquired = Some(acquired);
         let output = frame.texture.create_view(&Default::default());
 
         let now = Instant::now();
@@ -1507,7 +1535,7 @@ impl Renderer {
             self.lights.iter().map(|l| (l.object, &l.light, l.position)),
             camera.position,
             time,
-            self.shadows.slots(),
+            &mut self.shadow_owners,
         );
         let mut gpu_lights: Vec<GpuLight> = frame_lights.iter().map(|l| l.gpu()).collect();
         let surface_lights = gpu_lights.len();
@@ -1517,7 +1545,7 @@ impl Renderer {
             .meshes
             .iter()
             .zip(&self.draws)
-            .filter(|(_, d)| d.uniform.emissive.max_element() > 0.0)
+            .filter(|(_, d)| !d.hidden && d.uniform.emissive.max_element() > 0.0)
             .map(|(mesh, d)| {
                 let (center, radius) = frustum::world_sphere(&d.uniform.model, mesh.sphere);
                 let light = lights::emissive_light(d.uniform.emissive.truncate(), center, radius);
@@ -1600,6 +1628,7 @@ impl Renderer {
             .iter()
             .zip(&self.draws)
             .enumerate()
+            .filter(|(_, (_, draw))| !draw.hidden)
             .map(|(i, (mesh, draw))| Caster {
                 object: draw.object,
                 model: draw.uniform.model,
@@ -1673,6 +1702,9 @@ impl Renderer {
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             let mut drawn = 0;
             for (i, mesh) in self.meshes.iter().enumerate() {
+                if self.draws[i].hidden {
+                    continue;
+                }
                 let (center, radius) =
                     frustum::world_sphere(&self.draws[i].uniform.model, mesh.sphere);
                 if !frustum.sees_sphere(center, radius) {

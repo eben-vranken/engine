@@ -199,20 +199,21 @@ impl Running {
         self.rebuild_physics();
     }
 
-    /// Gates whose flag is true are hidden. Returns whether any changed.
-    fn update_gates(&mut self) -> bool {
+    /// Gates whose flag is true are hidden. Returns the objects shown or
+    /// hidden.
+    fn update_gates(&mut self) -> Vec<usize> {
         let Some(story) = &self.story else {
-            return false;
+            return Vec::new();
         };
-        let mut changed = false;
-        for object in &mut self.scene.objects {
+        let mut changed = Vec::new();
+        for (index, object) in self.scene.objects.iter_mut().enumerate() {
             for component in &object.components {
                 if let Component::AbilityGate(gate) = component {
                     let open =
                         !gate.requires.0.is_empty() && story.runner.flags.is_true(&gate.requires.0);
                     if object.hidden != open {
                         object.hidden = open;
-                        changed = true;
+                        changed.push(index);
                     }
                 }
             }
@@ -315,8 +316,16 @@ impl Running {
         {
             audio.play_sound(&pickup.sound.0, position, 1.0);
         }
-        self.renderer.set_scene(&self.scene, &mut self.assets);
-        self.rebuild_physics();
+        self.reshow(index);
+    }
+
+    /// An object was shown or hidden: updates just that object in the
+    /// renderer and physics (no full rebuild).
+    fn reshow(&mut self, index: usize) {
+        self.renderer
+            .update_object(&self.scene, index, &mut self.assets);
+        self.physics
+            .set_hidden(index, self.scene.objects[index].hidden);
     }
 
     /// Moves the story on by a frame: dialogue keys, the graphs, what they
@@ -399,9 +408,8 @@ impl Running {
             (None, _) => story.line = None,
         }
         self.run_commands(commands);
-        if self.update_gates() {
-            self.renderer.set_scene(&self.scene, &mut self.assets);
-            self.rebuild_physics();
+        for index in self.update_gates() {
+            self.reshow(index);
         }
     }
 
@@ -457,7 +465,7 @@ impl Running {
     }
 
     fn run_commands(&mut self, commands: Vec<Command>) {
-        let mut reshown = false;
+        let mut reshown = Vec::new();
         let mut load = None;
         for command in commands {
             match command {
@@ -474,8 +482,10 @@ impl Running {
                 }
                 Command::Show { object, visible } => match self.scene.find(&object) {
                     Some(index) => {
-                        self.scene.objects[index].hidden = !visible;
-                        reshown = true;
+                        if self.scene.objects[index].hidden == visible {
+                            self.scene.objects[index].hidden = !visible;
+                            reshown.push(index);
+                        }
                     }
                     None => log::warn!("graph: no object \"{object}\" in this scene"),
                 },
@@ -507,9 +517,8 @@ impl Running {
                 Command::Save => self.save_game(),
             }
         }
-        if reshown {
-            self.renderer.set_scene(&self.scene, &mut self.assets);
-            self.rebuild_physics();
+        for index in reshown {
+            self.reshow(index);
         }
         if let Some(path) = load {
             self.load_play_scene(&path);
@@ -629,12 +638,12 @@ impl Running {
         if self.mode == CameraMode::Player {
             self.player.apply_script(&view, &self.settings);
         }
-        let mut reshown = false;
+        let mut reshown = Vec::new();
         for changed in &objects {
             let object = &mut self.scene.objects[changed.index];
             if object.hidden == changed.visible {
                 object.hidden = !changed.visible;
-                reshown = true;
+                reshown.push(changed.index);
             }
             let transform = crate::scene::Transform {
                 position: changed.position,
@@ -649,9 +658,8 @@ impl Running {
                     .move_object(changed.index, &self.scene.objects[changed.index].transform);
             }
         }
-        if reshown {
-            self.renderer.set_scene(&self.scene, &mut self.assets);
-            self.rebuild_physics();
+        for index in reshown {
+            self.reshow(index);
         }
         let Some(story) = &mut self.story else { return };
         let errors = std::mem::take(&mut story.scripts.errors);

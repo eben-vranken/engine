@@ -8,6 +8,7 @@ mod hot_reload;
 mod hud;
 mod keys;
 mod map;
+mod pacing;
 mod project;
 mod story;
 mod test_drawer;
@@ -154,6 +155,12 @@ struct Running {
     perf_log: bool,
     /// Frame times, summarised every `perf::INTERVAL` (`perf_rolled`).
     frame_times: perf::FrameTimes,
+    /// The time step the game advances by (see `pacing`), and its spread.
+    pacing: pacing::Pacing,
+    step_times: perf::FrameTimes,
+    step_summary: perf::FrameSummary,
+    /// The display's refresh interval, ms (checked every `perf::INTERVAL`).
+    refresh_ms: f32,
     perf_rolled: Instant,
     /// The last interval's frame times and timers, for the log and STATS.
     frame_summary: perf::FrameSummary,
@@ -440,6 +447,10 @@ impl Running {
                 .map(crate::bench::Bench::new),
             perf_log: config.perf_log,
             frame_times: perf::FrameTimes::default(),
+            pacing: pacing::Pacing::default(),
+            step_times: perf::FrameTimes::default(),
+            step_summary: perf::FrameSummary::default(),
+            refresh_ms: 1000.0 / 60.0,
             perf_rolled: Instant::now(),
             frame_summary: perf::FrameSummary::default(),
             perf_stats: Vec::new(),
@@ -502,7 +513,7 @@ impl Running {
 
     /// The refresh interval of the window's monitor in milliseconds (60 Hz
     /// if it can't be told).
-    fn refresh_ms(&self) -> f32 {
+    fn monitor_refresh_ms(&self) -> f32 {
         self.window
             .current_monitor()
             .and_then(|m| m.refresh_rate_millihertz())
@@ -512,7 +523,9 @@ impl Running {
     /// Ends a `perf::INTERVAL`: summarises it for STATS and `--perf-log`.
     fn roll_perf(&mut self) {
         perf::roll();
-        self.frame_summary = self.frame_times.summary(self.refresh_ms());
+        self.refresh_ms = self.monitor_refresh_ms();
+        self.frame_summary = self.frame_times.summary(self.refresh_ms);
+        self.step_summary = self.step_times.summary(self.refresh_ms);
         self.perf_stats = perf::last();
         if !self.perf_log {
             return;
@@ -527,6 +540,13 @@ impl Running {
             f.long,
             f.refresh_ms * perf::LONG_FRAME,
             self.renderer.present_mode(),
+        );
+        let s = self.step_summary;
+        log::info!(
+            "perf: game step p50 {:.2} ms | p99 {:.2} ms | max {:.2} ms",
+            s.p50,
+            s.p99,
+            s.max
         );
         if !self.perf_stats.is_empty() {
             let stats: Vec<String> = self
@@ -575,10 +595,19 @@ impl Running {
         let now = Instant::now();
         // Unclamped for the stats: a long frame is what we want to see.
         let frame_ms = (now - self.last_frame).as_secs_f32() * 1000.0;
-        let dt = (frame_ms / 1000.0).min(0.1);
+        // The game's step: timed at the swapchain (the display's rhythm),
+        // snapped to the refresh with vsync.
+        let measured = self
+            .renderer
+            .acquire_interval()
+            .unwrap_or(frame_ms / 1000.0);
+        let dt = self
+            .pacing
+            .step(measured, self.refresh_ms / 1000.0, self.renderer.vsync());
         self.last_frame = now;
-        self.fps.tick(dt);
+        self.fps.tick(frame_ms / 1000.0);
         self.frame_times.push(frame_ms);
+        self.step_times.push(dt * 1000.0);
         if self.perf_rolled.elapsed().as_secs_f32() >= perf::INTERVAL {
             self.perf_rolled = Instant::now();
             self.roll_perf();
@@ -689,6 +718,13 @@ impl Running {
                     f.long,
                     f.frames,
                     f.refresh_ms * perf::LONG_FRAME
+                ),
+            ),
+            (
+                "GAME STEP",
+                format!(
+                    "P50 {:.2}  P99 {:.2}  MAX {:.2} MS",
+                    self.step_summary.p50, self.step_summary.p99, self.step_summary.max
                 ),
             ),
             (

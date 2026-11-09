@@ -357,9 +357,10 @@ pub fn start(scene: &Scene, assets: &mut Assets, file: PathBuf) -> Result<BakeJo
     // Each object's world-space bounding radius around its position, for
     // lights sitting inside their own object.
     let mut reach: Vec<f32> = vec![0.0; scene.objects.len()];
-    for (r, key) in scene.renderables().zip(keys) {
+    // `keys` has one per draw of every object, hidden ones too.
+    for (r, key) in scene.renderables_with_hidden().zip(keys) {
         let object = &scene.objects[r.object];
-        if moves(object) {
+        if moves(object) || object.hidden {
             continue;
         }
         let model = r.transform.matrix();

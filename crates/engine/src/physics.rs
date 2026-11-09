@@ -8,7 +8,7 @@ use crate::scene::{Component, PhysicsBody, Scene, Transform};
 use crate::zones::Active;
 use glam::{Quat, Vec3};
 use rapier3d::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The simulation advances in fixed steps of this many seconds.
 const STEP: f32 = 1.0 / 60.0;
@@ -39,6 +39,11 @@ pub struct PhysicsWorld {
     placed: Vec<(ColliderHandle, usize, Pose)>,
     /// Dynamic bodies and their objects.
     dynamic: Vec<(RigidBodyHandle, usize)>,
+    /// Each dynamic body's pose before the last step, to draw it between
+    /// steps (physics runs at 60 Hz, the screen often faster).
+    previous: Vec<(Vec3, Quat)>,
+    /// Hidden objects: their colliders (and bodies) are kept, switched off.
+    hidden: HashSet<usize>,
     /// Time not yet simulated (less than one step).
     accumulator: f32,
 }
@@ -69,10 +74,16 @@ impl PhysicsWorld {
             ccd: CCDSolver::new(),
             placed: Vec::new(),
             dynamic: Vec::new(),
+            previous: Vec::new(),
+            hidden: HashSet::new(),
             accumulator: 0.0,
         };
         let mut object_bodies = HashMap::new();
-        for (object, geometry, transform, solid) in scene.colliders() {
+        for (object, geometry, transform, solid) in scene.colliders_with_hidden() {
+            let hidden = scene.objects[object].hidden;
+            if hidden {
+                world.hidden.insert(object);
+            }
             let body = game.then(|| physics_body(scene, object)).flatten();
             let collider = match assets.resolve(geometry) {
                 Resolved::Shape(shape) => collider_for(shape, transform),
@@ -117,6 +128,9 @@ impl PhysicsWorld {
         }
         // One step registers the colliders with the broad phase so queries see them.
         world.step(1.0 / 60.0);
+        for object in world.hidden.clone() {
+            world.set_hidden(object, true);
+        }
         world
     }
 
@@ -133,10 +147,51 @@ impl PhysicsWorld {
         }
     }
 
+    /// Shows or hides an object: its colliders (and body) switch on or off.
+    /// Hiding takes effect at once; a shown object is back in queries and
+    /// the simulation from the next step (rapier's broad phase).
+    pub fn set_hidden(&mut self, object: usize, hidden: bool) {
+        if hidden {
+            self.hidden.insert(object);
+        } else {
+            self.hidden.remove(&object);
+        }
+        let mut handles: Vec<ColliderHandle> = self
+            .placed
+            .iter()
+            .filter(|(_, owner, _)| *owner == object)
+            .map(|(handle, ..)| *handle)
+            .collect();
+        for &(handle, owner) in &self.dynamic {
+            if owner == object
+                && let Some(body) = self.bodies.get_mut(handle)
+            {
+                body.set_enabled(!hidden);
+                handles.extend_from_slice(body.colliders());
+            }
+        }
+        for handle in handles {
+            if let Some(collider) = self.colliders.get_mut(handle) {
+                collider.set_enabled(!hidden);
+            }
+        }
+    }
+
     /// Simulates `dt` seconds in fixed steps; leftover time carries over.
     pub fn advance(&mut self, dt: f32) {
         self.accumulator = (self.accumulator + dt).min(MAX_CATCH_UP);
         while self.accumulator >= STEP {
+            self.previous = self
+                .dynamic
+                .iter()
+                .map(|&(handle, _)| {
+                    self.bodies
+                        .get(handle)
+                        .map_or((Vec3::ZERO, Quat::IDENTITY), |b| {
+                            (b.translation(), *b.rotation())
+                        })
+                })
+                .collect();
             self.step(STEP);
             self.accumulator -= STEP;
         }
@@ -147,21 +202,35 @@ impl PhysicsWorld {
     /// their zone is active again.
     pub fn set_active(&mut self, active: &Active) {
         for &(handle, object) in &self.dynamic {
+            let enabled = active.object(object) && !self.hidden.contains(&object);
             if let Some(body) = self.bodies.get_mut(handle)
-                && body.is_enabled() != active.object(object)
+                && body.is_enabled() != enabled
             {
-                body.set_enabled(active.object(object));
+                body.set_enabled(enabled);
             }
         }
     }
 
-    /// Where each awake dynamic body is now: its object, position and rotation.
+    /// Where each awake dynamic body is drawn now: its object, position and
+    /// rotation, between its last two steps by the time since the last one.
     pub fn body_poses(&self) -> impl Iterator<Item = (usize, Vec3, Quat)> + '_ {
-        self.dynamic.iter().filter_map(|&(handle, object)| {
-            let body = self.bodies.get(handle)?;
-            (body.is_enabled() && !body.is_sleeping())
-                .then(|| (object, body.translation(), *body.rotation()))
-        })
+        let t = self.accumulator / STEP;
+        self.dynamic
+            .iter()
+            .enumerate()
+            .filter_map(move |(i, &(handle, object))| {
+                let body = self.bodies.get(handle)?;
+                if !body.is_enabled() || body.is_sleeping() {
+                    return None;
+                }
+                let (position, rotation) = (body.translation(), *body.rotation());
+                Some(match self.previous.get(i) {
+                    Some(&(from, turn)) => {
+                        (object, from.lerp(position, t), turn.slerp(rotation, t))
+                    }
+                    None => (object, position, rotation),
+                })
+            })
     }
 
     /// The player walking into dynamic bodies shoves them along at up to
@@ -267,6 +336,11 @@ impl PhysicsWorld {
     }
 
     fn query_pipeline<'a>(&'a self, filter: QueryFilter<'a>) -> QueryPipeline<'a> {
+        // The broad phase only drops switched-off colliders at the next step.
+        fn enabled(_: ColliderHandle, collider: &Collider) -> bool {
+            collider.is_enabled()
+        }
+        let filter = filter.predicate(&enabled);
         self.broad_phase.as_query_pipeline(
             self.narrow_phase.query_dispatcher(),
             &self.bodies,
@@ -378,6 +452,22 @@ mod tests {
             .cast_ray(&ray, 100.0, true)
             .expect("ray should hit the floor");
         assert!((toi - 5.0).abs() < 1e-3);
+    }
+
+    /// Hiding and showing switches the object's colliders at once, and an
+    /// object hidden when the world is built can be shown later.
+    #[test]
+    fn hidden_objects_switch_off_and_on() {
+        let mut scene = test_scene(vec![(Shape::Box { size: Vec3::ONE }, Vec3::ZERO)]);
+        scene.objects[0].hidden = true;
+        let mut world = PhysicsWorld::for_game(&scene, &mut Assets::default());
+        let above = Vec3::new(0.0, 3.0, 0.0);
+        assert_eq!(world.object_below(above, 10.0), None);
+        world.set_hidden(0, false);
+        world.step(STEP);
+        assert_eq!(world.object_below(above, 10.0), Some(0));
+        world.set_hidden(0, true);
+        assert_eq!(world.object_below(above, 10.0), None);
     }
 
     #[test]
