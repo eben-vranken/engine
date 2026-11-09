@@ -335,9 +335,8 @@ pub(super) const BEHAVIOR_GROUPS: [(&str, &[(usize, &str)]); 5] = [
             (12, "talk with E; runs a dialogue"),
             (13, "E to take; sets a flag"),
             (14, "E saves the game here"),
-            (15, "blocks the way until a flag"),
-            (16, "hidden until a graph shows it"),
-            (17, "runs a script of yours on it"),
+            (15, "shown while a flag holds (gates, bridges)"),
+            (16, "runs a script of yours on it"),
         ],
     ),
     (
@@ -465,4 +464,29 @@ fn part_inspector(ui: &mut Ui, object: &mut Object, part: &str, names: &inspecto
             }
         });
     back
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ADD BEHAVIOR lists every behavior exactly once, each in its own
+    /// group (an index past the end crashed the menu when it opened).
+    #[test]
+    fn the_add_behavior_menu_lists_every_behavior_once() {
+        let components = new_components();
+        let components = &components;
+        let mut listed: Vec<usize> = BEHAVIOR_GROUPS
+            .iter()
+            .flat_map(|(group, entries)| {
+                entries.iter().map(move |(index, _)| {
+                    assert!(*index < components.len(), "{group}: no behavior {index}");
+                    assert_eq!(group_of(&components[*index].1), *group, "{index}");
+                    *index
+                })
+            })
+            .collect();
+        listed.sort_unstable();
+        assert_eq!(listed, (0..components.len()).collect::<Vec<_>>());
+    }
 }
