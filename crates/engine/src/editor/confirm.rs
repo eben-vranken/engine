@@ -10,6 +10,8 @@ use egui::Ui;
 pub(super) enum Confirm {
     /// Close this tab.
     CloseTab(usize),
+    /// Close this LOGIC tab (a graph or script).
+    CloseLogic(usize),
     /// Close the editor (every tab).
     Close,
     /// Leave this project for another one.
@@ -43,6 +45,7 @@ impl Editor {
         egui::Modal::new(egui::Id::unique("unsaved_changes")).show(ui.ctx(), |ui| {
             let names = match &confirm {
                 Confirm::CloseTab(index) => self.tab_label(*index),
+                Confirm::CloseLogic(_) => "THIS TAB".into(),
                 Confirm::Close | Confirm::Project(_) => {
                     let mut names = self.dirty_paths();
                     if self.project_unsaved() {
@@ -82,6 +85,7 @@ impl Editor {
                 Confirm::CloseTab(index) => {
                     self.save_tab(*index, scene, player, &mut output.settled)
                 }
+                Confirm::CloseLogic(index) => self.save_logic_tab(*index),
                 Confirm::Close | Confirm::Project(_) => {
                     self.save_all(scene, player, &mut output.settled)
                 }
@@ -95,6 +99,7 @@ impl Editor {
         }
         match confirm {
             Confirm::CloseTab(index) => output.close_tab = Some(index),
+            Confirm::CloseLogic(index) => self.remove_logic_tab(index),
             Confirm::Close => output.exit = true,
             Confirm::Project(switch) => self.switch_project(switch, output),
         }

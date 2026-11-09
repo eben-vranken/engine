@@ -10,10 +10,8 @@ use super::graph_canvas::{self, CanvasView, Marks};
 use super::project_index::{Go, Owner};
 use super::widgets::{Side, collapsed_panel, panel_header};
 use super::{Editor, EditorOutput, dim, inspector, section};
-use crate::camera::FlyCamera;
 use crate::graph::flags::{FlagDef, FlagValue};
 use crate::graph::{Graph, NodeId};
-use crate::scene::Scene;
 use crate::ui::theme;
 use egui::{RichText, Ui};
 use std::collections::BTreeMap;
@@ -183,13 +181,7 @@ impl Editor {
     /// The tab's scene is empty: nothing is drawn behind the canvas. A
     /// scene's graph has its object references linked to that scene's
     /// objects (ids filled in, names brought up to date).
-    pub fn open_graph_tab(
-        &mut self,
-        path: PathBuf,
-        mut doc: GraphDoc,
-        scene: &mut Scene,
-        camera: &FlyCamera,
-    ) {
+    pub fn open_graph_tab(&mut self, path: PathBuf, mut doc: GraphDoc) {
         self.index.refresh(&self.project_dir, false);
         if let Some(objects) = self.scene_objects_of(&crate::graph::key(&path)) {
             doc.link_objects(&objects);
@@ -199,8 +191,7 @@ impl Editor {
             doc.selected = Some(node);
             graph_canvas::center_on(&doc.graph, &mut doc.view, node, egui::vec2(900.0, 600.0));
         }
-        self.open_tab(path, Scene::default(), scene, camera);
-        self.graph = Some(doc);
+        self.open_logic(path, super::logic_docs::LogicDoc::Graph(doc));
     }
 
     /// The objects of the scene a graph belongs to (`None`: not a scene's
@@ -215,13 +206,13 @@ impl Editor {
         let Some(doc) = &mut self.graph else {
             return;
         };
-        let path = self.project_dir.join(&self.scene_path);
+        let path = self.project_dir.join(&self.logic_path);
         doc.commit();
         match doc.graph.save(&path) {
             Ok(()) => {
                 doc.mark_saved();
                 log::info!("saved {}", path.display());
-                self.message = Some((format!("SAVED {}", self.scene_path.display()), false));
+                self.message = Some((format!("SAVED {}", self.logic_path.display()), false));
                 self.index.refresh(&self.project_dir, true);
             }
             Err(err) => {
@@ -237,7 +228,7 @@ impl Editor {
         let Some(snapshot) = self.graph.as_ref().map(|d| d.graph.clone()) else {
             return;
         };
-        let path = crate::graph::key(&self.scene_path);
+        let path = crate::graph::key(&self.logic_path);
 
         self.logic_side_panel(ui, &path, output);
         if self.show_inspector {
@@ -685,7 +676,7 @@ impl Editor {
     fn node_inspector(&mut self, ui: &mut Ui) {
         let mut names = self.index.names.clone();
         // A scene's graph picks from that scene's objects, by id.
-        let path = crate::graph::key(&self.scene_path);
+        let path = crate::graph::key(&self.logic_path);
         if let Some(mut objects) = self.scene_objects_of(&path) {
             objects.sort_by(|a, b| a.name.cmp(&b.name));
             names.objects = objects.iter().map(|o| o.name.clone()).collect();

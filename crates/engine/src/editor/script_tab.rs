@@ -6,8 +6,6 @@
 
 use super::widgets::{Side, collapsed_panel, panel_header};
 use super::{Editor, EditorOutput, dim, section};
-use crate::camera::FlyCamera;
-use crate::scene::Scene;
 use crate::script::format::{self, Kind};
 use crate::ui::theme;
 use egui::text::{LayoutJob, TextFormat};
@@ -151,15 +149,8 @@ const REFERENCE: &[(&str, &str)] = &[
 
 impl Editor {
     /// Opens `doc` (read from `path`) in a new tab and makes it active.
-    pub fn open_script_tab(
-        &mut self,
-        path: PathBuf,
-        doc: ScriptDoc,
-        scene: &mut Scene,
-        camera: &FlyCamera,
-    ) {
-        self.open_tab(path, Scene::default(), scene, camera);
-        self.script = Some(doc);
+    pub fn open_script_tab(&mut self, path: PathBuf, doc: ScriptDoc) {
+        self.open_logic(path, super::logic_docs::LogicDoc::Script(doc));
     }
 
     /// Formats the open script (unless it has an error) and writes it.
@@ -168,7 +159,7 @@ impl Editor {
             return;
         };
         let formatted = doc.format();
-        let path = self.project_dir.join(&self.scene_path);
+        let path = self.project_dir.join(&self.logic_path);
         match std::fs::write(&path, &doc.text) {
             Ok(()) => {
                 doc.mark_saved();
@@ -178,7 +169,7 @@ impl Editor {
                     None if formatted => " (FORMATTED)".into(),
                     None => String::new(),
                 };
-                self.message = Some((format!("SAVED {}{note}", self.scene_path.display()), false));
+                self.message = Some((format!("SAVED {}{note}", self.logic_path.display()), false));
                 self.index.refresh(&self.project_dir, true);
             }
             Err(err) => {
@@ -191,7 +182,7 @@ impl Editor {
     /// The LOGIC workspace with a script open.
     pub(super) fn script_ui(&mut self, ui: &mut Ui, output: &mut EditorOutput) {
         self.index.refresh(&self.project_dir, false);
-        let path = crate::graph::key(&self.scene_path);
+        let path = crate::graph::key(&self.logic_path);
         self.logic_side_panel(ui, &path, output);
         if self.show_inspector {
             egui::Panel::right("script_inspector")

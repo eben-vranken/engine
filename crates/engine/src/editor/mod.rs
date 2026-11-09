@@ -21,6 +21,7 @@ pub mod history;
 pub mod import;
 pub mod inspector;
 mod keys;
+mod logic_docs;
 pub mod markers;
 mod menu_bar;
 mod model_list;
@@ -185,6 +186,14 @@ pub struct Editor {
     /// the live state above).
     tabs: Vec<Option<tabs::Parked>>,
     active_tab: usize,
+    /// BUILD or LOGIC (PROJECT is `project_page`).
+    workspace: Workspace,
+    /// LOGIC's open graphs and scripts; the active one's slot is `None`
+    /// (it is `graph` / `script`, at `logic_path`).
+    logic_tabs: Vec<Option<logic_docs::LogicTab>>,
+    logic_active: Option<usize>,
+    /// The active LOGIC document's file, relative to the project.
+    logic_path: PathBuf,
     /// NEW SCENE / SAVE AS: the name being typed.
     naming: Option<name_dialog::NameDialog>,
     /// The open graph, when the active tab is a graph tab.
@@ -373,6 +382,10 @@ impl Editor {
             light_status: String::new(),
             probes: Vec::new(),
             tabs: vec![None],
+            workspace: Workspace::Build,
+            logic_tabs: Vec::new(),
+            logic_active: None,
+            logic_path: PathBuf::new(),
             active_tab: 0,
             naming: None,
             graph: None,
@@ -659,10 +672,9 @@ impl Editor {
     }
 
     /// Unsaved changes, including an edit still in progress.
+    /// The active scene has unsaved changes (LOGIC's documents count apart).
     pub fn is_dirty(&self) -> bool {
-        self.graph.as_ref().is_some_and(GraphDoc::is_dirty)
-            || self.script.as_ref().is_some_and(ScriptDoc::is_dirty)
-            || self.pending.is_some()
+        self.pending.is_some()
             || self.zone_pending.is_some()
             || self.player_pending.is_some()
             || self.history.state() != self.saved_state

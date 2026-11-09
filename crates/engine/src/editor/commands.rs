@@ -461,10 +461,8 @@ impl Editor {
     pub fn workspace(&self) -> Workspace {
         if self.project_page.is_some() {
             Workspace::Project
-        } else if self.graph.is_some() || self.script.is_some() {
-            Workspace::Logic
         } else {
-            Workspace::Build
+            self.workspace
         }
     }
 
@@ -481,13 +479,15 @@ impl Editor {
                 // The project's settings stay as edited (and unsaved) in
                 // their document; nothing is lost by leaving the page.
                 self.project_page = None;
-                let graphs = workspace == Workspace::Logic;
-                if self.is_graph_tab(self.active_tab()) == graphs {
+                if workspace == Workspace::Build {
+                    // The scene was never put away: BUILD is as it was left.
+                    self.leave_logic();
                     return;
                 }
-                if let Some(index) = self.last_tab(graphs) {
-                    output.switch_tab = Some(index);
-                } else if graphs {
+                if self.resume_logic() {
+                    return;
+                }
+                {
                     self.index.refresh(&self.project_dir, false);
                     // The open scene's own graph first.
                     let scene = crate::graph::scene_graph(&crate::graph::key(&self.scene_path));
@@ -498,20 +498,8 @@ impl Editor {
                         Some(path) => output.open_graph = Some(PathBuf::from(path)),
                         None => self.ask_name(Naming::Graph),
                     }
-                } else {
-                    match scene_files_first(&self.project_dir) {
-                        Some(path) => output.new_tab = Some(path),
-                        None => self.ask_name(Naming::Scene),
-                    }
                 }
             }
         }
     }
-}
-
-fn scene_files_first(dir: &std::path::Path) -> Option<PathBuf> {
-    let start = crate::project::Project::open(dir)
-        .ok()
-        .map(|p| p.settings.start_scene);
-    start.or_else(|| super::files::scene_files(dir).into_iter().next())
 }

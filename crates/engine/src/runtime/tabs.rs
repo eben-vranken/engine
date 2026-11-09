@@ -53,16 +53,16 @@ impl Running {
         let Some(editor) = &mut self.editor else {
             return;
         };
-        if let Some(index) = editor.tab_of(&path) {
-            self.switch_tab(index);
+        // LOGIC's documents are apart from the scene: nothing to rebuild.
+        if let Some(index) = editor.logic_tab_of(&path) {
+            editor.switch_logic(index);
             return;
         }
         if path.extension().is_some_and(|e| e == "rhai") {
             match std::fs::read_to_string(self.game_dir.join(&path)) {
                 Ok(text) => {
                     let doc = crate::editor::ScriptDoc::new(text);
-                    editor.open_script_tab(path, doc, &mut self.scene, &self.fly);
-                    self.scene_swapped();
+                    editor.open_script_tab(path, doc);
                 }
                 Err(err) => {
                     let err = format!("could not read {}: {err}", path.display());
@@ -75,8 +75,7 @@ impl Running {
         match crate::graph::Graph::load(&self.game_dir.join(&path)) {
             Ok(graph) => {
                 let doc = crate::editor::GraphDoc::new(graph);
-                editor.open_graph_tab(path, doc, &mut self.scene, &self.fly);
-                self.scene_swapped();
+                editor.open_graph_tab(path, doc);
             }
             Err(err) => {
                 log::error!("{err}");

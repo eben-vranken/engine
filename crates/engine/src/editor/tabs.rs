@@ -87,6 +87,10 @@ impl Editor {
     /// Makes tab `index` the active one, swapping its scene and camera into
     /// `scene` and `camera`. Returns false if there was nothing to switch.
     pub fn switch_tab(&mut self, index: usize, scene: &mut Scene, camera: &mut FlyCamera) -> bool {
+        self.project_page = None;
+        if self.workspace == super::Workspace::Logic {
+            self.leave_logic();
+        }
         if index == self.active_tab {
             return false;
         }
@@ -113,6 +117,10 @@ impl Editor {
         scene: &mut Scene,
         camera: &FlyCamera,
     ) {
+        self.project_page = None;
+        if self.workspace == super::Workspace::Logic {
+            self.leave_logic();
+        }
         let doc = self.take_document(scene);
         self.tabs[self.active_tab] = Some(Parked {
             doc,
@@ -134,22 +142,6 @@ impl Editor {
         if index < self.active_tab {
             self.active_tab -= 1;
         }
-    }
-
-    /// Whether tab `index` belongs to LOGIC (a graph or a script) rather
-    /// than BUILD (a scene).
-    pub(super) fn is_graph_tab(&self, index: usize) -> bool {
-        index < self.tabs.len() && {
-            let path = self.tab_path(index);
-            path.starts_with("graphs") || path.starts_with("scripts")
-        }
-    }
-
-    /// The last tab of a kind (graphs or scenes), to go back to.
-    pub(super) fn last_tab(&self, graphs: bool) -> Option<usize> {
-        (0..self.tabs.len())
-            .rev()
-            .find(|&i| self.is_graph_tab(i) == graphs)
     }
 
     pub fn tab_count(&self) -> usize {
@@ -179,17 +171,19 @@ impl Editor {
         }
     }
 
-    /// Whether any open scene has unsaved changes.
+    /// Whether any open scene, graph or script has unsaved changes.
     pub fn any_dirty(&self) -> bool {
-        (0..self.tabs.len()).any(|i| self.tab_dirty(i))
+        (0..self.tabs.len()).any(|i| self.tab_dirty(i)) || !self.dirty_logic_paths().is_empty()
     }
 
-    /// Paths of the scenes with unsaved changes.
+    /// Paths of the scenes, graphs and scripts with unsaved changes.
     pub(super) fn dirty_paths(&self) -> Vec<String> {
-        (0..self.tabs.len())
+        let mut paths: Vec<String> = (0..self.tabs.len())
             .filter(|&i| self.tab_dirty(i))
             .map(|i| self.tab_label(i))
-            .collect()
+            .collect();
+        paths.extend(self.dirty_logic_paths());
+        paths
     }
 
     /// Tab `index`'s scene file, as the dialogs show it.
@@ -258,25 +252,26 @@ impl Editor {
         player: &PlayerSettings,
         settled: &mut bool,
     ) -> bool {
-        (0..self.tabs.len())
+        let scenes = (0..self.tabs.len())
             .filter(|&i| self.tab_dirty(i))
             .collect::<Vec<_>>()
             .into_iter()
-            .all(|i| self.save_tab(i, scene, player, settled))
+            .all(|i| self.save_tab(i, scene, player, settled));
+        scenes && self.save_all_logic()
     }
 
     /// The row of tabs above the viewport, and `+` to open another scene.
     pub(super) fn tab_strip(&mut self, ui: &mut Ui, output: &mut EditorOutput) {
+        if self.workspace() == super::Workspace::Logic {
+            self.logic_tab_strip(ui, output);
+            return;
+        }
         ui.horizontal(|ui| {
             // Swapping scenes mid-play would lose the play snapshot.
             ui.add_enabled_ui(!self.playing, |ui| {
-                let graphs = self.graph.is_some() || self.script.is_some();
+                let graphs = false;
                 let closable = self.tabs.len() > 1;
                 for index in 0..self.tabs.len() {
-                    // Each workspace shows its own kind of tab.
-                    if self.is_graph_tab(index) != graphs {
-                        continue;
-                    }
                     let active = index == self.active_tab;
                     // Graphs with their folder, so a graph and a scene of
                     // the same name can be told apart.
