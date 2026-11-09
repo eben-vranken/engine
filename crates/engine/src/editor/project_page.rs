@@ -1,8 +1,9 @@
 //! The PROJECT workspace: the start screen (recent projects, new, open,
 //! packages) and every project-wide setting on one page: name, start scene,
 //! render scale, player feel (`player.ron`), dialogue look
-//! (with a live preview), flags and the saved game. `game.ron` settings are
-//! written with SAVE GAME.RON (REVERT puts them back); the render scale
+//! (with a live preview), flags and the saved game. `game.ron` and
+//! `flags.ron` are one document (`project_doc`): edits are undo steps, Ctrl+S
+//! here or SAVE ALL writes them, REVERT puts them back; the render scale
 //! previews live. Player feel edits are undo steps saved with the scene,
 //! as in the inspector.
 
@@ -12,7 +13,6 @@ use super::player_panel::player_inspector;
 use super::{Editor, EditorOutput, EditorStats, dim, inspector};
 use crate::dialogue::{DialogueStyle, Shown};
 use crate::player::settings::PlayerSettings;
-use crate::project::{GameSettings, Project};
 use crate::render::scale::MAX_FACTOR;
 use crate::ui::theme;
 use egui::{RichText, Ui};
@@ -72,36 +72,17 @@ impl Section {
     }
 }
 
-/// The page's state while the PROJECT workspace is open.
+/// The page's state while the PROJECT workspace is open (what it edits is
+/// the editor's `ProjectDoc`).
 pub(super) struct ProjectPage {
     pub section: Section,
-    /// `game.ron` as being edited.
-    settings: GameSettings,
-    /// `game.ron` as on disk.
-    loaded: GameSettings,
     error: Option<String>,
-}
-
-impl ProjectPage {
-    /// How many settings differ from `game.ron`.
-    fn changes(&self) -> usize {
-        let (a, b) = (&self.settings, &self.loaded);
-        [
-            a.name != b.name,
-            a.start_scene != b.start_scene,
-            a.render_scale != b.render_scale,
-            a.dialogue != b.dialogue,
-        ]
-        .iter()
-        .filter(|c| **c)
-        .count()
-    }
 }
 
 impl Editor {
     /// Whether the PROJECT page has `game.ron` changes not yet written.
     pub(super) fn project_unsaved(&self) -> bool {
-        self.project_page.as_ref().is_some_and(|p| p.changes() > 0)
+        self.project.as_ref().is_some_and(|d| d.is_dirty())
     }
 
     pub(super) fn open_project_page(&mut self, section: Section) {
@@ -109,22 +90,31 @@ impl Editor {
             page.section = section;
             return;
         }
-        match Project::open(&self.project_dir) {
-            Ok(project) => {
+        if self.project.is_none() {
+            self.project = super::project_doc::ProjectDoc::load(&self.project_dir);
+        }
+        match &self.project {
+            Some(_) => {
                 self.project_page = Some(ProjectPage {
                     section,
-                    loaded: project.settings.clone(),
-                    settings: project.settings,
                     error: None,
-                });
+                })
             }
-            Err(err) => self.show_error(err.to_string()),
+            None => self.show_error(format!(
+                "COULD NOT READ {}",
+                self.project_dir.join("game.ron").display()
+            )),
         }
     }
 
     /// Unsaved `game.ron` changes, for the top bar.
+    /// The flags as edited (saved or not), for Play.
+    pub fn project_flags(&self) -> Option<crate::graph::flags::FlagDefs> {
+        self.project.as_ref().map(|d| d.now.flags.clone())
+    }
+
     pub(super) fn project_changes(&self) -> usize {
-        self.project_page.as_ref().map_or(0, ProjectPage::changes)
+        self.project.as_ref().map_or(0, |d| d.changes())
     }
 
     /// The page: sections on the left, the section's settings in the
@@ -139,11 +129,6 @@ impl Editor {
         let Some(section) = self.project_page.as_ref().map(|p| p.section) else {
             return;
         };
-        // Ctrl+S here writes game.ron (the scene behind the page isn't
-        // what's being edited).
-        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
-            self.save_project_settings(output);
-        }
         egui::Panel::left("project_sections")
             .resizable(false)
             .exact_size(250.0)
@@ -172,7 +157,7 @@ impl Editor {
                     ui.add_space(8.0);
                     ui.label(
                         RichText::new(
-                            "EVERY PROJECT-WIDE SETTING LIVES HERE. GAME.RON IS WRITTEN WITH SAVE GAME.RON.",
+                            "EVERY PROJECT-WIDE SETTING LIVES HERE. GAME.RON AND FLAGS.RON ARE ONE DOCUMENT: EDITS UNDO, CTRL+S SAVES.",
                         )
                         .small()
                         .color(theme::AMBER_DIM),
@@ -187,9 +172,9 @@ impl Editor {
                     ui.add_space(8.0);
                     ui.label(RichText::new("LIVE PREVIEW").strong());
                     let style = self
-                        .project_page
+                        .project
                         .as_ref()
-                        .map(|p| p.settings.dialogue.clone())
+                        .map(|d| d.now.game.dialogue.clone())
                         .unwrap_or_default();
                     dialogue_preview(ui, &style);
                 });
@@ -354,10 +339,10 @@ impl Editor {
         output: &mut EditorOutput,
     ) {
         let scenes = scene_files(&self.project_dir);
-        let Some(page) = &mut self.project_page else {
+        let (Some(page), Some(doc)) = (&mut self.project_page, &mut self.project) else {
             return;
         };
-        let settings = &mut page.settings;
+        let settings = &mut doc.now.game;
         let scale_before = settings.render_scale;
         egui::Grid::new(("settings", section.title()))
             .num_columns(2)
@@ -434,38 +419,45 @@ impl Editor {
         }
     }
 
-    /// SAVE GAME.RON in the top bar.
+    /// Saves the project's settings (`game.ron`, `flags.ron`).
     pub(super) fn save_project_settings(&mut self, output: &mut EditorOutput) {
         let dir = self.project_dir.clone();
-        let Some(page) = &mut self.project_page else {
+        let Some(doc) = &mut self.project else {
             return;
         };
-        page.settings.name = page.settings.name.trim().to_owned();
-        if page.settings.name.is_empty() {
-            page.error = Some("THE GAME NEEDS A NAME".into());
-            return;
-        }
-        match page.settings.save(&dir) {
+        let result = doc.save(&dir);
+        let name = doc.now.game.name.clone();
+        match result {
             Ok(()) => {
-                log::info!("saved {}", dir.join("game.ron").display());
-                page.loaded = page.settings.clone();
-                page.error = None;
-                self.game_name = page.settings.name.clone();
-                output.rename = Some(page.settings.name.clone());
-                self.show_message("SAVED GAME.RON".into());
+                log::info!("saved game.ron and flags.ron");
+                if let Some(page) = &mut self.project_page {
+                    page.error = None;
+                }
+                self.game_name = name.clone();
+                output.rename = Some(name);
+                self.show_message("SAVED GAME.RON AND FLAGS.RON".into());
+                self.index.flags_unsaved = false;
                 self.index.refresh(&dir, true);
             }
-            Err(err) => page.error = Some(err.to_string()),
+            Err(err) => {
+                if let Some(page) = &mut self.project_page {
+                    page.error = Some(err.clone());
+                }
+                self.show_error(err);
+            }
         }
     }
 
-    /// REVERT in the top bar: back to `game.ron` as saved.
     pub(super) fn revert_project_settings(&mut self, output: &mut EditorOutput) {
-        if let Some(page) = &mut self.project_page {
-            if page.settings.render_scale != page.loaded.render_scale {
-                output.render_scale = Some(page.loaded.render_scale);
+        if let Some(doc) = &mut self.project {
+            let before = doc.now.game.render_scale;
+            doc.revert();
+            if doc.now.game.render_scale != before {
+                output.render_scale = Some(doc.now.game.render_scale);
             }
-            page.settings = page.loaded.clone();
+            self.index.flags = doc.now.flags.clone();
+        }
+        if let Some(page) = &mut self.project_page {
             page.error = None;
         }
     }

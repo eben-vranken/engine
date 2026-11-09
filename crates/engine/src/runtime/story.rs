@@ -88,7 +88,12 @@ impl Running {
     /// the saved game if there is one.
     pub(super) fn start_story(&mut self, resume: bool) {
         let settings = Project::open(&self.game_dir).map(|p| p.settings).ok();
-        let defs = FlagDefs::load(&self.game_dir);
+        // In the editor, the flags as edited (they may not be saved yet).
+        let defs = self
+            .editor
+            .as_ref()
+            .and_then(|e| e.project_flags())
+            .unwrap_or_else(|| FlagDefs::load(&self.game_dir));
         let mut runner = GraphRunner::new(self.game_dir.clone(), defs.start());
         runner.bind_abilities(defs.abilities());
         self.story = Some(Story {

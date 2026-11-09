@@ -226,6 +226,12 @@ impl Editor {
             Undo | Redo | Duplicate | Delete if self.script.is_some() => false,
             NewProject | OpenProject | OpenPackage | ExportPackage => !waiting,
             SaveSceneAs => build && !waiting,
+            Undo if self.workspace() == Workspace::Project => {
+                self.project.as_ref().is_some_and(|d| d.can_undo())
+            }
+            Redo if self.workspace() == Workspace::Project => {
+                self.project.as_ref().is_some_and(|d| d.can_redo())
+            }
             Undo => match &self.graph {
                 Some(doc) => doc.can_undo(),
                 None => self.history.undo_len() > 0,
@@ -276,11 +282,16 @@ impl Editor {
             NewScene => self.ask_name(Naming::Scene),
             NewGraph => self.ask_name(Naming::Graph),
             NewScript => self.ask_name(Naming::Script),
+            // What's in front: the PROJECT page saves the project's settings.
+            Save if self.workspace() == Workspace::Project => self.save_project_settings(output),
             Save => output.settled |= self.save(scene, player),
             SaveAll => {
                 let mut settled = false;
                 self.save_all(scene, player, &mut settled);
                 output.settled |= settled;
+                if self.project_unsaved() {
+                    self.save_project_settings(output);
+                }
             }
             Deselect => output.settled |= self.select(scene, None),
             AddDialog => self.open_add_dialog(),
@@ -297,6 +308,20 @@ impl Editor {
             Quit => {
                 if self.request_close() {
                     output.exit = true;
+                }
+            }
+            Undo | Redo if self.workspace() == Workspace::Project => {
+                if let Some(doc) = &mut self.project {
+                    let before = doc.now.game.render_scale;
+                    if command == Undo {
+                        doc.undo();
+                    } else {
+                        doc.redo();
+                    }
+                    if doc.now.game.render_scale != before {
+                        output.render_scale = Some(doc.now.game.render_scale);
+                    }
+                    self.index.flags = doc.now.flags.clone();
                 }
             }
             Undo => change = self.undo(scene, player),
@@ -397,11 +422,8 @@ impl Editor {
                 }
             }
             Workspace::Build | Workspace::Logic => {
-                // Unsaved game.ron changes aren't dropped without asking.
-                if self.project_unsaved() {
-                    self.confirm = Some(super::confirm::Confirm::LeaveProject(workspace));
-                    return;
-                }
+                // The project's settings stay as edited (and unsaved) in
+                // their document; nothing is lost by leaving the page.
                 self.project_page = None;
                 let graphs = workspace == Workspace::Logic;
                 if self.is_graph_tab(self.active_tab()) == graphs {

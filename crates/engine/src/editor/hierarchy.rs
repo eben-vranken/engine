@@ -260,6 +260,16 @@ impl Editor {
                     let change = self.rename_zone(scene, &old, &new);
                     if change.is_none() {
                         self.show_error(format!("CAN'T RENAME TO \"{}\"", new.trim()));
+                    } else {
+                        // Graphs that wait for the zone follow.
+                        let key = crate::graph::key(&self.scene_path);
+                        self.rename_references(
+                            super::refactor::Renamed::Zone,
+                            &old,
+                            new.trim(),
+                            scene,
+                            Some(&key),
+                        );
                     }
                     change
                 } else {

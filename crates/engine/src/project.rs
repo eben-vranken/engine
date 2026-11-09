@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// `game.ron`: settings for the whole game.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GameSettings {
     pub name: String,
     /// Scene loaded at start, relative to the project folder.

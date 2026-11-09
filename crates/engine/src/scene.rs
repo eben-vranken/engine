@@ -1058,6 +1058,27 @@ impl Scene {
         }
     }
 
+    /// Renames a flag where behaviors use it (pickups, VisibleWhen).
+    /// Returns whether any did.
+    pub fn rename_flag(&mut self, old: &str, new: &str) -> bool {
+        let mut changed = false;
+        for object in &mut self.objects {
+            for component in &mut object.components {
+                let flag = match component {
+                    Component::Pickup(pickup) => &mut pickup.flag,
+                    Component::VisibleWhen(when) => &mut when.condition.flag,
+                    Component::AbilityGate(gate) => &mut gate.requires,
+                    _ => continue,
+                };
+                if flag.0 == old {
+                    flag.0 = new.to_owned();
+                    changed = true;
+                }
+            }
+        }
+        changed
+    }
+
     /// An id no object has yet.
     pub fn next_id(&self) -> u32 {
         self.objects.iter().map(|o| o.id).max().unwrap_or(0) + 1
@@ -1330,6 +1351,28 @@ pub fn link(reference: &mut ObjectRef, objects: &[ObjectRef]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Renaming a flag reaches pickups and VisibleWhen conditions.
+    #[test]
+    fn flags_rename_in_behaviors() {
+        let mut scene = sample();
+        scene.objects[0].components = vec![Component::Pickup(Pickup {
+            flag: FlagRef("lit".into()),
+            ..Default::default()
+        })];
+        scene.objects[1].components = vec![Component::VisibleWhen(VisibleWhen {
+            condition: crate::graph::flags::Condition {
+                flag: FlagRef("lit".into()),
+                ..Default::default()
+            },
+        })];
+        assert!(scene.rename_flag("lit", "lamp_lit"));
+        assert!(!scene.rename_flag("lit", "x"));
+        let Component::Pickup(p) = &scene.objects[0].components[0] else {
+            panic!()
+        };
+        assert_eq!(p.flag.0, "lamp_lit");
+    }
 
     /// AbilityGate and StartsHidden load as VisibleWhen, and it shows the
     /// object only while its flag condition holds (never without a flag).

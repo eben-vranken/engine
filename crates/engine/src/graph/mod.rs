@@ -563,6 +563,39 @@ pub enum GraphError {
 }
 
 impl Graph {
+    /// Renames a flag in every node that uses it. Returns whether any did.
+    pub fn rename_flag(&mut self, old: &str, new: &str) -> bool {
+        let mut changed = false;
+        for node in &mut self.nodes {
+            let flag = match &mut node.kind {
+                NodeKind::WaitUntil { condition }
+                | NodeKind::Branch { condition }
+                | NodeKind::Reply { condition, .. } => &mut condition.flag,
+                NodeKind::SetFlag { flag, .. } | NodeKind::AddToFlag { flag, .. } => flag,
+                _ => continue,
+            };
+            if flag.0 == old {
+                flag.0 = new.to_owned();
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Renames a zone in WHEN IN ZONE nodes. Returns whether any did.
+    pub fn rename_zone(&mut self, old: &str, new: &str) -> bool {
+        let mut changed = false;
+        for node in &mut self.nodes {
+            if let NodeKind::WhenInZone { zone } = &mut node.kind
+                && zone.0 == old
+            {
+                zone.0 = new.to_owned();
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Points this graph's object references at its scene's `objects` (see
     /// `scene::link`). For a scene's own graph.
     pub fn link_objects(&mut self, objects: &[ObjectRef]) {

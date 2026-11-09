@@ -741,7 +741,10 @@ impl Editor {
     /// value, delete. Saved as soon as a change is finished.
     fn flags_panel(&mut self, ui: &mut Ui) {
         let scripts = self.index.names.scripts.clone();
-        let mut defs = self.index.flags.clone();
+        let Some(doc) = &mut self.project else {
+            return;
+        };
+        let mut defs = doc.now.flags.clone();
         let before = defs.clone();
         ui.horizontal(|ui| {
             ui.label(dim("ADD"));
@@ -769,6 +772,8 @@ impl Editor {
             ui.label(dim("(ABILITIES, STORY PROGRESS, CHOICES)"));
         }
         let mut remove = None;
+        let mut rename_from = self.flag_rename_from.take();
+        let mut renamed = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -777,7 +782,19 @@ impl Editor {
                         if ui.small_button("X").on_hover_text("DELETE").clicked() {
                             remove = Some(i);
                         }
-                        ui.add(egui::TextEdit::singleline(&mut flag.name).desired_width(110.0));
+                        let name =
+                            ui.add(egui::TextEdit::singleline(&mut flag.name).desired_width(110.0));
+                        // A finished rename follows everywhere the flag is used.
+                        if name.gained_focus() {
+                            rename_from = Some((i, flag.name.clone()));
+                        }
+                        if name.lost_focus()
+                            && let Some((at, old)) = rename_from.take()
+                            && at == i
+                            && old != flag.name
+                        {
+                            renamed = Some((old, flag.name.replace(' ', "_")));
+                        }
                         match &mut flag.value {
                             FlagValue::Bool(b) => {
                                 let text = if *b { "[TRUE] " } else { "[FALSE]" };
@@ -833,28 +850,29 @@ impl Editor {
         }
         ui.add_space(6.0);
         ui.label(
-            RichText::new("STARTING VALUES; SAVED TO FLAGS.RON")
-                .small()
-                .color(theme::AMBER_DIM),
+            RichText::new(
+                "STARTING VALUES · PART OF THE PROJECT'S SETTINGS · SAVE ALL WRITES FLAGS.RON",
+            )
+            .small()
+            .color(theme::AMBER_DIM),
         );
         if defs != before {
             for flag in &mut defs.flags {
                 flag.name = flag.name.replace(' ', "_");
             }
-            self.index.flags = defs;
+            // Part of the project's settings: an undo step on PROJECT,
+            // written with Ctrl+S there or SAVE ALL.
+            self.index.flags = defs.clone();
             self.index.flags_unsaved = true;
-        }
-        // Written once typing has finished.
-        let typing = ui.ctx().memory(|m| m.focused().is_some());
-        if !typing && self.index.flags_unsaved {
-            self.index.flags_unsaved = false;
-            match self.index.flags.save(&self.project_dir) {
-                Ok(()) => {
-                    self.index.refresh(&self.project_dir, true);
-                    self.message = Some(("SAVED FLAGS.RON".into(), false));
-                }
-                Err(err) => self.message = Some((err.to_string(), true)),
+            if let Some(doc) = &mut self.project {
+                doc.now.flags = defs;
             }
+        }
+        self.flag_rename_from = rename_from;
+        if let Some((old, new)) = renamed {
+            // In LOGIC the scenes are in parked tabs; there's no active one.
+            let mut none = crate::scene::Scene::default();
+            self.rename_references(super::refactor::Renamed::Flag, &old, &new, &mut none, None);
         }
     }
 }

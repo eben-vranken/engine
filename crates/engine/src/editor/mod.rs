@@ -29,8 +29,10 @@ mod object_panel;
 mod objects;
 mod palette;
 mod player_panel;
+mod project_doc;
 mod project_index;
 mod project_page;
+mod refactor;
 mod script_tab;
 mod selection;
 mod settings_panel;
@@ -82,6 +84,10 @@ pub struct Editor {
     pub play_controls: PlayControls,
     /// Whether vsync is on (the runtime keeps it current), for VIEW.
     pub vsync: bool,
+    /// `game.ron` and `flags.ron`, as one document with its own undo.
+    project: Option<project_doc::ProjectDoc>,
+    /// The FLAGS list: the flag whose name is being typed, and its old name.
+    flag_rename_from: Option<(usize, String)>,
     /// ADD's searchable dialog, while open.
     add_dialog: Option<add_dialog::AddDialog>,
     /// Open this graph at this node once Play has stopped (OPEN AT NODE in
@@ -294,6 +300,7 @@ impl EditorOutput {
 
 impl Editor {
     pub fn new(game_name: String, project_dir: PathBuf, scene_path: PathBuf) -> Self {
+        let project = project_doc::ProjectDoc::load(&project_dir);
         Self {
             selected: None,
             reveal_selection: false,
@@ -325,6 +332,8 @@ impl Editor {
             queued: Vec::new(),
             play_controls: PlayControls::default(),
             add_dialog: None,
+            flag_rename_from: None,
+            project,
             vsync: true,
             open_at_node: None,
             select_on_open: None,
@@ -370,6 +379,13 @@ impl Editor {
             self.select_on_open = Some(request);
         }
         self.keep_feel_dialog(ui, player);
+        // A finished change to the project's settings is one undo step.
+        if !ui.ctx().memory(|m| m.focused().is_some())
+            && !ui.ctx().input(|i| i.pointer.any_down())
+            && let Some(doc) = &mut self.project
+        {
+            doc.settle();
+        }
         // Keys pressed this frame (`press_keys`), run like menu items.
         for command in std::mem::take(&mut self.queued) {
             self.run(command, scene, player, view, &mut output);

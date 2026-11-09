@@ -14,9 +14,6 @@ pub(super) enum Confirm {
     Close,
     /// Leave this project for another one.
     Project(super::file_dialogs::Switch),
-    /// Leave the PROJECT page (its `game.ron` changes aren't saved) for
-    /// this workspace.
-    LeaveProject(super::Workspace),
 }
 
 impl Editor {
@@ -46,11 +43,10 @@ impl Editor {
         egui::Modal::new(egui::Id::unique("unsaved_changes")).show(ui.ctx(), |ui| {
             let names = match &confirm {
                 Confirm::CloseTab(index) => self.tab_label(*index),
-                Confirm::LeaveProject(_) => "GAME.RON".into(),
                 Confirm::Close | Confirm::Project(_) => {
                     let mut names = self.dirty_paths();
                     if self.project_unsaved() {
-                        names.push("GAME.RON".into());
+                        names.push("PROJECT SETTINGS".into());
                     }
                     names.join(", ")
                 }
@@ -74,10 +70,7 @@ impl Editor {
             return;
         };
         self.confirm = None;
-        let leaves_project = matches!(
-            confirm,
-            Confirm::LeaveProject(_) | Confirm::Close | Confirm::Project(_)
-        );
+        let leaves_project = matches!(confirm, Confirm::Close | Confirm::Project(_));
         if save {
             if leaves_project && self.project_unsaved() {
                 self.save_project_settings(output);
@@ -92,7 +85,6 @@ impl Editor {
                 Confirm::Close | Confirm::Project(_) => {
                     self.save_all(scene, player, &mut output.settled)
                 }
-                Confirm::LeaveProject(_) => true,
             };
             if !saved {
                 return; // saving failed; the error is in the status bar
@@ -105,10 +97,6 @@ impl Editor {
             Confirm::CloseTab(index) => output.close_tab = Some(index),
             Confirm::Close => output.exit = true,
             Confirm::Project(switch) => self.switch_project(switch, output),
-            Confirm::LeaveProject(workspace) => {
-                self.project_page = None;
-                self.go(workspace, output);
-            }
         }
     }
 }
