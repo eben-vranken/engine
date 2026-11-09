@@ -109,6 +109,9 @@ pub struct RunnerState {
     /// Abilities turned on (script paths).
     pub abilities: BTreeSet<String>,
     pub threads: Vec<ThreadState>,
+    /// Scene graphs paused while the player is in another scene, by scene.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub suspended: BTreeMap<String, Vec<ThreadState>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -139,6 +142,8 @@ pub struct GraphRunner {
     pub abilities: BTreeSet<String>,
     /// Abilities that are flags: script path → its flag.
     bound: BTreeMap<String, String>,
+    /// Scene graphs paused while the player is elsewhere, by scene.
+    pub suspended: BTreeMap<String, Vec<ThreadState>>,
     showing: Option<Showing>,
     serial: u64,
     commands: Vec<Command>,
@@ -163,6 +168,7 @@ impl GraphRunner {
             names: BTreeMap::new(),
             abilities: BTreeSet::new(),
             bound: BTreeMap::new(),
+            suspended: BTreeMap::new(),
             showing: None,
             serial: 0,
             commands: Vec::new(),
@@ -703,6 +709,7 @@ impl GraphRunner {
             flags: self.flags.clone(),
             names: self.names.clone(),
             abilities: self.abilities.clone(),
+            suspended: self.suspended.clone(),
             threads: self
                 .threads
                 .iter()
@@ -722,6 +729,7 @@ impl GraphRunner {
         self.flags = state.flags;
         self.names = state.names;
         self.abilities = state.abilities;
+        self.suspended = state.suspended;
         self.threads.clear();
         self.queue.clear();
         self.showing = None;

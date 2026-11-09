@@ -133,6 +133,8 @@ pub fn sections(ui: &mut Ui, s: &mut PlayerSettings) {
         row(ui, "STEP HEIGHT", &mut b.step_height, 0.0..=1.5, "M");
         row(ui, "MAX SLOPE", &mut b.max_slope, 0.0..=89.0, "°");
         row(ui, "GROUND SNAP", &mut b.ground_snap, 0.0..=2.0, "M");
+        row(ui, "MASS", &mut b.mass, 1.0..=500.0, "KG");
+        row(ui, "REACH", &mut b.reach, 0.5..=10.0, "M");
     });
     section(ui, "CAMERA", |ui| {
         let c = &mut s.camera;

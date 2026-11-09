@@ -169,6 +169,11 @@ impl ZoneTracker {
         scene.zones.iter().position(|z| z.name == current)
     }
 
+    /// The zone it was last in, by name.
+    pub fn current(&self) -> Option<&str> {
+        self.current.as_deref()
+    }
+
     /// Forget the last zone (a new scene, a respawn).
     pub fn reset(&mut self) {
         self.current = None;

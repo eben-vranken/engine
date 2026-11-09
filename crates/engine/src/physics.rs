@@ -15,8 +15,6 @@ const STEP: f32 = 1.0 / 60.0;
 /// At most this much time is caught up per frame, so a hitch doesn't
 /// trigger a burst of steps.
 const MAX_CATCH_UP: f32 = 0.1;
-/// For pushing: roughly the player's mass (kg).
-const PLAYER_MASS: f32 = 80.0;
 
 /// Collider groups: solid colliders are in every group (rapier's default);
 /// walk-through ones only in their own, which gameplay queries skip.
@@ -236,7 +234,14 @@ impl PhysicsWorld {
     /// The player walking into dynamic bodies shoves them along at up to
     /// its own speed; heavier bodies move slower. The capsule runs from
     /// `bottom` up `height` meters.
-    pub fn push_bodies(&mut self, bottom: Vec3, height: f32, radius: f32, velocity: Vec3) {
+    pub fn push_bodies(
+        &mut self,
+        bottom: Vec3,
+        height: f32,
+        radius: f32,
+        velocity: Vec3,
+        player_mass: f32,
+    ) {
         let horizontal = velocity.with_y(0.0);
         if horizontal.length() < 0.01 || self.dynamic.is_empty() {
             return;
@@ -257,7 +262,7 @@ impl PhysicsWorld {
                 .with_y(0.0)
                 .normalize_or_zero();
             let push =
-                horizontal.dot(away) * (2.0 * PLAYER_MASS / (PLAYER_MASS + body.mass())).min(1.0);
+                horizontal.dot(away) * (2.0 * player_mass / (player_mass + body.mass())).min(1.0);
             let velocity = body.linvel();
             let along = velocity.dot(away);
             if push > along {
@@ -616,7 +621,13 @@ mod tests {
         // A player standing right next to the box, walking toward +X into it.
         let start = game.bodies.iter().next().unwrap().1.translation();
         for _ in 0..30 {
-            game.push_bodies(start - Vec3::new(0.85, 0.5, 0.0), 1.8, 0.35, Vec3::X * 3.0);
+            game.push_bodies(
+                start - Vec3::new(0.85, 0.5, 0.0),
+                1.8,
+                0.35,
+                Vec3::X * 3.0,
+                80.0,
+            );
             game.advance(1.0 / 60.0);
         }
         let end = game.bodies.iter().next().unwrap().1.translation();

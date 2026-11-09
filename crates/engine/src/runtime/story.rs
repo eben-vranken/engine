@@ -131,7 +131,7 @@ impl Running {
             return;
         }
         let Some(story) = &mut self.story else { return };
-        match story.world.scene_graphs.remove(&scene) {
+        match story.runner.suspended.remove(&scene) {
             Some(paused) => story.runner.resume(paused),
             None => {
                 story.runner.start(&graph);
@@ -144,9 +144,9 @@ impl Running {
         let scene = self.scene_key();
         let graph = crate::graph::scene_graph(&scene);
         let Some(story) = &mut self.story else { return };
-        if story.runner.is_running(&graph) || !story.world.scene_graphs.contains_key(&scene) {
+        if story.runner.is_running(&graph) || !story.runner.suspended.contains_key(&scene) {
             let paused = story.runner.suspend(&graph);
-            story.world.scene_graphs.insert(scene, paused);
+            story.runner.suspended.insert(scene, paused);
         }
         // The scene's logic leaves memory with it; it is read again on return.
         story.runner.unload_unused();
@@ -291,9 +291,9 @@ impl Running {
             return None;
         }
         let eye = self.player.camera(&self.settings);
-        let (index, _) = self
-            .physics
-            .pick(eye.position, eye.forward(), super::game::REACH)?;
+        let (index, _) =
+            self.physics
+                .pick(eye.position, eye.forward(), self.settings.body.reach)?;
         let (action, prompt) = self.usable(index)?;
         self.prompt = Some(prompt);
         if !self.input.pressed(KeyCode::KeyE) {
@@ -369,8 +369,8 @@ impl Running {
         let scene_key = self.scene_key();
         let body = self.body();
         let zone = self
-            .zone_map
-            .zone_at(body)
+            .player_zone
+            .update(&self.scene, &self.zone_map, body)
             .map(|z| self.scene.zones[z].name.clone());
         let triggers: Vec<ObjectRef> = self
             .scene
@@ -575,6 +575,7 @@ impl Running {
                 }
                 self.player = Player::new(spawn_point(&self.scene), &self.settings);
                 self.zone.reset();
+                self.player_zone.reset();
                 self.apply_scene_state();
                 self.load_bake();
                 self.load_lightmaps();
@@ -621,6 +622,11 @@ impl Running {
         if let Some(story) = &mut self.story {
             story.world = saved.world;
             story.runner.restore(saved.graphs);
+            // An older save kept paused scene graphs with the world.
+            let old = std::mem::take(&mut story.world.scene_graphs);
+            for (scene, threads) in old {
+                story.runner.suspended.entry(scene).or_insert(threads);
+            }
             story.toast("GAME LOADED");
         }
         self.apply_scene_state();

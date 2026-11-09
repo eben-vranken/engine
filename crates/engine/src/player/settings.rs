@@ -4,11 +4,12 @@
 //! The defaults here are neutral fallbacks so a missing or partial file still
 //! works; each game tunes its own values in its `player.ron`.
 
+use bevy_reflect::Reflect;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, Reflect)]
 #[serde(default)]
 pub struct PlayerSettings {
     pub movement: Movement,
@@ -18,7 +19,7 @@ pub struct PlayerSettings {
     pub footsteps: Footsteps,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 #[serde(default)]
 pub struct Movement {
     /// m/s
@@ -52,7 +53,7 @@ impl Default for Movement {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 #[serde(default)]
 pub struct Jump {
     /// m: apex height of a full jump.
@@ -97,7 +98,7 @@ impl Jump {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 #[serde(default)]
 pub struct Body {
     /// m: standing height.
@@ -114,6 +115,11 @@ pub struct Body {
     pub max_slope: f32,
     /// m: how far down the body sticks to the ground (stairs, slope crests).
     pub ground_snap: f32,
+    /// kg: how hard the player shoves physics bodies (a body this heavy
+    /// moves at half the player's speed).
+    pub mass: f32,
+    /// m: how far away the player can use things (E).
+    pub reach: f32,
 }
 
 impl Default for Body {
@@ -126,11 +132,13 @@ impl Default for Body {
             step_height: 0.35,
             max_slope: 46.0,
             ground_snap: 0.3,
+            mass: 80.0,
+            reach: 2.5,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 #[serde(default)]
 pub struct CameraFeel {
     /// degrees, vertical.
@@ -173,7 +181,7 @@ impl Default for CameraFeel {
 }
 
 /// Which sounds the player's footsteps make.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 #[serde(default)]
 pub struct Footsteps {
     /// The engine's own steps, one per floor material (a project can replace
@@ -202,7 +210,7 @@ impl Default for Footsteps {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Reflect)]
 pub enum RandomOrder {
     /// Any clip each step, so the same one can play twice in a row.
     True,

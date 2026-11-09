@@ -208,7 +208,12 @@ struct Running {
     /// `None` without an output device (the game runs silent).
     audio: Option<Audio>,
     /// The zone the active camera is in.
+    /// The zone the camera is in: audio, fog, grading and the simulation
+    /// radius follow it.
     zone: ZoneTracker,
+    /// The zone the player's body is in: graphs (WHEN IN ZONE), visited
+    /// zones and the map follow it.
+    player_zone: ZoneTracker,
     /// The simulation radius: what runs (updated every frame from `zone`).
     active: Active,
     /// The scene file, relative to the project (play mode; the editor
@@ -483,6 +488,7 @@ impl Running {
                 .inspect_err(|err| log::error!("{err}; running without sound"))
                 .ok(),
             zone: ZoneTracker::default(),
+            player_zone: ZoneTracker::default(),
             active: Active::default(),
             scene_path: config.scene_path.clone(),
             bake_job: None,
@@ -713,7 +719,7 @@ impl Running {
             map::map_data(
                 &self.scene,
                 s.world.visited.get(&scene_key),
-                zone.as_deref(),
+                self.player_zone.current(),
                 self.player.feet,
                 self.player.yaw,
             )

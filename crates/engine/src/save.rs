@@ -29,7 +29,9 @@ pub struct WorldState {
     pub scenes: BTreeMap<String, SceneState>,
     /// Zones visited, per scene: the map shows these.
     pub visited: BTreeMap<String, BTreeSet<String>>,
-    /// Scene graphs paused while the player is in another scene.
+    /// Saves from before paused scene graphs moved into the graphs' state:
+    /// read, then moved there.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub scene_graphs: BTreeMap<String, Vec<ThreadState>>,
 }
 

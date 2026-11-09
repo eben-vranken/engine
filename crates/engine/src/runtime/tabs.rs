@@ -121,6 +121,7 @@ impl Running {
         self.renderer.set_scene(&self.scene, &mut self.assets);
         self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
         self.zone.reset();
+        self.player_zone.reset();
         self.highlighted.clear();
         self.renderer.set_highlight(&[]);
         self.load_bake();

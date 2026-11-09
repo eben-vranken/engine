@@ -52,6 +52,7 @@ impl Running {
                 height - body.step_height,
                 body.radius,
                 self.player.velocity,
+                body.mass,
             );
         }
         self.physics.set_active(&self.active);
@@ -202,6 +203,7 @@ impl Running {
         self.rebuild_physics();
         self.player = Player::new(spawn_point(&self.scene), &self.settings);
         self.zone.reset();
+        self.player_zone.reset();
         self.mode = CameraMode::Player;
         self.mouse_released = false;
         self.tuning_open = false;
@@ -227,6 +229,7 @@ impl Running {
         self.mode = CameraMode::Fly;
         self.tuning_open = false;
         self.zone.reset();
+        self.player_zone.reset();
         if let Some(editor) = &mut self.editor {
             editor.playing = false;
         }
@@ -246,6 +249,3 @@ pub(super) fn spawn_point(scene: &Scene) -> Spawn {
         Spawn::from_transform,
     )
 }
-
-/// How far the player reaches to use a switch (meters).
-pub(super) const REACH: f32 = 2.5;
