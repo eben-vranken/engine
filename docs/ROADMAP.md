@@ -312,9 +312,9 @@ The editor reorganised for ease of use; same look, same features (design: the "E
 **Acceptance:** the user finds every former feature in its new place, works a session in each workspace, and prefers it to the old layout.
 
 ## 11.9 One test level
-- [ ] The sandbox's scenes merged into one large `test_level.ron`: the movement course, the acoustic spaces, the behaviors, the dark hall and the story yard, joined by walkways
+- [ ] One `test_level.ron` with every feature once, around a plaza: course (north), acoustics wing (east), dark hall (west), yard with story, abilities, saving and behaviors (south), void with stylized reverb (south-east)
 
-**Acceptance:** the user walks from the course through every area in one scene, after baking lighting and acoustics once.
+**Acceptance:** after baking once, the user tests every feature in one scene without duplicates.
 
 ## 12. Stairs primitive
 A small step after the core milestones: stairs as an editor primitive, shaped from the inspector.
