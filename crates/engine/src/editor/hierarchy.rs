@@ -1,6 +1,7 @@
 //! The outliner: objects grouped by zone with a type tag each, filter
 //! chips, search, and zone edits (add, rename, delete).
 
+use super::commands::Command;
 use super::history::{Change, Edit};
 use super::{Editor, EditorOutput, SettingsTarget, dialog_heading, dim, inspector};
 use crate::scene::{Component, Object, Scene, Zone};
@@ -75,6 +76,15 @@ impl Editor {
         let mut shown_any = false;
         ui.add_space(4.0);
         let mut clicked = None;
+        // The right-click menu on an object's row: the object, and the command.
+        let mut row_command: Option<(usize, Command)> = None;
+        // Each object's problems, marked on its row.
+        let problems: Vec<Vec<String>> = scene
+            .objects
+            .iter()
+            .map(|o| self.object_problems(scene, o))
+            .collect();
+        let zone_names: Vec<String> = scene.zones.iter().map(|z| z.name.clone()).collect();
         let mut zone_clicked = None;
         let mut zone_action = None;
         let environment = self.settings == Some(SettingsTarget::Environment);
@@ -150,10 +160,11 @@ impl Editor {
                                 let parts = model_parts(object, &self.model_parts);
                                 let whole = self.is_picked(index, None);
                                 if parts.len() < 2 && query.part.is_none() {
-                                    let response = object_row(ui, whole, object);
+                                    let response = object_row(ui, whole, object, &problems[index]);
                                     if response.clicked() {
                                         clicked = Some((index, None));
                                     }
+                                    row_menu(&response, index, &zone_names, &mut row_command);
                                     if selected && reveal {
                                         response.scroll_to_me(Some(Align::Center));
                                     }
@@ -175,10 +186,11 @@ impl Editor {
                                 let parts: Vec<String> =
                                     parts.into_iter().filter(|p| query.part_matches(p)).collect();
                                 let header = state.show_header(ui, |ui| {
-                                    let response = object_row(ui, whole, object);
+                                    let response = object_row(ui, whole, object, &problems[index]);
                                     if response.clicked() {
                                         clicked = Some((index, None));
                                     }
+                                    row_menu(&response, index, &zone_names, &mut row_command);
                                     if selected && reveal {
                                         response.scroll_to_me(Some(Align::Center));
                                     }
@@ -240,6 +252,14 @@ impl Editor {
                 self.select(scene, Some(index));
                 self.selected_part = part;
             }
+        }
+        // A row's menu acts on that object (selecting it first, unless it
+        // is part of the selection); it runs like the menus' commands.
+        if let Some((index, command)) = row_command {
+            if !self.selected_objects().contains(&index) {
+                self.select(scene, Some(index));
+            }
+            self.queued.push(command);
         }
         if let Some(target) = zone_clicked {
             self.select(scene, None);
@@ -743,10 +763,63 @@ mod tests {
     }
 }
 
+/// The right-click menu on an object's row.
+fn row_menu(
+    response: &egui::Response,
+    index: usize,
+    zones: &[String],
+    picked: &mut Option<(usize, Command)>,
+) {
+    response.context_menu(|ui| {
+        ui.set_min_width(220.0);
+        for command in [
+            Command::Rename,
+            Command::Duplicate,
+            Command::Copy,
+            Command::Paste,
+            Command::Frame,
+        ] {
+            if ui
+                .add(egui::Button::new(command.label()).shortcut_text(command.shortcut()))
+                .clicked()
+            {
+                *picked = Some((index, command));
+                ui.close();
+            }
+        }
+        ui.menu_button("MOVE TO ZONE", |ui| {
+            for zone in zones {
+                if ui.button(zone.to_uppercase()).clicked() {
+                    *picked = Some((index, Command::MoveToZone(zone.clone())));
+                    ui.close();
+                }
+            }
+        });
+        if ui.button("SHOW IN LOGIC").clicked() {
+            *picked = Some((index, Command::Go(super::Workspace::Logic)));
+            ui.close();
+        }
+        ui.separator();
+        if ui
+            .add(
+                egui::Button::new(RichText::new("DELETE").color(theme::ALERT)).shortcut_text("DEL"),
+            )
+            .clicked()
+        {
+            *picked = Some((index, Command::Delete));
+            ui.close();
+        }
+    });
+}
+
 /// An object's row: its name, and its type on the right.
-fn object_row(ui: &mut Ui, chosen: bool, object: &Object) -> egui::Response {
+fn object_row(ui: &mut Ui, chosen: bool, object: &Object, problems: &[String]) -> egui::Response {
     ui.horizontal(|ui| {
         let response = ui.selectable_label(chosen, picked(&object.name, chosen));
+        if !problems.is_empty() {
+            ui.label(RichText::new("!").color(theme::ALERT))
+                .on_hover_text(problems.join("\n"));
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(RichText::new(tag(object)).small().color(theme::AMBER_DIM));
         });

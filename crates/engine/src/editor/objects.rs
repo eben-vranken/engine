@@ -265,6 +265,76 @@ pub(super) fn unique_among<'a>(names: impl Iterator<Item = &'a str> + Clone, bas
         .expect("some number is free")
 }
 
+impl Editor {
+    /// PASTE: the copied objects, again (new ids, unique names), selected.
+    pub(super) fn paste(&mut self, scene: &mut Scene) -> Option<Change> {
+        if self.clipboard.is_empty() {
+            return None;
+        }
+        let mut after = scene.clone();
+        let first = after.objects.len();
+        let zone = self.new_object_zone(scene);
+        for object in &self.clipboard {
+            let mut copy = object.clone();
+            copy.name = unique_name(&after, &copy.name);
+            copy.id = 0;
+            // Into an existing zone (the copy may come from another scene).
+            if !after.zones.iter().any(|z| z.name == copy.zone)
+                && let Some(zone) = &zone
+            {
+                copy.zone = zone.clone();
+            }
+            after.objects.push(copy);
+        }
+        let count = self.clipboard.len();
+        let change = self.push_scene(scene, after);
+        self.selected = Some(first);
+        self.selected_part = None;
+        self.also = (first + 1..first + count)
+            .map(|object| super::Pick { object, part: None })
+            .collect();
+        self.reveal_selection = true;
+        Some(change)
+    }
+
+    /// MOVE TO ZONE: the selected objects into `zone` (one undo step).
+    pub(super) fn move_to_zone(&mut self, scene: &mut Scene, zone: &str) -> Option<Change> {
+        let picked = self.selected_objects();
+        if picked.is_empty() || !scene.zones.iter().any(|z| z.name == zone) {
+            return None;
+        }
+        let mut after = scene.clone();
+        for i in picked {
+            if let Some(object) = after.objects.get_mut(i) {
+                object.zone = zone.to_owned();
+            }
+        }
+        Some(self.push_scene(scene, after))
+    }
+
+    /// The selected objects' center and a radius around them, for FRAME.
+    pub(super) fn selection_bounds(&self, scene: &Scene) -> Option<(glam::Vec3, f32)> {
+        let objects: Vec<&crate::scene::Object> = self
+            .selected_objects()
+            .into_iter()
+            .filter_map(|i| scene.objects.get(i))
+            .collect();
+        if objects.is_empty() {
+            return None;
+        }
+        let center = objects
+            .iter()
+            .map(|o| o.transform.position)
+            .sum::<glam::Vec3>()
+            / objects.len() as f32;
+        let radius = objects
+            .iter()
+            .map(|o| o.transform.position.distance(center) + o.transform.scale.max_element())
+            .fold(1.0, f32::max);
+        Some((center, radius))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

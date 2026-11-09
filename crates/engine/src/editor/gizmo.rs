@@ -17,6 +17,8 @@ use transform_gizmo::{
 pub struct TransformGizmo {
     gizmo: Gizmo,
     pub kind: GizmoModeKind,
+    /// Axes along the object's own rotation instead of the world's.
+    pub local: bool,
     /// A handle is being dragged.
     dragging: bool,
 }
@@ -26,6 +28,7 @@ impl Default for TransformGizmo {
         Self {
             gizmo: Gizmo::default(),
             kind: GizmoModeKind::Translate,
+            local: false,
             dragging: false,
         }
     }
@@ -67,7 +70,11 @@ impl TransformGizmo {
                 image.min.y..=image.max.y,
             ),
             modes: GizmoMode::all_from_kind(self.kind),
-            orientation: GizmoOrientation::Global,
+            orientation: if self.local {
+                GizmoOrientation::Local
+            } else {
+                GizmoOrientation::Global
+            },
             snapping,
             snap_distance: snap_step("position"),
             snap_angle: snap_step("rotation").to_radians(),

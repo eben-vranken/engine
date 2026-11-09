@@ -86,6 +86,9 @@ impl Editor {
                 .on_hover_text(
                     "NAME: UNIQUE IN THE SCENE. RENAMING KEEPS GRAPHS AND SWITCHES LINKED",
                 );
+            if std::mem::take(&mut self.focus_name) {
+                name.request_focus();
+            }
             // Names stay unique: a taken one gets a number. (`names` is
             // from this frame's start, with this object's name in it once.)
             if name.lost_focus() && names.objects.iter().filter(|n| **n == object.name).count() > 1

@@ -29,6 +29,7 @@ mod object_panel;
 mod objects;
 mod palette;
 mod player_panel;
+mod problems;
 mod project_doc;
 mod project_index;
 mod project_page;
@@ -88,6 +89,18 @@ pub struct Editor {
     project: Option<project_doc::ProjectDoc>,
     /// The FLAGS list: the flag whose name is being typed, and its old name.
     flag_rename_from: Option<(usize, String)>,
+    /// A graph node copied in LOGIC (CTRL+C), to paste.
+    node_clipboard: Option<crate::graph::NodeKind>,
+    /// Box select being dragged in the viewport (points), from the runtime.
+    pub box_rect: Option<egui::Rect>,
+    /// PROBLEMS is open.
+    problems_open: bool,
+    /// How many problems there are, and when that was counted.
+    problem_count: (usize, Option<std::time::Instant>),
+    /// Objects copied (CTRL+C), to paste.
+    clipboard: Vec<crate::scene::Object>,
+    /// Put the keyboard in the inspector's name field (RENAME, F2).
+    focus_name: bool,
     /// ADD's searchable dialog, while open.
     add_dialog: Option<add_dialog::AddDialog>,
     /// Open this graph at this node once Play has stopped (OPEN AT NODE in
@@ -232,6 +245,10 @@ pub struct EditorOutput {
     pub free_camera: bool,
     /// VIEW › VSYNC.
     pub toggle_vsync: bool,
+    /// The status bar's PROBLEMS was clicked.
+    pub show_problems: bool,
+    /// FRAME: look at this sphere (center, radius) with the editor camera.
+    pub frame: Option<(glam::Vec3, f32)>,
     /// RESTART while playing: stop, then play from the start.
     pub restart_play: bool,
     /// Where PLAY's test drawer goes (the runtime fills it).
@@ -279,6 +296,8 @@ impl EditorOutput {
             play_from_here: false,
             free_camera: false,
             toggle_vsync: false,
+            frame: None,
+            show_problems: false,
             restart_play: false,
             drawer: None,
             resume_play: false,
@@ -332,6 +351,12 @@ impl Editor {
             queued: Vec::new(),
             play_controls: PlayControls::default(),
             add_dialog: None,
+            clipboard: Vec::new(),
+            problems_open: false,
+            box_rect: None,
+            problem_count: (0, None),
+            node_clipboard: None,
+            focus_name: false,
             flag_rename_from: None,
             project,
             vsync: true,
@@ -400,6 +425,35 @@ impl Editor {
         egui::Panel::bottom("editor_status").show(ui, |ui| self.status_bar(ui, stats, &mut output));
         self.global_keys(ui, scene, player, view, &mut output);
         self.palette_ui(ui, scene, player, view, &mut output);
+        if self
+            .problem_count
+            .1
+            .is_none_or(|t| t.elapsed().as_secs_f32() > 0.5)
+        {
+            // Flags and graphs must be known, or everything looks unknown.
+            self.index.refresh(&self.project_dir, false);
+            self.problem_count = (
+                self.all_problems(scene).len(),
+                Some(std::time::Instant::now()),
+            );
+        }
+        if std::mem::take(&mut output.show_problems) {
+            self.problems_open = true;
+        }
+        self.problems_ui(ui, scene, &mut output);
+        if let Some(rect) = self.box_rect {
+            ui.ctx()
+                .layer_painter(egui::LayerId::new(
+                    egui::Order::Foreground,
+                    egui::Id::unique("box_select"),
+                ))
+                .rect_stroke(
+                    rect,
+                    0.0,
+                    egui::Stroke::new(1.0, crate::ui::theme::AMBER),
+                    egui::StrokeKind::Inside,
+                );
+        }
         let mut picked = None;
         self.add_dialog_ui(ui, scene, &mut picked, &mut output);
         if let Some(command) = picked {

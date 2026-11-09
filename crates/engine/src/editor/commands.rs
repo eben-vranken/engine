@@ -35,6 +35,14 @@ pub(super) enum GizmoTool {
 pub(super) enum Command {
     SaveAll,
     AddDialog,
+    Copy,
+    Paste,
+    Frame,
+    Rename,
+    /// Move the selected objects into this zone.
+    MoveToZone(String),
+    ToggleGizmoSpace,
+    Problems,
     ToggleVsync,
     Deselect,
     Gizmo(GizmoTool),
@@ -98,6 +106,13 @@ impl Command {
             Save => "SAVE".into(),
             SaveAll => "SAVE ALL".into(),
             AddDialog => "ADD…".into(),
+            Copy => "COPY".into(),
+            Paste => "PASTE".into(),
+            Frame => "FRAME IN VIEW".into(),
+            Rename => "RENAME".into(),
+            MoveToZone(zone) => format!("MOVE TO ZONE › {}", zone.to_uppercase()),
+            ToggleGizmoSpace => "GIZMO: LOCAL / WORLD AXES".into(),
+            Problems => "PROBLEMS".into(),
             ToggleVsync => "VSYNC".into(),
             Deselect => "DESELECT".into(),
             Gizmo(GizmoTool::Move) => "MOVE TOOL".into(),
@@ -177,6 +192,12 @@ impl Command {
             Redo,
             Duplicate,
             Delete,
+            Copy,
+            Paste,
+            Frame,
+            Rename,
+            ToggleGizmoSpace,
+            Problems,
             Play,
             PlayFromHere,
             PlayFromSave,
@@ -252,7 +273,15 @@ impl Editor {
                 build && !scene.zones.is_empty()
             }
             AddZone | ToggleZones | ToggleTriggers | ToggleProbes => build,
-            Deselect | Gizmo(_) | AddDialog => build,
+            Deselect | Gizmo(_) | AddDialog | ToggleGizmoSpace => build,
+            Copy if self.graph.is_some() => {
+                self.graph.as_ref().is_some_and(|d| d.selected.is_some())
+            }
+            Paste if self.graph.is_some() => self.node_clipboard.is_some(),
+            Copy | Frame | Rename | MoveToZone(_) => {
+                build && self.selected.is_some_and(|i| i < scene.objects.len())
+            }
+            Paste => build && !self.clipboard.is_empty() && !scene.zones.is_empty(),
             AddBehavior(_) => build && self.selected.is_some(),
             AddNode(_) => self.graph.is_some(),
             _ => true,
@@ -295,6 +324,33 @@ impl Editor {
             }
             Deselect => output.settled |= self.select(scene, None),
             AddDialog => self.open_add_dialog(),
+            Copy if self.graph.is_some() => {
+                if let Some(doc) = &self.graph
+                    && let Some(node) = doc.selected.and_then(|id| doc.graph.node(id))
+                {
+                    self.node_clipboard = Some(node.kind.clone());
+                    self.show_message(format!("COPIED {}", node.kind.title()));
+                }
+            }
+            Paste if self.graph.is_some() => {
+                if let (Some(doc), Some(kind)) = (&mut self.graph, self.node_clipboard.clone()) {
+                    doc.add_in_view(kind);
+                }
+            }
+            Copy => {
+                self.clipboard = self
+                    .selected_objects()
+                    .into_iter()
+                    .filter_map(|i| scene.objects.get(i).cloned())
+                    .collect();
+                self.show_message(format!("COPIED {}", self.clipboard.len()));
+            }
+            Paste => change = self.paste(scene),
+            Frame => output.frame = self.selection_bounds(scene),
+            Rename => self.focus_name = true,
+            MoveToZone(zone) => change = self.move_to_zone(scene, &zone),
+            ToggleGizmoSpace => self.gizmo.local = !self.gizmo.local,
+            Problems => self.problems_open = true,
             ToggleVsync => output.toggle_vsync = true,
             Gizmo(tool) => {
                 use transform_gizmo::config::GizmoModeKind;

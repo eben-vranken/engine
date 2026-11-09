@@ -50,6 +50,28 @@ impl Editor {
 
     /// Shift-click: adds `pick` to the selection as the new primary, or
     /// takes it out if it was in. Returns true if an edit was committed.
+    /// Box select: these objects become the selection (`add`: added to
+    /// it). Returns whether an edit was settled.
+    pub fn select_objects(&mut self, scene: &Scene, objects: &[usize], add: bool) -> bool {
+        let mut picks: Vec<Pick> = if add { self.picks() } else { Vec::new() };
+        for &object in objects {
+            let pick = Pick { object, part: None };
+            if !picks.contains(&pick) {
+                picks.push(pick);
+            }
+        }
+        let settled = self.select(scene, None);
+        let mut picks = picks.into_iter();
+        if let Some(first) = picks.next() {
+            self.selected = Some(first.object);
+            self.selected_part = first.part;
+            self.also = picks.collect();
+            self.settings = None;
+        }
+        self.reveal_selection = true;
+        settled
+    }
+
     pub fn toggle_pick(&mut self, scene: &Scene, pick: Pick) -> bool {
         let settled = self.commit_pending(scene);
         self.settings = None;

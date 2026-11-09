@@ -10,6 +10,16 @@ impl Editor {
     pub(super) fn status_bar(&self, ui: &mut Ui, stats: &EditorStats, output: &mut EditorOutput) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // Right to left: the stats always fit, the message gets the rest.
+            let count = self.problem_count.0;
+            let text = if count == 0 {
+                dim("NO PROBLEMS")
+            } else {
+                egui::RichText::new(format!("PROBLEMS {count}")).color(crate::ui::theme::ALERT)
+            };
+            if ui.add(egui::Button::new(text).small()).clicked() {
+                output.show_problems = true;
+            }
+            ui.add_space(12.0);
             if self.show_stats {
                 ui.label(format!("{} / {}", stats.drawn[0], stats.drawn[1]));
                 ui.label(dim("DRAWN"));

@@ -39,6 +39,18 @@ impl Editor {
                                     self.gizmo.kind = kind;
                                 }
                             }
+                            let space = if self.gizmo.local {
+                                " LOCAL "
+                            } else {
+                                " WORLD "
+                            };
+                            if ui
+                                .add(egui::Button::new(space).small())
+                                .on_hover_text("THE GIZMO'S AXES: THE OBJECT'S OWN, OR THE WORLD'S")
+                                .clicked()
+                            {
+                                self.gizmo.local = !self.gizmo.local;
+                            }
                             ui.label(dim("CTRL SNAPS"));
                             ui.menu_button("SHOW ▾", |ui| {
                                 ui.set_min_width(200.0);

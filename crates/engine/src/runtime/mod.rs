@@ -176,6 +176,10 @@ struct Running {
     viewport: Option<egui::Rect>,
     /// Editor: a left click in the viewport to resolve this frame, in window pixels.
     pending_pick: Option<Vec2>,
+    /// Box select: where the left button went down in the viewport, and the
+    /// two corners once it came up (window pixels).
+    box_from: Option<Vec2>,
+    box_done: Option<(Vec2, Vec2)>,
     /// Files dropped on the window and where (window pixels); editor only.
     dropped: Vec<(PathBuf, Vec2)>,
     game_dir: PathBuf,
@@ -313,6 +317,14 @@ impl ApplicationHandler for App {
                             app.mouse_released = false;
                         } else {
                             app.pending_pick = Some(app.cursor);
+                            app.box_from = Some(app.cursor);
+                        }
+                    }
+                    MouseButton::Left if !state.is_pressed() => {
+                        if let Some(from) = app.box_from.take()
+                            && from.distance(app.cursor) > BOX_SELECT_MIN
+                        {
+                            app.box_done = Some((from, app.cursor));
                         }
                     }
                     _ => {}
@@ -470,6 +482,8 @@ impl Running {
             cursor: Vec2::ZERO,
             viewport: None,
             pending_pick: None,
+            box_from: None,
+            box_done: None,
             dropped: Vec::new(),
             game_dir: config.game_dir.clone(),
             exit_requested: false,
@@ -998,6 +1012,9 @@ impl Running {
 
         // A click in the viewport selects what's under it, unless it was on a gizmo handle.
         let on_gizmo = editor_output.as_ref().is_some_and(|o| o.gizmo_hovered);
+        if on_gizmo && self.pending_pick.is_some() {
+            self.box_from = None; // dragging a handle, not a box
+        }
         if let (Some(editor), Some(cursor)) = (&mut self.editor, self.pending_pick.take())
             && !on_gizmo
         {
@@ -1029,6 +1046,46 @@ impl Running {
             }
         }
 
+        // Box select: what the box holds (its center on screen).
+        let ppp_now = self.window.scale_factor() as f32;
+        if let Some(editor) = &mut self.editor {
+            editor.box_rect = self
+                .box_from
+                .filter(|from| from.distance(self.cursor) > BOX_SELECT_MIN)
+                .map(|from| {
+                    egui::Rect::from_two_pos(
+                        egui::pos2(from.x / ppp_now, from.y / ppp_now),
+                        egui::pos2(self.cursor.x / ppp_now, self.cursor.y / ppp_now),
+                    )
+                });
+        }
+        if let (Some(editor), Some((a, b))) = (&mut self.editor, self.box_done.take()) {
+            let [x, y, w, h] = self.renderer.image_rect();
+            let view_proj = camera.view_projection(w / h);
+            let (min, max) = (a.min(b), a.max(b));
+            let inside: Vec<usize> = self
+                .scene
+                .objects
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| {
+                    let clip = view_proj * o.transform.position.extend(1.0);
+                    if clip.w <= 0.0 {
+                        return false;
+                    }
+                    let ndc = clip.truncate() / clip.w;
+                    let screen =
+                        Vec2::new(x + (ndc.x + 1.0) * 0.5 * w, y + (1.0 - ndc.y) * 0.5 * h);
+                    screen.cmpge(min).all() && screen.cmple(max).all()
+                })
+                .map(|(i, _)| i)
+                .collect();
+            let shift = self.input.held(KeyCode::ShiftLeft) || self.input.held(KeyCode::ShiftRight);
+            if editor.select_objects(&self.scene, &inside, shift) {
+                self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
+            }
+        }
+
         // A model from the MODELS list: placed like a file dropped there
         // (next frame), at the drop point or the middle of the view.
         if let Some((path, at)) = editor_output.as_mut().and_then(|o| o.place_model.take()) {
@@ -1046,6 +1103,11 @@ impl Running {
             }
             if output.free_camera && self.play.is_some() {
                 self.toggle_free_camera();
+            }
+            if let Some((center, radius)) = output.frame {
+                // Back off along the view until the selection fits.
+                let camera = &mut self.fly.camera;
+                camera.position = center - camera.forward() * (radius * 2.5 + 1.0);
             }
             if output.toggle_vsync {
                 let vsync = self.renderer.vsync();
@@ -1145,4 +1207,7 @@ impl Running {
 }
 
 /// Editor: new objects go on surfaces up to this far ahead (meters).
+/// A drag longer than this (window pixels) in the viewport is a box select.
+const BOX_SELECT_MIN: f32 = 6.0;
+
 const AIM_DISTANCE: f32 = 20.0;

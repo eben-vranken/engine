@@ -48,13 +48,18 @@ pub fn fields_except(
     let mut changed = false;
     match value.reflect_mut() {
         ReflectMut::Struct(s) => {
+            // The fields' `///` comments, shown when hovering their labels.
+            let info = s.get_represented_struct_info();
             for i in 0..s.field_len() {
                 let name = s.name_at(i).unwrap_or_default().to_owned();
                 if skip.contains(&name.as_str()) {
                     continue;
                 }
+                let doc = info
+                    .and_then(|info| info.field(&name))
+                    .and_then(|f| f.docs());
                 if let Some(field) = s.field_at_mut(i) {
-                    changed |= row(ui, &name, field, names);
+                    changed |= row(ui, &name, field, names, doc);
                 }
             }
         }
@@ -65,7 +70,7 @@ pub fn fields_except(
                     continue;
                 };
                 match name {
-                    Some(name) => changed |= row(ui, &name, field, names),
+                    Some(name) => changed |= row(ui, &name, field, names, None),
                     // A tuple variant wrapping one struct: show the struct's fields.
                     None => changed |= fields(ui, field, names),
                 }
@@ -133,10 +138,16 @@ pub fn title(value: &dyn PartialReflect) -> String {
     }
 }
 
-fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect, names: &Names) -> bool {
+fn row(
+    ui: &mut Ui,
+    name: &str,
+    field: &mut dyn PartialReflect,
+    names: &Names,
+    doc: Option<&str>,
+) -> bool {
     let speed = drag_speed(name);
     let step = snap_step(name);
-    let label = |ui: &mut Ui| field_label(ui, &label_text(name));
+    let label = |ui: &mut Ui| labelled(ui, &label_text(name), doc);
 
     if let Some(v) = field.try_downcast_mut::<f32>() {
         return ui
@@ -398,8 +409,16 @@ fn reference_picker(ui: &mut Ui, name: &str, value: &mut String, names: &[String
 
 /// A left-aligned, fixed-width label so the values line up in a column.
 pub fn field_label(ui: &mut Ui, text: &str) {
+    labelled(ui, text, None);
+}
+
+/// A field's label; hovering it shows `doc` (the field's `///` comment).
+fn labelled(ui: &mut Ui, text: &str, doc: Option<&str>) {
     let size = egui::vec2(LABEL_WIDTH, ui.spacing().interact_size.y);
-    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    if let Some(doc) = doc {
+        response.on_hover_text(doc.trim());
+    }
     ui.painter().text(
         rect.left_center(),
         egui::Align2::LEFT_CENTER,
