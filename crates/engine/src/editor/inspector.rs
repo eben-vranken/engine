@@ -3,7 +3,7 @@
 //! drag fields, vectors three fields in a row, booleans toggles, text a text
 //! box; nested structs and enum fields are indented underneath.
 
-use crate::scene::{ObjectRef, ZoneRef};
+use crate::scene::{CharacterRef, FlagRef, GraphRef, ObjectRef, SceneRef, SoundRef, ZoneRef};
 use crate::ui::theme;
 use bevy_reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo};
 use bevy_reflect::{PartialReflect, ReflectMut, ReflectRef, TypeInfo};
@@ -12,10 +12,17 @@ use glam::{Vec2, Vec3};
 
 const LABEL_WIDTH: f32 = 96.0;
 
-/// What reference pickers offer: the scene's object and zone names.
+/// What reference pickers offer: object and zone names, and the
+/// project's flags, graphs, scenes, sounds and character ids.
+#[derive(Debug, Clone, Default)]
 pub struct Names {
     pub objects: Vec<String>,
     pub zones: Vec<String>,
+    pub flags: Vec<String>,
+    pub graphs: Vec<String>,
+    pub scenes: Vec<String>,
+    pub sounds: Vec<String>,
+    pub characters: Vec<String>,
 }
 
 /// Draws one row per field of a struct or enum value. Returns true if
@@ -186,13 +193,26 @@ fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect, names: &Names) -
             })
             .inner;
     }
-    if let Some(v) = field.try_downcast_mut::<ZoneRef>() {
+    if let Some((value, list)) = reference(field, names) {
         return ui
             .horizontal(|ui| {
                 label(ui);
-                reference_picker(ui, name, &mut v.0, &names.zones)
+                reference_picker(ui, name, value, list)
             })
             .inner;
+    }
+    // Dialogue and notes: several lines.
+    if name == "text"
+        && let Some(v) = field.try_downcast_mut::<String>()
+    {
+        label(ui);
+        return ui
+            .add(
+                egui::TextEdit::multiline(v)
+                    .desired_rows(3)
+                    .desired_width(f32::INFINITY),
+            )
+            .changed();
     }
     if let Some(v) = field.try_downcast_mut::<String>() {
         return ui
@@ -220,6 +240,30 @@ fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect, names: &Names) -
         }
     });
     ui.indent(name, |ui| fields(ui, field, names)).inner
+}
+
+/// A reference to something by name (a zone, a flag, a graph...): its
+/// text and the names to pick from.
+fn reference<'a>(
+    field: &'a mut dyn PartialReflect,
+    names: &'a Names,
+) -> Option<(&'a mut String, &'a [String])> {
+    macro_rules! pick {
+        ($ty:ty, $list:ident) => {
+            if field.try_downcast_ref::<$ty>().is_some() {
+                return field
+                    .try_downcast_mut::<$ty>()
+                    .map(|v| (&mut v.0, names.$list.as_slice()));
+            }
+        };
+    }
+    pick!(ZoneRef, zones);
+    pick!(FlagRef, flags);
+    pick!(GraphRef, graphs);
+    pick!(SceneRef, scenes);
+    pick!(SoundRef, sounds);
+    pick!(CharacterRef, characters);
+    None
 }
 
 /// The variant names of an enum whose variants carry no data (a plain

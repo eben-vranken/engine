@@ -179,6 +179,7 @@ mod tests {
 
     fn volume(zone: &str, position: Vec3, size: Vec3) -> Object {
         Object {
+            hidden: false,
             name: format!("{zone} volume"),
             zone: zone.into(),
             transform: Transform::at(position),
@@ -191,6 +192,7 @@ mod tests {
 
     fn portal(from: &str, to: &str) -> Object {
         Object {
+            hidden: false,
             name: format!("{from} to {to}"),
             zone: from.into(),
             transform: Transform::default(),

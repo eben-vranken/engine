@@ -3,6 +3,7 @@
 
 use super::file_dialogs::Purpose;
 use super::gizmo::View;
+use super::name_dialog::Naming;
 use super::objects::primitives;
 use super::{Editor, EditorOutput, dim};
 use crate::player::settings::PlayerSettings;
@@ -21,6 +22,7 @@ impl Editor {
         view: &View,
         output: &mut EditorOutput,
     ) {
+        let graph = self.graph.is_some();
         egui::MenuBar::new().ui(ui, |ui| {
             let cursor = if blink { "_" } else { " " };
             ui.label(RichText::new(format!("ENGINE // EDITOR{cursor}")).strong());
@@ -29,25 +31,33 @@ impl Editor {
             ui.add_enabled_ui(!self.playing, |ui| {
                 self.project_menu(ui, scene, player, output);
                 self.edit_menu(ui, scene, player, output);
-                self.add_menu(ui, scene, view, output);
-                self.bake_menu(ui, output);
+                if graph {
+                    self.add_node_menu(ui);
+                } else {
+                    self.add_menu(ui, scene, view, output);
+                    self.bake_menu(ui, output);
+                }
             });
             self.view_menu(ui);
 
             ui.add_space(24.0);
-            let play = if self.playing {
-                "[STOP F5]"
+            if graph {
+                ui.label(dim("PLAY FROM A SCENE TAB"));
             } else {
-                " PLAY F5 "
-            };
-            if ui.small_button(play).clicked() {
-                output.toggle_play = true;
+                let play = if self.playing {
+                    "[STOP F5]"
+                } else {
+                    " PLAY F5 "
+                };
+                if ui.small_button(play).clicked() {
+                    output.toggle_play = true;
+                }
+                if self.playing {
+                    ui.label(RichText::new("[PLAYING]").color(theme::AMBER));
+                }
+                ui.add_space(12.0);
+                self.gizmo_buttons(ui);
             }
-            if self.playing {
-                ui.label(RichText::new("[PLAYING]").color(theme::AMBER));
-            }
-            ui.add_space(12.0);
-            self.gizmo_buttons(ui);
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(dim(&self.game_name.to_uppercase()))
@@ -84,7 +94,8 @@ impl Editor {
         player: &PlayerSettings,
         output: &mut EditorOutput,
     ) {
-        let mut naming = false;
+        let graph = self.graph.is_some();
+        let mut naming = None;
         let waiting = self.file_dialog_open();
         let mut ask = None;
         ui.menu_button("PROJECT", |ui| {
@@ -120,20 +131,28 @@ impl Editor {
             }
             ui.separator();
             if item(ui, "NEW SCENE…", "", true).clicked() {
-                naming = true;
+                naming = Some(Naming::Scene);
             }
-            if item(ui, "SAVE SCENE", "CTRL+S", true).clicked() {
+            let save = if graph { "SAVE GRAPH" } else { "SAVE SCENE" };
+            if item(ui, save, "CTRL+S", true).clicked() {
                 output.settled |= self.save(scene, player);
             }
             let hint = "A COPY OF THIS SCENE (AND ITS BAKES) IN SCENES/; THE TAB SWITCHES TO IT";
-            if item(ui, "SAVE SCENE AS…", "", !waiting)
+            if item(ui, "SAVE SCENE AS…", "", !graph && !waiting)
                 .on_hover_text(hint)
                 .clicked()
             {
                 ask = Some(Purpose::SaveSceneAs);
             }
+            let hint = "A GAMEPLAY GRAPH: THE GAME'S FLOW, A DIALOGUE, A SIDE THREAD";
+            if item(ui, "NEW GRAPH…", "", true)
+                .on_hover_text(hint)
+                .clicked()
+            {
+                naming = Some(Naming::Graph);
+            }
             ui.separator();
-            let hint = "THE GAME'S NAME, START SCENE AND RENDER SCALE";
+            let hint = "THE GAME'S NAME, START SCENE, FLOW GRAPH, RENDER SCALE AND DIALOGUE LOOK";
             if item(ui, "PROJECT SETTINGS…", "", true)
                 .on_hover_text(hint)
                 .clicked()
@@ -145,8 +164,8 @@ impl Editor {
                 output.exit = true;
             }
         });
-        if naming {
-            self.ask_name();
+        if let Some(purpose) = naming {
+            self.ask_name(purpose);
         }
         if let Some(purpose) = ask {
             self.ask_file(purpose);
@@ -160,8 +179,14 @@ impl Editor {
         player: &mut PlayerSettings,
         output: &mut EditorOutput,
     ) {
-        let (can_undo, can_redo) = (self.history.undo_len() > 0, self.history.redo_len() > 0);
-        let selected = self.selected.is_some_and(|i| i < scene.objects.len());
+        let (can_undo, can_redo, selected) = match &self.graph {
+            Some(doc) => (doc.can_undo(), doc.can_redo(), doc.selected.is_some()),
+            None => (
+                self.history.undo_len() > 0,
+                self.history.redo_len() > 0,
+                self.selected.is_some_and(|i| i < scene.objects.len()),
+            ),
+        };
         ui.menu_button("EDIT", |ui| {
             ui.set_min_width(MENU_WIDTH);
             let mut change = None;
@@ -218,6 +243,17 @@ impl Editor {
         });
     }
 
+    /// Graph tabs: ADD puts a node in the middle of the canvas.
+    fn add_node_menu(&mut self, ui: &mut Ui) {
+        ui.menu_button("ADD", |ui| {
+            if let Some(kind) = super::graph_canvas::add_menu(ui)
+                && let Some(doc) = &mut self.graph
+            {
+                doc.add_in_view(kind);
+            }
+        });
+    }
+
     fn bake_menu(&mut self, ui: &mut Ui, output: &mut EditorOutput) {
         let bakes = [
             (
@@ -251,9 +287,16 @@ impl Editor {
     fn view_menu(&mut self, ui: &mut Ui) {
         ui.menu_button("VIEW", |ui| {
             ui.set_min_width(MENU_WIDTH);
-            toggle(ui, "SCENE PANEL", "TAB", &mut self.show_scene);
+            let left = if self.graph.is_some() {
+                "FLAGS PANEL"
+            } else {
+                "SCENE PANEL"
+            };
+            toggle(ui, left, "TAB", &mut self.show_scene);
             toggle(ui, "INSPECTOR", "SHIFT+TAB", &mut self.show_inspector);
-            toggle(ui, "ZONE MARKERS", "H", &mut self.show_zones);
+            if self.graph.is_none() {
+                toggle(ui, "ZONE MARKERS", "H", &mut self.show_zones);
+            }
             ui.separator();
             toggle(ui, "KEY HINTS", "", &mut self.show_hints);
             toggle(ui, "STATS", "", &mut self.show_stats);

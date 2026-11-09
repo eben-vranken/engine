@@ -8,6 +8,11 @@ pub(super) fn scene_files(project_dir: &Path) -> Vec<PathBuf> {
     files_in(project_dir, "scenes", "ron")
 }
 
+/// Graph files in the project's `graphs/` folder, relative to the project.
+pub(super) fn graph_files(project_dir: &Path) -> Vec<PathBuf> {
+    files_in(project_dir, "graphs", "ron")
+}
+
 /// Every model the scene can place: `.glb` and `.gltf` files anywhere in
 /// the project's `models/` folder, relative to the project, sorted.
 pub(super) fn all_models(project_dir: &Path) -> Vec<PathBuf> {

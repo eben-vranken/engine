@@ -696,6 +696,9 @@ impl Running {
             if let Some(path) = &output.new_tab {
                 self.open_tab(path.clone());
             }
+            if let Some(path) = &output.open_graph {
+                self.open_graph(path.clone());
+            }
             if let Some(index) = output.switch_tab {
                 self.switch_tab(index);
             }

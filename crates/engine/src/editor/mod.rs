@@ -10,6 +10,8 @@ mod confirm;
 mod file_dialogs;
 mod files;
 pub mod gizmo;
+pub mod graph_canvas;
+mod graph_tab;
 mod hierarchy;
 pub mod history;
 pub mod import;
@@ -21,6 +23,7 @@ mod name_dialog;
 mod object_panel;
 mod objects;
 mod player_panel;
+mod project_index;
 mod project_settings;
 mod selection;
 mod settings_panel;
@@ -35,6 +38,7 @@ use egui::{Rect, Ui};
 use files::scene_files;
 use gizmo::{TransformGizmo, View};
 use glam::Vec3;
+pub use graph_tab::GraphDoc;
 use history::{Change, Edit, History};
 pub use objects::{NEW_OBJECT_DISTANCE, placement};
 pub use selection::Pick;
@@ -89,6 +93,8 @@ pub struct Editor {
     search: String,
     /// The MODELS list under the scene panel.
     models: model_list::ModelList,
+    /// The project's flags, graphs, scenes... for reference pickers.
+    index: project_index::ProjectIndex,
     /// The reverb bake's state for the BAKE menu (set by the runtime).
     pub bake_status: String,
     /// The light bake's state for the BAKE menu (set by the runtime).
@@ -101,6 +107,8 @@ pub struct Editor {
     active_tab: usize,
     /// NEW SCENE / SAVE AS: the name being typed.
     naming: Option<name_dialog::NameDialog>,
+    /// The open graph, when the active tab is a graph tab.
+    pub graph: Option<GraphDoc>,
     /// The part of the selected model shown in the inspector, by name.
     pub selected_part: Option<String>,
     /// Picked with shift-click besides `selected` / `selected_part`.
@@ -165,6 +173,8 @@ pub struct EditorOutput {
     pub new_tab: Option<PathBuf>,
     /// Close this tab (unsaved changes already dealt with).
     pub close_tab: Option<usize>,
+    /// Open this graph (relative to the project) in a graph tab.
+    pub open_graph: Option<PathBuf>,
     /// Place this model (relative to the project) in the scene: where it
     /// was dropped on the scene image (points), or in front of the camera.
     pub place_model: Option<(PathBuf, Option<egui::Pos2>)>,
@@ -192,6 +202,7 @@ impl EditorOutput {
             switch_tab: None,
             new_tab: None,
             close_tab: None,
+            open_graph: None,
             place_model: None,
             open_project: None,
             render_scale: None,
@@ -227,12 +238,14 @@ impl Editor {
             zone_delete: None,
             search: String::new(),
             models: Default::default(),
+            index: Default::default(),
             bake_status: String::new(),
             light_status: String::new(),
             probes: Vec::new(),
             tabs: vec![None],
             active_tab: 0,
             naming: None,
+            graph: None,
             file_dialog: None,
             project_settings: None,
             want_project_settings: false,
@@ -260,6 +273,12 @@ impl Editor {
         });
         egui::Panel::bottom("editor_status").show(ui, |ui| self.status_bar(ui, stats));
         self.project_settings_dialog(ui, stats, &mut output);
+        if self.graph.is_some() {
+            self.graph_ui(ui, &mut output);
+            self.confirm_dialog(ui, scene, player, &mut output);
+            self.name_dialog(ui, &mut output);
+            return output;
+        }
         // H: zone markers (not while typing in a field). Tab and Shift+Tab
         // (the side panels) are handled by the runtime, before egui.
         if !ui.ctx().memory(|m| m.focused().is_some()) {
@@ -397,7 +416,8 @@ impl Editor {
 
     /// Unsaved changes, including an edit still in progress.
     pub fn is_dirty(&self) -> bool {
-        self.pending.is_some()
+        self.graph.as_ref().is_some_and(GraphDoc::is_dirty)
+            || self.pending.is_some()
             || self.zone_pending.is_some()
             || self.player_pending.is_some()
             || self.history.state() != self.saved_state
@@ -407,6 +427,10 @@ impl Editor {
     /// project's `player.ron` if they differ from it. Returns true if a
     /// pending edit was committed first (collision needs a rebuild).
     pub fn save(&mut self, scene: &Scene, player: &PlayerSettings) -> bool {
+        if self.graph.is_some() {
+            self.save_graph();
+            return false;
+        }
         let settled = self.commit_pending(scene);
         let path = self.project_dir.join(&self.scene_path);
         let saved = scene
@@ -509,6 +533,10 @@ impl Editor {
 
     /// Undoes the last edit.
     pub fn undo(&mut self, scene: &mut Scene, player: &mut PlayerSettings) -> Option<Change> {
+        if let Some(doc) = &mut self.graph {
+            doc.undo();
+            return None;
+        }
         self.commit_pending(scene);
         let change = self.history.undo(scene, player)?;
         self.follow(change);
@@ -517,6 +545,10 @@ impl Editor {
 
     /// Redoes the last undone edit.
     pub fn redo(&mut self, scene: &mut Scene, player: &mut PlayerSettings) -> Option<Change> {
+        if let Some(doc) = &mut self.graph {
+            doc.redo();
+            return None;
+        }
         self.commit_pending(scene);
         let change = self.history.redo(scene, player)?;
         self.follow(change);
@@ -554,6 +586,10 @@ impl Editor {
 
     /// Changes the selection, finishing any edit on the previous one.
     pub fn select(&mut self, scene: &Scene, selected: Option<usize>) -> bool {
+        if let Some(doc) = &mut self.graph {
+            doc.clear_selection();
+            return false;
+        }
         let settled = self.commit_pending(scene);
         self.selected = selected;
         self.selected_part = None;

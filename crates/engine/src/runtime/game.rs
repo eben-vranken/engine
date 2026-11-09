@@ -147,6 +147,12 @@ impl Running {
     /// Editor: Play runs the scene from its PlayerStart; Stop puts back the
     /// scene and the editor camera as they were.
     pub(super) fn toggle_play(&mut self) {
+        if let Some(editor) = &mut self.editor
+            && editor.graph.is_some()
+        {
+            editor.show_message("PLAY FROM A SCENE TAB".into());
+            return;
+        }
         if self.play.is_some() {
             self.stop_play();
         } else {

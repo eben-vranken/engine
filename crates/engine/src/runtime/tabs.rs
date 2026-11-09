@@ -47,6 +47,29 @@ impl Running {
         }
     }
 
+    /// Editor: opens a graph from the project in a new graph tab (or
+    /// switches to it if it's open).
+    pub(super) fn open_graph(&mut self, path: PathBuf) {
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        if let Some(index) = editor.tab_of(&path) {
+            self.switch_tab(index);
+            return;
+        }
+        match crate::graph::Graph::load(&self.game_dir.join(&path)) {
+            Ok(graph) => {
+                let doc = crate::editor::GraphDoc::new(graph);
+                editor.open_graph_tab(path, doc, &mut self.scene, &self.fly);
+                self.scene_swapped();
+            }
+            Err(err) => {
+                log::error!("{err}");
+                editor.show_error(err.to_string());
+            }
+        }
+    }
+
     /// Editor: makes another tab the active one.
     pub(super) fn switch_tab(&mut self, index: usize) {
         if let Some(editor) = &mut self.editor

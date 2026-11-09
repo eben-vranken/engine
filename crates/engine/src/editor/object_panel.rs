@@ -9,8 +9,9 @@ use super::{Editor, EditorOutput, dim, inspector, section};
 use crate::player::settings::PlayerSettings;
 use crate::render::mesh::Shape;
 use crate::scene::{
-    AcousticMaterial, Component, Door, Floating, FogVolume, LightSource, Material, Object,
-    PhysicsBody, Portal, Scene, SoundSource, Switch, ZoneVolume,
+    AbilityGate, AcousticMaterial, Character, Component, Door, Floating, FogVolume, LightSource,
+    Material, Object, PhysicsBody, Pickup, Portal, Scene, SoundSource, Switch, TriggerZone,
+    ZoneVolume,
 };
 use egui::{Align, Layout, RichText, Ui};
 
@@ -32,12 +33,8 @@ impl Editor {
         ui.add_space(4.0);
 
         // For reference pickers.
-        let mut objects: Vec<String> = scene.objects.iter().map(|o| o.name.clone()).collect();
-        objects.sort();
-        let names = inspector::Names {
-            objects,
-            zones: scene.zones.iter().map(|z| z.name.clone()).collect(),
-        };
+        self.index.refresh(&self.project_dir, false);
+        let names = self.index.for_scene(scene);
         let zones = &scene.zones;
         let object = &mut scene.objects[index];
         let before = object.clone();
@@ -166,7 +163,7 @@ pub(super) fn shape_kind(ui: &mut Ui, id: usize, shape: &mut Shape) {
 }
 
 /// Components the inspector can add (one of each per object).
-pub(super) fn new_components() -> [(&'static str, Component); 11] {
+pub(super) fn new_components() -> [(&'static str, Component); 17] {
     [
         ("floating", Component::Floating(Floating::default())),
         ("door", Component::Door(Door::default())),
@@ -191,6 +188,18 @@ pub(super) fn new_components() -> [(&'static str, Component); 11] {
         ),
         ("fog volume", Component::FogVolume(FogVolume::default())),
         ("material", Component::Material(Material::default())),
+        (
+            "trigger zone",
+            Component::TriggerZone(TriggerZone::default()),
+        ),
+        ("character", Component::Character(Character::default())),
+        ("pickup", Component::Pickup(Pickup::default())),
+        ("save point", Component::SavePoint),
+        (
+            "ability gate",
+            Component::AbilityGate(AbilityGate::default()),
+        ),
+        ("starts hidden", Component::StartsHidden),
     ]
 }
 

@@ -407,6 +407,7 @@ mod tests {
             slab(Vec3::new(4.4, 3.0, 0.2), Vec3::new(0.0, 1.5, 2.1)),
         ]);
         scene.objects.push(Object {
+            hidden: false,
             name: "volume".into(),
             zone: "test".into(),
             transform: Transform::at(Vec3::new(0.0, 1.5, 0.0)),

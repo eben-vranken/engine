@@ -315,6 +315,7 @@ mod tests {
 
     fn candle(name: &str, x: f32) -> Object {
         Object {
+            hidden: false,
             name: name.into(),
             zone: "test".into(),
             transform: Transform::at(Vec3::X * x),

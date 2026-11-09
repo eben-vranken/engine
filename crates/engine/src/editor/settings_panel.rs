@@ -20,10 +20,7 @@ impl Editor {
         let Some(target) = self.settings.clone() else {
             return false;
         };
-        let names = inspector::Names {
-            objects: Vec::new(),
-            zones: Vec::new(),
-        };
+        let names = inspector::Names::default();
         let before = scene.clone();
         match target {
             SettingsTarget::Environment => {

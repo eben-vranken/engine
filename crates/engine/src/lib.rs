@@ -19,6 +19,7 @@ pub mod behaviors;
 pub mod camera;
 mod cursor;
 pub mod editor;
+pub mod graph;
 pub mod input;
 pub mod launcher;
 pub mod lightmap;

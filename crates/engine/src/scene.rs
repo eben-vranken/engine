@@ -177,6 +177,11 @@ pub struct Object {
     pub transform: Transform,
     #[serde(default)]
     pub components: Vec<Component>,
+    /// Hidden while the game runs (picked up, hidden by a graph, an open
+    /// gate): not drawn, no collision, no light. Never saved with the
+    /// scene; see `StartsHidden`.
+    #[serde(skip)]
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Reflect)]
@@ -241,6 +246,69 @@ pub enum Component {
     LightSource(LightSource),
     FogVolume(FogVolume),
     Material(Material),
+    TriggerZone(TriggerZone),
+    Character(Character),
+    Pickup(Pickup),
+    /// Pressing E at it saves the game.
+    SavePoint,
+    AbilityGate(AbilityGate),
+    /// Hidden when the game starts, until a graph shows it.
+    StartsHidden,
+}
+
+/// A box of space centered on the object (turned and scaled with it):
+/// graphs wait for the player to be in or out of it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct TriggerZone {
+    /// Meters, before the object's scale.
+    pub size: Vec3,
+}
+
+impl Default for TriggerZone {
+    fn default() -> Self {
+        Self {
+            size: Vec3::new(2.0, 2.0, 2.0),
+        }
+    }
+}
+
+impl TriggerZone {
+    /// Whether `point` is inside the box placed by `transform`.
+    pub fn contains(&self, transform: &Transform, point: Vec3) -> bool {
+        let local = transform.matrix().inverse().transform_point3(point);
+        (local.abs() * 2.0).cmple(self.size).all()
+    }
+}
+
+/// Someone the player can talk to (E): starts their dialogue graph. The
+/// name shown is game state: graphs can change it (RENAME).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Character {
+    /// How graphs refer to this character (LINE speakers, RENAME).
+    pub id: String,
+    /// The name shown until a graph renames them, e.g. `???`.
+    pub name: String,
+    /// The graph that runs when the player talks to them.
+    pub dialogue: GraphRef,
+}
+
+/// Picked up with E: the object disappears and the flag is set to true.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Pickup {
+    /// Set to true when picked up (an ability, a key); empty = none.
+    pub flag: FlagRef,
+    /// Played where it was picked up; empty = silent.
+    pub sound: SoundRef,
+}
+
+/// Blocks the way until a flag is true; then it is hidden (no collision).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct AbilityGate {
+    pub requires: FlagRef,
 }
 
 /// How the object's surfaces look: a texture for primitives (instead of the
@@ -340,6 +408,32 @@ pub struct ObjectRef(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
 #[serde(transparent)]
 pub struct ZoneRef(pub String);
+
+/// A flag from the project's `flags.ron`, by name. The inspector shows a
+/// picker.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
+#[serde(transparent)]
+pub struct FlagRef(pub String);
+
+/// A graph in the project (`graphs/talk.ron`). The inspector shows a picker.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
+#[serde(transparent)]
+pub struct GraphRef(pub String);
+
+/// A scene in the project (`scenes/hall.ron`). The inspector shows a picker.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
+#[serde(transparent)]
+pub struct SceneRef(pub String);
+
+/// A WAV in the project (`audio/hum.wav`). The inspector shows a picker.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
+#[serde(transparent)]
+pub struct SoundRef(pub String);
+
+/// A character, by their `Character` id. The inspector shows a picker.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
+#[serde(transparent)]
+pub struct CharacterRef(pub String);
 
 /// A box of space that belongs to the object's zone, centered on the
 /// object (rotated and scaled with it). Whoever is inside it is in that
@@ -740,6 +834,7 @@ impl Scene {
     pub fn starter() -> Scene {
         let zone = "main".to_string();
         let object = |name: &str, position: Vec3, component| Object {
+            hidden: false,
             name: name.into(),
             zone: zone.clone(),
             transform: Transform::at(position),
@@ -813,7 +908,7 @@ impl Scene {
 
     /// Everything visible.
     pub fn renderables(&self) -> impl Iterator<Item = Renderable<'_>> {
-        self.objects.iter().enumerate().flat_map(|(index, object)| {
+        self.shown().flat_map(|(index, object)| {
             let material = object.components.iter().find_map(|c| match c {
                 Component::Material(m) => Some(m),
                 _ => None,
@@ -853,7 +948,7 @@ impl Scene {
         mut center: impl FnMut(&str, &str) -> Option<Vec3>,
     ) -> Vec<(usize, &LightSource, Vec3)> {
         let mut lights = Vec::new();
-        for (index, object) in self.objects.iter().enumerate() {
+        for (index, object) in self.shown() {
             for component in &object.components {
                 match component {
                     Component::LightSource(light) => {
@@ -881,7 +976,7 @@ impl Scene {
     /// Everything with a collider: object index, geometry, transform, and
     /// whether it blocks the player.
     pub fn colliders(&self) -> impl Iterator<Item = (usize, Geometry<'_>, &Transform, bool)> {
-        self.objects.iter().enumerate().flat_map(|(index, object)| {
+        self.shown().flat_map(|(index, object)| {
             object.components.iter().flat_map(move |c| {
                 let groups: Vec<(Geometry, bool)> = match c {
                     Component::Primitive(p) => vec![(Geometry::Shape(p.shape), p.collision)],
@@ -898,6 +993,25 @@ impl Scene {
                     .map(move |(geometry, solid)| (index, geometry, &object.transform, solid))
             })
         })
+    }
+
+    /// The objects not hidden, with their indices.
+    fn shown(&self) -> impl Iterator<Item = (usize, &Object)> {
+        self.objects.iter().enumerate().filter(|(_, o)| !o.hidden)
+    }
+
+    /// The index of the object named `name`.
+    pub fn find(&self, name: &str) -> Option<usize> {
+        self.objects.iter().position(|o| o.name == name)
+    }
+
+    /// The object's component of a kind, picked out by `pick`.
+    pub fn component<'a, T>(
+        &'a self,
+        index: usize,
+        pick: impl Fn(&'a Component) -> Option<&'a T>,
+    ) -> Option<&'a T> {
+        self.objects.get(index)?.components.iter().find_map(pick)
     }
 
     /// Transform of the first object with a `PlayerStart`.
@@ -918,6 +1032,7 @@ pub(crate) fn test_scene(shapes: Vec<(Shape, Vec3)>) -> Scene {
             .into_iter()
             .enumerate()
             .map(|(i, (shape, position))| Object {
+                hidden: false,
                 name: format!("object {i}"),
                 zone: "test".into(),
                 transform: Transform::at(position),
@@ -942,6 +1057,7 @@ mod tests {
             zones: vec![Zone::new("hall")],
             objects: vec![
                 Object {
+                    hidden: false,
                     name: "floor".into(),
                     zone: "hall".into(),
                     transform: Transform::at(Vec3::new(0.0, -0.25, 0.0)),
@@ -955,6 +1071,7 @@ mod tests {
                     })],
                 },
                 Object {
+                    hidden: false,
                     name: "start".into(),
                     zone: "hall".into(),
                     transform: Transform {

@@ -1,5 +1,5 @@
-//! NEW SCENE: naming the new scene in the editor. Also SAVE SCENE AS once
-//! its file is picked.
+//! NEW SCENE and NEW GRAPH: naming the new file in the editor. Also SAVE
+//! SCENE AS once its file is picked.
 
 use super::{Editor, EditorOutput, dialog_heading};
 use crate::player::settings::PlayerSettings;
@@ -7,8 +7,16 @@ use crate::scene::Scene;
 use egui::RichText;
 use std::path::{Path, PathBuf};
 
+/// What the name being typed is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Naming {
+    Scene,
+    Graph,
+}
+
 /// The name dialog's state.
 pub(super) struct NameDialog {
+    pub purpose: Naming,
     pub text: String,
     /// Why the last name was refused.
     pub error: Option<String>,
@@ -17,6 +25,12 @@ pub(super) struct NameDialog {
 /// Checks a typed scene name; returns its file relative to the project
 /// (`scenes/<name>.ron`).
 pub fn scene_file(project_dir: &Path, name: &str) -> Result<PathBuf, String> {
+    project_file(project_dir, "scenes", name)
+}
+
+/// Checks a typed name for a new `<folder>/<name>.ron` in the project;
+/// returns that path, relative to the project.
+fn project_file(project_dir: &Path, folder: &str, name: &str) -> Result<PathBuf, String> {
     let name = name.trim();
     let name = name.strip_suffix(".ron").unwrap_or(name);
     if name.is_empty() {
@@ -25,7 +39,7 @@ pub fn scene_file(project_dir: &Path, name: &str) -> Result<PathBuf, String> {
     if !crate::project::is_valid_name(name) {
         return Err("USE LETTERS, DIGITS, SPACES, - AND _ ONLY".into());
     }
-    let relative = Path::new("scenes").join(format!("{name}.ron"));
+    let relative = Path::new(folder).join(format!("{name}.ron"));
     if project_dir.join(&relative).exists() {
         return Err(format!("{} ALREADY EXISTS", relative.display()).to_uppercase());
     }
@@ -33,8 +47,9 @@ pub fn scene_file(project_dir: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 impl Editor {
-    pub(super) fn ask_name(&mut self) {
+    pub(super) fn ask_name(&mut self, purpose: Naming) {
         self.naming = Some(NameDialog {
+            purpose,
             text: String::new(),
             error: None,
         });
@@ -48,11 +63,11 @@ impl Editor {
         let mut accept = false;
         let mut cancel = false;
         egui::Modal::new(egui::Id::unique("scene_name")).show(ui.ctx(), |ui| {
-            dialog_heading(
-                ui,
-                "NEW SCENE",
-                "CREATED IN SCENES/ AND OPENED IN A NEW TAB",
-            );
+            let (title, hint) = match dialog.purpose {
+                Naming::Scene => ("NEW SCENE", "CREATED IN SCENES/ AND OPENED IN A NEW TAB"),
+                Naming::Graph => ("NEW GRAPH", "CREATED IN GRAPHS/ AND OPENED IN A NEW TAB"),
+            };
+            dialog_heading(ui, title, hint);
             let field = ui.add(egui::TextEdit::singleline(&mut dialog.text).hint_text("NAME"));
             field.request_focus();
             if field.changed() {
@@ -75,8 +90,12 @@ impl Editor {
         if !accept {
             return;
         }
-        let result = scene_file(&self.project_dir, &dialog.text)
-            .and_then(|path| self.create_scene(&path, output));
+        let result = match dialog.purpose {
+            Naming::Scene => scene_file(&self.project_dir, &dialog.text)
+                .and_then(|path| self.create_scene(&path, output)),
+            Naming::Graph => project_file(&self.project_dir, "graphs", &dialog.text)
+                .and_then(|path| self.create_graph(&path, output)),
+        };
         match result {
             Ok(()) => self.naming = None,
             Err(error) => {
@@ -85,6 +104,18 @@ impl Editor {
                 }
             }
         }
+    }
+
+    /// Writes a graph with just a START node to `path` and opens it.
+    fn create_graph(&mut self, path: &Path, output: &mut EditorOutput) -> Result<(), String> {
+        let file = self.project_dir.join(path);
+        crate::graph::Graph::starter()
+            .save(&file)
+            .map_err(|e| e.to_string())?;
+        log::info!("created {}", file.display());
+        self.index.refresh(&self.project_dir, true);
+        output.open_graph = Some(path.to_owned());
+        Ok(())
     }
 
     /// Writes a starter scene to `path` and opens it in a new tab.

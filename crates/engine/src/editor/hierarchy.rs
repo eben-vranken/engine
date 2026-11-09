@@ -568,6 +568,7 @@ mod tests {
     fn model_greater_than_part_finds_that_part_in_every_matching_model() {
         let mut scene = boxes(0);
         let candle = |name: &str, path: &str| crate::scene::Object {
+            hidden: false,
             name: name.into(),
             zone: "test".into(),
             transform: Default::default(),

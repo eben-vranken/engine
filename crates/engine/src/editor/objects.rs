@@ -20,6 +20,7 @@ impl Editor {
         let half = shape.half_extents();
         let ahead = view.camera.position + view.camera.forward() * NEW_OBJECT_DISTANCE;
         let object = Object {
+            hidden: false,
             name: unique_name(scene, kind),
             zone: self.new_object_zone(scene)?,
             transform: Transform::at(placement((-half, half), view.aim, ahead)),
@@ -44,6 +45,7 @@ impl Editor {
         // A camera yaw turns right, an object's Y rotation turns left.
         let yaw = (-view.camera.yaw.to_degrees() / 15.0).round() * 15.0 + 0.0;
         let object = Object {
+            hidden: false,
             name: unique_name(scene, "player start"),
             zone: self.new_object_zone(scene)?,
             transform: Transform {
@@ -64,6 +66,7 @@ impl Editor {
         let ahead = view.camera.position + view.camera.forward() * NEW_OBJECT_DISTANCE;
         let zone = self.new_object_zone(scene)?;
         let object = Object {
+            hidden: false,
             name: unique_name(scene, &format!("{zone} volume")),
             zone,
             transform: Transform::at(placement((-half, half), view.aim, ahead)),
@@ -84,6 +87,7 @@ impl Editor {
         let yaw = (-view.camera.yaw.to_degrees() / 15.0).round() * 15.0 + 0.0;
         let zone = self.new_object_zone(scene)?;
         let object = Object {
+            hidden: false,
             name: unique_name(scene, &format!("{zone} portal")),
             zone,
             transform: Transform {
@@ -101,6 +105,7 @@ impl Editor {
         let stem = path.rsplit('/').next().unwrap_or(&path);
         let stem = stem.rsplit_once('.').map_or(stem, |(stem, _)| stem);
         let object = Object {
+            hidden: false,
             name: unique_name(scene, stem),
             zone: self.new_object_zone(scene)?,
             transform: Transform::at(position),
@@ -137,6 +142,10 @@ impl Editor {
 
     /// Removes the selected object.
     pub fn delete_selected(&mut self, scene: &mut Scene) -> Option<Change> {
+        if let Some(doc) = &mut self.graph {
+            doc.delete_selected();
+            return None;
+        }
         if self.selected_objects().len() > 1 {
             return self.delete_all_selected(scene);
         }
@@ -150,6 +159,12 @@ impl Editor {
     /// Copies the selected object in place, right after it in the list, and
     /// selects the copy (move it with the gizmo).
     pub fn duplicate_selected(&mut self, scene: &mut Scene) -> Option<Change> {
+        if let Some(doc) = &mut self.graph {
+            if let Some(id) = doc.selected {
+                doc.duplicate(id);
+            }
+            return None;
+        }
         if self.selected_objects().len() > 1 {
             return self.duplicate_all_selected(scene);
         }
