@@ -19,6 +19,9 @@ const LABEL_WIDTH: f32 = 96.0;
 #[derive(Debug, Clone, Default)]
 pub struct Names {
     pub objects: Vec<String>,
+    /// Per entry of `objects`: its id, or 0 where ids don't apply (a
+    /// graph that isn't a scene's: it picks by name).
+    pub object_ids: Vec<u32>,
     pub zones: Vec<String>,
     pub flags: Vec<String>,
     pub graphs: Vec<String>,
@@ -192,7 +195,7 @@ fn row(ui: &mut Ui, name: &str, field: &mut dyn PartialReflect, names: &Names) -
         return ui
             .horizontal(|ui| {
                 label(ui);
-                reference_picker(ui, name, &mut v.0, &names.objects)
+                object_picker(ui, name, v, names)
             })
             .inner;
     }
@@ -319,6 +322,48 @@ fn variant_picker(
 
 /// A dropdown of names (objects or zones); a name that no longer exists
 /// shows as missing.
+/// Picks an object: by id where `names` has ids (the object's own scene),
+/// so the reference survives renames; by name otherwise.
+fn object_picker(ui: &mut Ui, name: &str, value: &mut ObjectRef, names: &Names) -> bool {
+    let id_of = |i: usize| names.object_ids.get(i).copied().unwrap_or(0);
+    let current = names.objects.iter().enumerate().position(|(i, n)| {
+        if value.id != 0 && id_of(i) != 0 {
+            id_of(i) == value.id
+        } else {
+            *n == value.name
+        }
+    });
+    let text = match current {
+        _ if value.is_empty() => "NONE".to_owned(),
+        Some(i) => names.objects[i].clone(),
+        None => format!("{} (MISSING)", value.name),
+    };
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(("reference", name))
+        .selected_text(text)
+        .height(320.0)
+        .show_ui(ui, |ui| {
+            if ui.selectable_label(value.is_empty(), "NONE").clicked() {
+                picked = Some(ObjectRef::default());
+            }
+            for (i, option) in names.objects.iter().enumerate() {
+                if ui.selectable_label(current == Some(i), option).clicked() {
+                    picked = Some(ObjectRef {
+                        id: id_of(i),
+                        name: option.clone(),
+                    });
+                }
+            }
+        });
+    match picked {
+        Some(reference) if reference != *value => {
+            *value = reference;
+            true
+        }
+        _ => false,
+    }
+}
+
 fn reference_picker(ui: &mut Ui, name: &str, value: &mut String, names: &[String]) -> bool {
     let current = &*value;
     let text = if current.is_empty() {

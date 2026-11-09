@@ -1321,6 +1321,7 @@ mod tests {
         scene.environment.bake_samples = 64;
         scene.environment.lightmap_density = 2.0;
         scene.objects.push(Object {
+            id: 0,
             hidden: false,
             name: "volume".into(),
             zone: "test".into(),

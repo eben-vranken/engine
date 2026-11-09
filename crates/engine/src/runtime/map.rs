@@ -187,6 +187,7 @@ mod tests {
 
     fn volume(zone: &str, x: f32) -> Object {
         Object {
+            id: 0,
             name: format!("{zone} volume"),
             zone: zone.into(),
             transform: Transform::at(Vec3::new(x, 0.0, 0.0)),

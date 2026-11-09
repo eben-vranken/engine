@@ -315,6 +315,7 @@ mod tests {
 
     fn candle(name: &str, x: f32) -> Object {
         Object {
+            id: 0,
             hidden: false,
             name: name.into(),
             zone: "test".into(),

@@ -7,6 +7,7 @@
 
 use super::flags::Flags;
 use super::{DoorAction, Graph, NodeId, NodeKind};
+use crate::scene::ObjectRef;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -20,28 +21,28 @@ pub struct World<'a> {
     /// The zone the player is in.
     pub zone: Option<&'a str>,
     /// TriggerZone objects the player is inside.
-    pub triggers: &'a [String],
+    pub triggers: &'a [ObjectRef],
     /// Objects the player used this frame.
-    pub used: &'a [String],
+    pub used: &'a [ObjectRef],
     /// Objects the player picked up this frame.
-    pub picked: &'a [String],
+    pub picked: &'a [ObjectRef],
 }
 
 /// Something the world should do.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     Door {
-        door: String,
+        door: ObjectRef,
         action: DoorAction,
     },
     Show {
-        object: String,
+        object: ObjectRef,
         visible: bool,
     },
     /// A sound once, from an object (empty: at the player).
     PlaySound {
         sound: String,
-        at: String,
+        at: ObjectRef,
         volume: f32,
     },
     /// A line's sound, from its speaker (a character id).
@@ -263,10 +264,16 @@ impl GraphRunner {
                 let ready = match &node.kind {
                     NodeKind::WhenInScene { scene } => same_path(&scene.0, world.scene),
                     NodeKind::WhenInZone { zone } => world.zone == Some(zone.0.as_str()),
-                    NodeKind::WhenInTrigger { trigger } => world.triggers.contains(&trigger.0),
-                    NodeKind::WhenOutOfTrigger { trigger } => !world.triggers.contains(&trigger.0),
-                    NodeKind::WhenUsed { object } => world.used.contains(&object.0),
-                    NodeKind::WhenPickedUp { object } => world.picked.contains(&object.0),
+                    NodeKind::WhenInTrigger { trigger } => {
+                        world.triggers.iter().any(|t| trigger.matches(t))
+                    }
+                    NodeKind::WhenOutOfTrigger { trigger } => {
+                        !world.triggers.iter().any(|t| trigger.matches(t))
+                    }
+                    NodeKind::WhenUsed { object } => world.used.iter().any(|u| object.matches(u)),
+                    NodeKind::WhenPickedUp { object } => {
+                        world.picked.iter().any(|p| object.matches(p))
+                    }
                     NodeKind::WaitUntil { condition } => condition.holds(&self.flags),
                     NodeKind::Wait { seconds } => active.time >= *seconds,
                     NodeKind::RunGraph { .. } => active.child.is_none_or(|c| !running.contains(&c)),
@@ -343,14 +350,14 @@ impl GraphRunner {
                 }
                 NodeKind::Door { door, action } => {
                     self.commands.push(Command::Door {
-                        door: door.0.clone(),
+                        door: door.clone(),
                         action: *action,
                     });
                     self.pass(thread, id, 0);
                 }
                 NodeKind::Show { object, visible } => {
                     self.commands.push(Command::Show {
-                        object: object.0.clone(),
+                        object: object.clone(),
                         visible: *visible,
                     });
                     self.pass(thread, id, 0);
@@ -358,7 +365,7 @@ impl GraphRunner {
                 NodeKind::PlaySound { sound, at, volume } => {
                     self.commands.push(Command::PlaySound {
                         sound: sound.0.clone(),
-                        at: at.0.clone(),
+                        at: at.clone(),
                         volume: *volume,
                     });
                     self.pass(thread, id, 0);
@@ -714,7 +721,7 @@ mod tests {
             vec![
                 NodeKind::Start,
                 NodeKind::WhenUsed {
-                    object: ObjectRef("switch".into()),
+                    object: ObjectRef::named("switch"),
                 },
                 NodeKind::SetFlag {
                     flag: flag("lever"),
@@ -731,7 +738,7 @@ mod tests {
                     },
                 },
                 NodeKind::Door {
-                    door: ObjectRef("gate".into()),
+                    door: ObjectRef::named("gate"),
                     action: DoorAction::Open,
                 },
             ],
@@ -750,7 +757,7 @@ mod tests {
         assert!(runner.update(&hall, 0.1).is_empty());
 
         // The switch sets the flag; the hall wait has passed already.
-        let used = ["switch".to_string()];
+        let used = [ObjectRef::named("switch")];
         let using = World {
             used: &used,
             ..Default::default()
@@ -777,7 +784,7 @@ mod tests {
                     },
                 },
                 NodeKind::Show {
-                    object: ObjectRef("lamp".into()),
+                    object: ObjectRef::named("lamp"),
                     visible: true,
                 },
             ],
@@ -795,7 +802,7 @@ mod tests {
         assert_eq!(
             runner.update(&World::default(), 0.6),
             vec![Command::Show {
-                object: "lamp".into(),
+                object: ObjectRef::named("lamp"),
                 visible: true
             }]
         );
@@ -862,7 +869,7 @@ mod tests {
                     graph: GraphRef("talk".into()),
                 },
                 NodeKind::Door {
-                    door: ObjectRef("gate".into()),
+                    door: ObjectRef::named("gate"),
                     action: DoorAction::Toggle,
                 },
             ],
@@ -900,7 +907,7 @@ mod tests {
         assert_eq!(
             runner.update(&World::default(), 0.1),
             vec![Command::Door {
-                door: "gate".into(),
+                door: ObjectRef::named("gate"),
                 action: DoorAction::Toggle
             }]
         );
@@ -929,10 +936,10 @@ mod tests {
             vec![
                 NodeKind::Start,
                 NodeKind::WhenUsed {
-                    object: ObjectRef("lever".into()),
+                    object: ObjectRef::named("lever"),
                 },
                 NodeKind::Show {
-                    object: ObjectRef("lamp".into()),
+                    object: ObjectRef::named("lamp"),
                     visible: true,
                 },
             ],
@@ -944,7 +951,7 @@ mod tests {
         let paused = runner.suspend("scene");
         assert_eq!(paused.len(), 1);
         assert!(runner.running().is_empty());
-        let lever = ["lever".to_string()];
+        let lever = [ObjectRef::named("lever")];
         let using = World {
             used: &lever,
             ..Default::default()
@@ -990,8 +997,8 @@ mod tests {
 
         let mut runner = GraphRunner::new(dir, flags.start());
         assert!(runner.start("graphs/scenes/test_level.ron"));
-        let lever = ["lever".to_string()];
-        let doorstep = ["doorstep".to_string()];
+        let lever = [ObjectRef::named("lever")];
+        let doorstep = [ObjectRef::named("doorstep")];
         let at_door = World {
             triggers: &doorstep,
             ..Default::default()
@@ -1009,17 +1016,17 @@ mod tests {
         );
         let commands = runner.update(&at_door, 0.1);
         assert!(commands.contains(&Command::Door {
-            door: "gate".into(),
+            door: ObjectRef::named("gate"),
             action: DoorAction::Open
         }));
         assert!(
             commands
                 .iter()
-                .any(|c| matches!(c, Command::Show { object, .. } if object == "room lamp"))
+                .any(|c| matches!(c, Command::Show { object, .. } if object.name == "room lamp"))
         );
 
         // The feather turns on the double jump.
-        let feather = ["feather".to_string()];
+        let feather = [ObjectRef::named("feather")];
         runner.update(
             &World {
                 picked: &feather,

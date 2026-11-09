@@ -171,6 +171,11 @@ impl Default for Grade {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Object {
     pub name: String,
+    /// Stable within its scene: references (graphs, switches, saves) hold
+    /// it, so renaming the object breaks nothing. 0 = not given yet (files
+    /// from before ids); `Scene::assign_ids` gives one.
+    #[serde(default)]
+    pub id: u32,
     /// Name of the zone this object belongs to.
     pub zone: String,
     #[serde(default)]
@@ -427,10 +432,82 @@ impl Default for LightSource {
     }
 }
 
-/// Another object in the scene, by name. The inspector shows a picker.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
-#[serde(transparent)]
-pub struct ObjectRef(pub String);
+/// Another object in the scene: by its id, with its name as a readable hint
+/// (and the fallback for references written before objects had ids, which
+/// are just a name in RON). The inspector shows a picker.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Reflect)]
+pub struct ObjectRef {
+    /// 0: refers by `name` only.
+    pub id: u32,
+    pub name: String,
+}
+
+impl ObjectRef {
+    /// A reference by name only (resolved by name; the editor fills in the
+    /// id when it can).
+    pub fn named(name: impl Into<String>) -> Self {
+        Self {
+            id: 0,
+            name: name.into(),
+        }
+    }
+
+    /// A reference to this object.
+    pub fn to(object: &Object) -> Self {
+        Self {
+            id: object.id,
+            name: object.name.clone(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.id == 0 && self.name.is_empty()
+    }
+
+    /// Whether this refers to `object` (by id when it has one).
+    pub fn matches(&self, object: &ObjectRef) -> bool {
+        if self.id != 0 && object.id != 0 {
+            self.id == object.id
+        } else {
+            !self.name.is_empty() && self.name == object.name
+        }
+    }
+}
+
+impl Serialize for ObjectRef {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        #[serde(rename = "ObjectRef")]
+        struct Full<'a> {
+            id: u32,
+            name: &'a str,
+        }
+        if self.id == 0 {
+            serializer.serialize_str(&self.name)
+        } else {
+            Full {
+                id: self.id,
+                name: &self.name,
+            }
+            .serialize(serializer)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ObjectRef {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Written {
+            Name(String),
+            Full { id: u32, name: String },
+        }
+        Ok(match Written::deserialize(deserializer)? {
+            Written::Name(name) => Self::named(name),
+            Written::Full { id, name } => Self { id, name },
+        })
+    }
+}
 
 /// A zone in the scene, by name. The inspector shows a picker.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
@@ -868,6 +945,7 @@ impl Scene {
     pub fn starter() -> Scene {
         let zone = "main".to_string();
         let object = |name: &str, position: Vec3, component| Object {
+            id: 0,
             hidden: false,
             name: name.into(),
             zone: zone.clone(),
@@ -908,12 +986,76 @@ impl Scene {
             path: path.to_owned(),
             source,
         })?;
-        let scene: Scene = ron::from_str(&text).map_err(|source| SceneError::Parse {
+        let mut scene: Scene = ron::from_str(&text).map_err(|source| SceneError::Parse {
             path: path.to_owned(),
             source: Box::new(source),
         })?;
         scene.validate()?;
+        scene.assign_ids();
+        scene.link_refs();
+        for name in scene.duplicate_names() {
+            log::warn!(
+                "{}: more than one object is called \"{name}\"; rename them so references by name stay clear",
+                path.display()
+            );
+        }
         Ok(scene)
+    }
+
+    /// Gives every object without an id (or with one already taken) a new
+    /// one, in list order, so an old file always gets the same ids.
+    pub fn assign_ids(&mut self) {
+        let mut next = self.objects.iter().map(|o| o.id).max().unwrap_or(0) + 1;
+        let mut seen = std::collections::HashSet::new();
+        for object in &mut self.objects {
+            if object.id == 0 || !seen.insert(object.id) {
+                object.id = next;
+                seen.insert(next);
+                next += 1;
+            }
+        }
+    }
+
+    /// An id no object has yet.
+    pub fn next_id(&self) -> u32 {
+        self.objects.iter().map(|o| o.id).max().unwrap_or(0) + 1
+    }
+
+    /// Fills in the ids of references in this scene's components that only
+    /// have a name (written before ids), when the name is unambiguous.
+    pub fn link_refs(&mut self) {
+        let snapshot: Vec<ObjectRef> = self.objects.iter().map(ObjectRef::to).collect();
+        for object in &mut self.objects {
+            for component in &mut object.components {
+                if let Component::Switch(switch) = component {
+                    link(&mut switch.target, &snapshot);
+                }
+            }
+        }
+    }
+
+    /// Names more than one object has.
+    pub fn duplicate_names(&self) -> Vec<String> {
+        let mut seen = std::collections::HashSet::new();
+        let mut doubled = std::collections::BTreeSet::new();
+        for object in &self.objects {
+            if !seen.insert(object.name.as_str()) {
+                doubled.insert(object.name.clone());
+            }
+        }
+        doubled.into_iter().collect()
+    }
+
+    /// The object a reference points to: by id when it has one, else the
+    /// first with its name. `None`: it no longer exists (a broken link).
+    pub fn resolve(&self, reference: &ObjectRef) -> Option<usize> {
+        if reference.id != 0 {
+            self.objects.iter().position(|o| o.id == reference.id)
+        } else if reference.name.is_empty() {
+            None
+        } else {
+            self.find(&reference.name)
+        }
     }
 
     pub fn save(&self, path: &Path) -> Result<(), SceneError> {
@@ -1109,6 +1251,7 @@ pub(crate) fn test_scene(shapes: Vec<(Shape, Vec3)>) -> Scene {
             .into_iter()
             .enumerate()
             .map(|(i, (shape, position))| Object {
+                id: i as u32 + 1,
                 hidden: false,
                 name: format!("object {i}"),
                 zone: "test".into(),
@@ -1125,15 +1268,79 @@ pub(crate) fn test_scene(shapes: Vec<(Shape, Vec3)>) -> Scene {
     }
 }
 
+/// Points a reference at one of `objects` (a scene's): a name-only one gets
+/// the id of the one object with that name, and one found by id takes the
+/// object's current name (so files read right after a rename).
+pub fn link(reference: &mut ObjectRef, objects: &[ObjectRef]) {
+    if reference.id == 0 {
+        if reference.name.is_empty() {
+            return;
+        }
+        let mut named = objects.iter().filter(|o| o.name == reference.name);
+        if let (Some(only), None) = (named.next(), named.next()) {
+            reference.id = only.id;
+        }
+    } else if let Some(object) = objects.iter().find(|o| o.id == reference.id) {
+        reference.name = object.name.clone();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Old files name objects; new ones hold `(id, name)`. Both load, and
+    /// a name-only reference is written back as just the name.
+    #[test]
+    fn object_refs_read_old_and_new_forms() {
+        let old: ObjectRef = ron::from_str("\"gate\"").unwrap();
+        assert_eq!(old, ObjectRef::named("gate"));
+        let new: ObjectRef = ron::from_str("(id: 4, name: \"gate\")").unwrap();
+        assert_eq!((new.id, new.name.as_str()), (4, "gate"));
+        assert_eq!(ron::to_string(&old).unwrap(), "\"gate\"");
+        let again: ObjectRef = ron::from_str(&ron::to_string(&new).unwrap()).unwrap();
+        assert_eq!(again, new);
+    }
+
+    /// Ids survive a rename; files without ids get the same ids every time.
+    #[test]
+    fn references_follow_ids_through_renames() {
+        let mut scene = sample();
+        for object in &mut scene.objects {
+            object.id = 0;
+        }
+        scene.assign_ids();
+        let ids: Vec<u32> = scene.objects.iter().map(|o| o.id).collect();
+        assert!(ids.iter().all(|&id| id != 0));
+        let mut again = scene.clone();
+        for object in &mut again.objects {
+            object.id = 0;
+        }
+        again.assign_ids();
+        assert_eq!(again.objects.iter().map(|o| o.id).collect::<Vec<_>>(), ids);
+
+        let mut reference = ObjectRef::named(scene.objects[0].name.clone());
+        let objects: Vec<ObjectRef> = scene.objects.iter().map(ObjectRef::to).collect();
+        link(&mut reference, &objects);
+        assert_eq!(reference.id, ids[0]);
+        scene.objects[0].name = "renamed".into();
+        assert_eq!(scene.resolve(&reference), Some(0));
+        let objects: Vec<ObjectRef> = scene.objects.iter().map(ObjectRef::to).collect();
+        link(&mut reference, &objects);
+        assert_eq!(reference.name, "renamed");
+        // A duplicated id (a pasted copy) gets a new one.
+        let copy = scene.objects[0].clone();
+        scene.objects.push(copy);
+        scene.assign_ids();
+        assert_ne!(scene.objects.last().unwrap().id, ids[0]);
+    }
 
     fn sample() -> Scene {
         Scene {
             zones: vec![Zone::new("hall")],
             objects: vec![
                 Object {
+                    id: 0,
                     hidden: false,
                     name: "floor".into(),
                     zone: "hall".into(),
@@ -1148,6 +1355,7 @@ mod tests {
                     })],
                 },
                 Object {
+                    id: 0,
                     hidden: false,
                     name: "start".into(),
                     zone: "hall".into(),
@@ -1265,7 +1473,7 @@ mod tests {
     #[test]
     fn switch_targets_are_plain_names_in_ron() {
         let switch = Switch {
-            target: ObjectRef("hall door".into()),
+            target: ObjectRef::named("hall door"),
             pressure_plate: false,
         };
         let text = ron::to_string(&switch).unwrap();

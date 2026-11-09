@@ -30,6 +30,24 @@ pub enum Edit {
     },
 }
 
+impl Edit {
+    /// New objects get ids before the edit is recorded, so undo and redo
+    /// bring back the same object (references to it keep working). A copy
+    /// (duplicate, paste) arrives with its original's id and gets its own.
+    fn give_ids(&mut self, scene: &Scene) {
+        match self {
+            Edit::Add { object, .. } => {
+                if object.id == 0 || scene.objects.iter().any(|o| o.id == object.id) {
+                    object.id = scene.next_id();
+                }
+            }
+            Edit::SetScene { after, .. } => after.assign_ids(),
+            Edit::SetObject { before, after, .. } => after.id = before.id,
+            Edit::Remove { .. } | Edit::SetPlayer { .. } => {}
+        }
+    }
+}
+
 /// What applying or reverting an edit did to the scene's object list.
 /// Selection, highlight and draws all refer to objects by index, so they
 /// have to follow insertions and removals.
@@ -111,7 +129,8 @@ pub struct History {
 
 impl History {
     /// Applies an edit to the scene and records it.
-    pub fn push(&mut self, scene: &mut Scene, edit: Edit) -> Change {
+    pub fn push(&mut self, scene: &mut Scene, mut edit: Edit) -> Change {
+        edit.give_ids(scene);
         // Scene edits never touch the player settings.
         let change = edit.apply(scene, &mut PlayerSettings::default());
         self.record(edit);
@@ -248,6 +267,8 @@ mod tests {
         );
         assert_eq!(change, Change::Added(1));
         assert_eq!(scene.objects[1].name, "copy");
+        // The copy got an id of its own.
+        assert_ne!(scene.objects[1].id, scene.objects[0].id);
         assert_eq!(scene.objects[2].name, "object 1");
 
         let removed = Box::new(scene.objects[3].clone());

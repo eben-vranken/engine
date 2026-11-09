@@ -512,6 +512,7 @@ mod tests {
 
     fn object(zone: &str, position: Vec3, component: Component) -> Object {
         Object {
+            id: 0,
             hidden: false,
             name: "o".into(),
             zone: zone.into(),

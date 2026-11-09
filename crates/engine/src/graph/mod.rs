@@ -348,21 +348,38 @@ impl NodeKind {
         }
     }
 
-    /// The objects it names (by name).
-    pub fn objects(&self) -> Vec<&str> {
+    /// The objects it refers to.
+    pub fn objects(&self) -> Vec<&ObjectRef> {
+        self.object_refs()
+            .into_iter()
+            .filter(|r| !r.is_empty())
+            .collect()
+    }
+
+    fn object_refs(&self) -> Vec<&ObjectRef> {
         use NodeKind::*;
         match self {
-            WhenInTrigger { trigger: o } | WhenOutOfTrigger { trigger: o } => vec![o.0.as_str()],
+            WhenInTrigger { trigger: o } | WhenOutOfTrigger { trigger: o } => vec![o],
             WhenUsed { object: o } | WhenPickedUp { object: o } | Show { object: o, .. } => {
-                vec![o.0.as_str()]
+                vec![o]
             }
-            Door { door, .. } => vec![door.0.as_str()],
-            PlaySound { at, .. } => vec![at.0.as_str()],
+            Door { door, .. } => vec![door],
+            PlaySound { at, .. } => vec![at],
             _ => Vec::new(),
         }
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect()
+    }
+
+    fn object_refs_mut(&mut self) -> Vec<&mut ObjectRef> {
+        use NodeKind::*;
+        match self {
+            WhenInTrigger { trigger: o } | WhenOutOfTrigger { trigger: o } => vec![o],
+            WhenUsed { object: o } | WhenPickedUp { object: o } | Show { object: o, .. } => {
+                vec![o]
+            }
+            Door { door, .. } => vec![door],
+            PlaySound { at, .. } => vec![at],
+            _ => Vec::new(),
+        }
     }
 
     /// The character it names (a speaker, a rename).
@@ -429,21 +446,23 @@ impl NodeKind {
             Note { .. } | Reply { .. } => vec!["-".into()],
             WhenInScene { scene } | LoadScene { scene } => vec![or_none(&scene.0)],
             WhenInZone { zone } => vec![or_none(&zone.0)],
-            WhenInTrigger { trigger } | WhenOutOfTrigger { trigger } => vec![or_none(&trigger.0)],
-            WhenUsed { object } | WhenPickedUp { object } => vec![or_none(&object.0)],
+            WhenInTrigger { trigger } | WhenOutOfTrigger { trigger } => {
+                vec![or_none(&trigger.name)]
+            }
+            WhenUsed { object } | WhenPickedUp { object } => vec![or_none(&object.name)],
             WaitUntil { condition } | Branch { condition } => vec![condition.describe()],
             Wait { seconds } => vec![format!("{seconds} S")],
             SetFlag { flag, value } => vec![format!("{} = {value}", or_none(&flag.0))],
             AddToFlag { flag, amount } => vec![format!("{} + {amount}", or_none(&flag.0))],
             Door { door, action } => {
-                vec![format!("{action:?} {}", or_none(&door.0)).to_uppercase()]
+                vec![format!("{action:?} {}", or_none(&door.name)).to_uppercase()]
             }
             Show { object, visible } => {
                 let what = if *visible { "SHOW" } else { "HIDE" };
-                vec![format!("{what} {}", or_none(&object.0))]
+                vec![format!("{what} {}", or_none(&object.name))]
             }
             PlaySound { sound, at, .. } => {
-                let at = if at.0.is_empty() { "PLAYER" } else { &at.0 };
+                let at = if at.is_empty() { "PLAYER" } else { &at.name };
                 vec![or_none(&sound.0), format!("AT {at}")]
             }
             RunGraph { graph } => vec![or_none(&graph.0)],
@@ -522,6 +541,16 @@ pub enum GraphError {
 }
 
 impl Graph {
+    /// Points this graph's object references at its scene's `objects` (see
+    /// `scene::link`). For a scene's own graph.
+    pub fn link_objects(&mut self, objects: &[ObjectRef]) {
+        for node in &mut self.nodes {
+            for reference in node.kind.object_refs_mut() {
+                crate::scene::link(reference, objects);
+            }
+        }
+    }
+
     /// A new graph: just a START node.
     pub fn starter() -> Self {
         Graph {

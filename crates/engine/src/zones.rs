@@ -186,6 +186,7 @@ mod tests {
 
     fn volume(zone: &str, position: Vec3, size: Vec3) -> Object {
         Object {
+            id: 0,
             hidden: false,
             name: format!("{zone} volume"),
             zone: zone.into(),
@@ -199,6 +200,7 @@ mod tests {
 
     fn portal(from: &str, to: &str) -> Object {
         Object {
+            id: 0,
             hidden: false,
             name: format!("{from} to {to}"),
             zone: from.into(),

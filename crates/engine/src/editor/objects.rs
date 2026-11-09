@@ -20,6 +20,7 @@ impl Editor {
         let half = shape.half_extents();
         let ahead = view.camera.position + view.camera.forward() * NEW_OBJECT_DISTANCE;
         let object = Object {
+            id: 0,
             hidden: false,
             name: unique_name(scene, kind),
             zone: self.new_object_zone(scene)?,
@@ -45,6 +46,7 @@ impl Editor {
         // A camera yaw turns right, an object's Y rotation turns left.
         let yaw = (-view.camera.yaw.to_degrees() / 15.0).round() * 15.0 + 0.0;
         let object = Object {
+            id: 0,
             hidden: false,
             name: unique_name(scene, "player start"),
             zone: self.new_object_zone(scene)?,
@@ -66,6 +68,7 @@ impl Editor {
         let ahead = view.camera.position + view.camera.forward() * NEW_OBJECT_DISTANCE;
         let zone = self.new_object_zone(scene)?;
         let object = Object {
+            id: 0,
             hidden: false,
             name: unique_name(scene, &format!("{zone} volume")),
             zone,
@@ -87,6 +90,7 @@ impl Editor {
         let yaw = (-view.camera.yaw.to_degrees() / 15.0).round() * 15.0 + 0.0;
         let zone = self.new_object_zone(scene)?;
         let object = Object {
+            id: 0,
             hidden: false,
             name: unique_name(scene, &format!("{zone} portal")),
             zone,
@@ -105,6 +109,7 @@ impl Editor {
         let stem = path.rsplit('/').next().unwrap_or(&path);
         let stem = stem.rsplit_once('.').map_or(stem, |(stem, _)| stem);
         let object = Object {
+            id: 0,
             hidden: false,
             name: unique_name(scene, stem),
             zone: self.new_object_zone(scene)?,
@@ -241,7 +246,12 @@ pub(super) fn primitives() -> [(&'static str, Shape); 5] {
 /// `base`, or `base 2`, `base 3`... if that name is taken. A trailing number
 /// on `base` is replaced, so copies of "box 2" are "box 3", not "box 2 2".
 pub(super) fn unique_name(scene: &Scene, base: &str) -> String {
-    let taken = |name: &str| scene.objects.iter().any(|o| o.name == name);
+    unique_among(scene.objects.iter().map(|o| o.name.as_str()), base)
+}
+
+/// `base`, or `base 2`, `base 3`… whichever isn't in `names`.
+pub(super) fn unique_among<'a>(names: impl Iterator<Item = &'a str> + Clone, base: &str) -> String {
+    let taken = |name: &str| names.clone().any(|n| n == name);
     if !taken(base) {
         return base.to_owned();
     }

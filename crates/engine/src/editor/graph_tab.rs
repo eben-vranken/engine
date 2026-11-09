@@ -42,6 +42,13 @@ pub struct GraphDoc {
 }
 
 impl GraphDoc {
+    /// Links object references to the graph's scene. Not an edit: the
+    /// saved copy is linked too, so the tab doesn't show as changed.
+    pub fn link_objects(&mut self, objects: &[crate::scene::ObjectRef]) {
+        self.graph.link_objects(objects);
+        self.saved.link_objects(objects);
+    }
+
     pub fn new(graph: Graph) -> Self {
         Self {
             saved: graph.clone(),
@@ -173,16 +180,29 @@ impl GraphDoc {
 
 impl Editor {
     /// Opens `doc` (read from `path`) in a new tab and makes it active.
-    /// The tab's scene is empty: nothing is drawn behind the canvas.
+    /// The tab's scene is empty: nothing is drawn behind the canvas. A
+    /// scene's graph has its object references linked to that scene's
+    /// objects (ids filled in, names brought up to date).
     pub fn open_graph_tab(
         &mut self,
         path: PathBuf,
-        doc: GraphDoc,
+        mut doc: GraphDoc,
         scene: &mut Scene,
         camera: &FlyCamera,
     ) {
+        self.index.refresh(&self.project_dir, false);
+        if let Some(objects) = self.scene_objects_of(&crate::graph::key(&path)) {
+            doc.link_objects(&objects);
+        }
         self.open_tab(path, Scene::default(), scene, camera);
         self.graph = Some(doc);
+    }
+
+    /// The objects of the scene a graph belongs to (`None`: not a scene's
+    /// graph, or the scene isn't known).
+    fn scene_objects_of(&self, graph: &str) -> Option<Vec<crate::scene::ObjectRef>> {
+        let scene = crate::graph::scene_of_graph(graph)?;
+        self.index.scene_objects.get(&scene).cloned()
     }
 
     /// Writes the open graph to its file.
@@ -657,7 +677,14 @@ impl Editor {
 
     /// The selected node's settings.
     fn node_inspector(&mut self, ui: &mut Ui) {
-        let names = self.index.names.clone();
+        let mut names = self.index.names.clone();
+        // A scene's graph picks from that scene's objects, by id.
+        let path = crate::graph::key(&self.scene_path);
+        if let Some(mut objects) = self.scene_objects_of(&path) {
+            objects.sort_by(|a, b| a.name.cmp(&b.name));
+            names.objects = objects.iter().map(|o| o.name.clone()).collect();
+            names.object_ids = objects.iter().map(|o| o.id).collect();
+        }
         let Some(doc) = &mut self.graph else {
             return;
         };

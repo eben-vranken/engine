@@ -33,14 +33,29 @@ pub struct WorldState {
     pub scene_graphs: BTreeMap<String, Vec<ThreadState>>,
 }
 
-/// One scene's changed objects, by name.
+/// One scene's changed objects.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct SceneState {
-    /// Whether the object is hidden (picked up, hidden or shown by a graph).
+    /// Per object, by its id (stable through renames).
+    pub objects: BTreeMap<u32, ObjectState>,
+    /// Saves from before object ids, by name: read, never written.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub hidden: BTreeMap<String, bool>,
-    /// Whether the door is open.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub doors: BTreeMap<String, bool>,
+}
+
+/// What the player changed about one object.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ObjectState {
+    /// Whether it is hidden (picked up, hidden or shown by a graph).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
+    /// Whether the door is open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub door_open: Option<bool>,
 }
 
 impl WorldState {
@@ -139,5 +154,25 @@ mod tests {
                 .to_string_lossy()
                 .starts_with("game-")
         );
+    }
+}
+
+#[cfg(test)]
+mod scene_state_tests {
+    use super::*;
+
+    /// Old saves (by name) still load; new ones are by id.
+    #[test]
+    fn scene_state_reads_old_saves_and_writes_ids() {
+        let old: SceneState =
+            ron::from_str("(hidden: {\"feather\": true}, doors: {\"gate\": true})").unwrap();
+        assert_eq!(old.hidden.get("feather"), Some(&true));
+        assert_eq!(old.doors.get("gate"), Some(&true));
+
+        let mut new = SceneState::default();
+        new.objects.entry(7).or_default().hidden = Some(true);
+        let text = ron::to_string(&new).unwrap();
+        assert!(!text.contains("doors"), "{text}");
+        assert_eq!(ron::from_str::<SceneState>(&text).unwrap(), new);
     }
 }

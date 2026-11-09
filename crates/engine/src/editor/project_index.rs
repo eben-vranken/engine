@@ -8,7 +8,7 @@ use super::files::{graph_files, scene_files, script_files, sound_files};
 use super::inspector::Names;
 use crate::graph::flags::FlagDefs;
 use crate::graph::{Graph, NodeKind, key, scene_graph, scene_of_graph};
-use crate::scene::{Component, Scene};
+use crate::scene::{Component, ObjectRef, Scene};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -78,7 +78,7 @@ pub(super) struct ProjectIndex {
     /// Every graph, by project path.
     pub graphs: BTreeMap<String, Graph>,
     /// Every scene's objects, by project path.
-    pub scene_objects: BTreeMap<String, Vec<String>>,
+    pub scene_objects: BTreeMap<String, Vec<ObjectRef>>,
     /// Characters: (scene, object name, id, dialogue graph).
     pub characters: Vec<(String, String, String, String)>,
     /// Objects with a Script behavior: (scene, object name, script).
@@ -130,7 +130,7 @@ impl ProjectIndex {
             let mut objects = Vec::new();
             for object in &scene.objects {
                 names.objects.push(object.name.clone());
-                objects.push(object.name.clone());
+                objects.push(ObjectRef::to(object));
                 for component in &object.components {
                     if let Component::Script(s) = component
                         && !s.script.0.is_empty()
@@ -172,10 +172,11 @@ impl ProjectIndex {
     /// The pickers' lists for editing `scene`: its own objects and zones,
     /// the rest from the project.
     pub fn for_scene(&self, scene: &Scene) -> Names {
-        let mut objects: Vec<String> = scene.objects.iter().map(|o| o.name.clone()).collect();
-        objects.sort();
+        let mut objects: Vec<ObjectRef> = scene.objects.iter().map(ObjectRef::to).collect();
+        objects.sort_by(|a, b| a.name.cmp(&b.name));
         Names {
-            objects,
+            objects: objects.iter().map(|o| o.name.clone()).collect(),
+            object_ids: objects.iter().map(|o| o.id).collect(),
             zones: scene.zones.iter().map(|z| z.name.clone()).collect(),
             ..self.names.clone()
         }
@@ -254,7 +255,7 @@ impl ProjectIndex {
     pub fn mentions(
         &self,
         scene: &str,
-        object: &str,
+        object: &ObjectRef,
         character: Option<&str>,
     ) -> Vec<(String, String)> {
         let own_graph = scene_graph(scene);
@@ -268,10 +269,19 @@ impl ProjectIndex {
         }
         for (path, graph) in &self.graphs {
             // A scene graph only means its own scene's objects.
-            let other_scene = path.starts_with("graphs/scenes/") && *path != own_graph;
+            let scene_graph = path.starts_with("graphs/scenes/");
+            let other_scene = scene_graph && *path != own_graph;
             let mut what: Vec<&str> = Vec::new();
             for node in &graph.nodes {
-                let names_object = !other_scene && node.kind.objects().contains(&object);
+                // Ids only mean something within the graph's own scene.
+                let names_object = !other_scene
+                    && node.kind.objects().iter().any(|r| {
+                        if scene_graph {
+                            r.matches(object)
+                        } else {
+                            r.name == object.name
+                        }
+                    });
                 let names_character = character.is_some() && node.kind.character() == character;
                 if (names_object || names_character) && !what.contains(&node.kind.title()) {
                     what.push(node.kind.title());
@@ -288,17 +298,17 @@ impl ProjectIndex {
     /// its scene (or every scene), unknown flags, missing files.
     pub fn problems(&self, path: &str, graph: &Graph) -> Vec<String> {
         let own_scene = scene_of_graph(path);
-        let all_objects: Vec<&String> = self.scene_objects.values().flatten().collect();
+        let all_objects: Vec<&ObjectRef> = self.scene_objects.values().flatten().collect();
         let mut problems = Vec::new();
         for node in &graph.nodes {
             let title = node.kind.title();
             for object in node.kind.objects() {
                 let known = match own_scene.as_ref().and_then(|s| self.scene_objects.get(s)) {
-                    Some(objects) => objects.iter().any(|o| o == object),
-                    None => all_objects.iter().any(|o| *o == object),
+                    Some(objects) => objects.iter().any(|o| object.matches(o)),
+                    None => all_objects.iter().any(|o| o.name == object.name),
                 };
                 if !known {
-                    problems.push(format!("{title}: NO OBJECT \"{object}\""));
+                    problems.push(format!("{title}: NO OBJECT \"{}\"", object.name));
                 }
             }
             if let Some(c) = node.kind.character()

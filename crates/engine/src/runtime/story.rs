@@ -15,7 +15,7 @@ use crate::graph::{DoorAction, key};
 use crate::player::{Player, Spawn};
 use crate::project::Project;
 use crate::save::{self, SaveGame, SceneState, WorldState};
-use crate::scene::{Component, Scene};
+use crate::scene::{Component, ObjectRef, Scene};
 use glam::Vec3;
 use std::path::PathBuf;
 use winit::keyboard::KeyCode;
@@ -45,9 +45,9 @@ pub(super) struct Story {
     pub debug_graph: usize,
     /// A short message ("GAME SAVED") and the seconds it stays.
     pub toast: Option<(String, f32)>,
-    /// Objects the player used and picked up this frame, by name.
-    used: Vec<String>,
-    picked: Vec<String>,
+    /// Objects the player used and picked up this frame.
+    used: Vec<ObjectRef>,
+    picked: Vec<ObjectRef>,
 }
 
 pub(super) struct LineUi {
@@ -162,14 +162,13 @@ impl Running {
         for object in &self.scene.objects {
             let starts_hidden = object.components.contains(&Component::StartsHidden);
             if object.hidden || starts_hidden {
-                state.hidden.insert(object.name.clone(), object.hidden);
+                state.objects.entry(object.id).or_default().hidden = Some(object.hidden);
             }
         }
         if let Some(behaviors) = &self.behaviors {
             for (index, open) in behaviors.doors() {
-                state
-                    .doors
-                    .insert(self.scene.objects[index].name.clone(), open);
+                let id = self.scene.objects[index].id;
+                state.objects.entry(id).or_default().door_open = Some(open);
             }
         }
         story.world.scenes.insert(key, state);
@@ -182,15 +181,26 @@ impl Running {
         let state = story.world.scenes.get(&key);
         for object in &mut self.scene.objects {
             object.hidden = object.components.contains(&Component::StartsHidden);
-            if let Some(&hidden) = state.and_then(|s| s.hidden.get(&object.name)) {
+            let saved = state.and_then(|s| {
+                let by_id = s.objects.get(&object.id).and_then(|o| o.hidden);
+                // An old save, by name.
+                by_id.or_else(|| s.hidden.get(&object.name).copied())
+            });
+            if let Some(hidden) = saved {
                 object.hidden = hidden;
             }
         }
         if let (Some(state), Some(behaviors)) = (state, &mut self.behaviors) {
-            for (name, &open) in &state.doors {
-                if let Some(index) = self.scene.find(name) {
-                    behaviors.snap_door(index, open);
-                }
+            let by_id = state.objects.iter().filter_map(|(id, o)| {
+                let index = self.scene.objects.iter().position(|x| x.id == *id)?;
+                Some((index, o.door_open?))
+            });
+            let by_name = state
+                .doors
+                .iter()
+                .filter_map(|(name, &open)| Some((self.scene.find(name)?, open)));
+            for (index, open) in by_name.chain(by_id) {
+                behaviors.snap_door(index, open);
             }
         }
         self.update_gates();
@@ -276,11 +286,10 @@ impl Running {
         if !self.input.pressed(KeyCode::KeyE) {
             return None;
         }
-        let name = self.scene.objects[index].name.clone();
         match action {
             Use::Switch => {
                 if let Some(story) = &mut self.story {
-                    story.used.push(name);
+                    story.used.push(ObjectRef::to(&self.scene.objects[index]));
                 }
                 return Some(index);
             }
@@ -303,9 +312,9 @@ impl Running {
             Component::Pickup(p) => Some(p.clone()),
             _ => None,
         });
-        let name = object.name.clone();
+        let picked = ObjectRef::to(object);
         if let Some(story) = &mut self.story {
-            story.picked.push(name);
+            story.picked.push(picked);
             if let Some(pickup) = &pickup {
                 story.runner.flags.set(&pickup.flag.0, "true");
             }
@@ -340,7 +349,7 @@ impl Running {
             .zone_map
             .zone_at(body)
             .map(|z| self.scene.zones[z].name.clone());
-        let triggers: Vec<String> = self
+        let triggers: Vec<ObjectRef> = self
             .scene
             .objects
             .iter()
@@ -350,7 +359,7 @@ impl Running {
                     _ => false,
                 })
             })
-            .map(|o| o.name.clone())
+            .map(ObjectRef::to)
             .collect();
         let Some(story) = &mut self.story else { return };
         if let Some(zone) = &zone {
@@ -366,11 +375,13 @@ impl Running {
             }
             story.last_zone = zone.clone();
         }
-        for name in &used {
-            story.log.push((clock, format!("USED {name}")));
+        for object in &used {
+            story.log.push((clock, format!("USED {}", object.name)));
         }
-        for name in &picked {
-            story.log.push((clock, format!("PICKED UP {name}")));
+        for object in &picked {
+            story
+                .log
+                .push((clock, format!("PICKED UP {}", object.name)));
         }
         let world = World {
             scene: &scene_key,
@@ -475,22 +486,22 @@ impl Running {
                         DoorAction::Close => Some(false),
                         DoorAction::Toggle => None,
                     };
-                    match (self.scene.find(&door), &mut self.behaviors) {
+                    match (self.scene.resolve(&door), &mut self.behaviors) {
                         (Some(index), Some(behaviors)) => behaviors.set_door(index, open),
-                        _ => log::warn!("graph: no door \"{door}\" in this scene"),
+                        _ => log::warn!("graph: no door \"{}\" in this scene", door.name),
                     }
                 }
-                Command::Show { object, visible } => match self.scene.find(&object) {
+                Command::Show { object, visible } => match self.scene.resolve(&object) {
                     Some(index) => {
                         if self.scene.objects[index].hidden == visible {
                             self.scene.objects[index].hidden = !visible;
                             reshown.push(index);
                         }
                     }
-                    None => log::warn!("graph: no object \"{object}\" in this scene"),
+                    None => log::warn!("graph: no object \"{}\" in this scene", object.name),
                 },
                 Command::PlaySound { sound, at, volume } => {
-                    let position = self.scene.find(&at).map_or_else(
+                    let position = self.scene.resolve(&at).map_or_else(
                         || self.listener(),
                         |i| self.scene.objects[i].transform.position,
                     );

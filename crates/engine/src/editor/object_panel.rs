@@ -10,8 +10,8 @@ use crate::player::settings::PlayerSettings;
 use crate::render::mesh::Shape;
 use crate::scene::{
     AbilityGate, AcousticMaterial, Character, Component, Door, Floating, FogVolume, LightSource,
-    Material, Object, PhysicsBody, Pickup, Portal, Scene, SoundSource, Switch, TriggerZone,
-    ZoneVolume,
+    Material, Object, ObjectRef, PhysicsBody, Pickup, Portal, Scene, SoundSource, Switch,
+    TriggerZone, ZoneVolume,
 };
 use egui::{Align, Layout, RichText, Ui};
 
@@ -71,18 +71,32 @@ impl Editor {
             Component::Character(ch) if !ch.id.is_empty() => Some(ch.id.clone()),
             _ => None,
         });
-        let mentions = self
-            .index
-            .mentions(&scene_key, &object.name, character.as_deref());
+        let mentions =
+            self.index
+                .mentions(&scene_key, &ObjectRef::to(object), character.as_deref());
         let mut open_graph = None;
 
         ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut object.name)
-                    .desired_width((ui.available_width() - 130.0).max(80.0))
-                    .font(egui::TextStyle::Heading),
-            )
-            .on_hover_text("NAME: GRAPHS AND SWITCHES REFER TO OBJECTS BY IT");
+            let name = ui
+                .add(
+                    egui::TextEdit::singleline(&mut object.name)
+                        .desired_width((ui.available_width() - 130.0).max(80.0))
+                        .font(egui::TextStyle::Heading),
+                )
+                .on_hover_text(
+                    "NAME: UNIQUE IN THE SCENE. RENAMING KEEPS GRAPHS AND SWITCHES LINKED",
+                );
+            // Names stay unique: a taken one gets a number. (`names` is
+            // from this frame's start, with this object's name in it once.)
+            if name.lost_focus() && names.objects.iter().filter(|n| **n == object.name).count() > 1
+            {
+                let mut others = names.objects.clone();
+                if let Some(own) = others.iter().position(|n| *n == object.name) {
+                    others.remove(own);
+                }
+                object.name =
+                    super::objects::unique_among(others.iter().map(String::as_str), &object.name);
+            }
             egui::ComboBox::from_id_salt("inspector_zone")
                 .selected_text(format!("ZONE: {}", object.zone.to_uppercase()))
                 .width(120.0)

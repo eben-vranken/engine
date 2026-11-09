@@ -142,7 +142,7 @@ impl Behaviors {
             self.plate = plate;
         }
         for switch in flipped {
-            let target = scene.objects.iter().position(|o| o.name == switch.target.0);
+            let target = scene.resolve(&switch.target);
             if let Some(door) = target.and_then(|i| self.doors.get_mut(&i)) {
                 door.open = !door.open;
             }
@@ -277,7 +277,7 @@ mod tests {
         }));
         for (i, pressure_plate) in [(1, false), (2, true)] {
             scene.objects[i].components.push(Component::Switch(Switch {
-                target: ObjectRef("door".into()),
+                target: ObjectRef::named("door"),
                 pressure_plate,
             }));
         }
