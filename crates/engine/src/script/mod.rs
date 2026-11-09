@@ -93,6 +93,8 @@ struct ObjectHandle(Rc<RefCell<ObjectView>>);
 struct Shared {
     flags: Flags,
     set: Vec<(String, String)>,
+    /// `emit` calls this update.
+    signals: Vec<String>,
     player: Option<PlayerHandle>,
 }
 
@@ -136,6 +138,9 @@ pub struct Scripts {
     shared: Rc<RefCell<Shared>>,
     /// Errors since last taken, for the editor and the test drawer.
     pub errors: Vec<String>,
+    /// Signals scripts sent with `emit(name)`, for graphs' WHEN SIGNAL (the
+    /// game takes them).
+    pub signals: Vec<String>,
 }
 
 impl Scripts {
@@ -162,6 +167,10 @@ impl Scripts {
             shared.flags.set(name, &text);
             shared.set.push((name.to_owned(), text));
         });
+        let emit = shared.clone();
+        engine.register_fn("emit", move |name: &str| {
+            emit.borrow_mut().signals.push(name.to_owned());
+        });
         let player = shared.clone();
         engine.register_fn("player", move || -> Dynamic {
             player
@@ -178,6 +187,7 @@ impl Scripts {
             objects: BTreeMap::new(),
             shared,
             errors: Vec::new(),
+            signals: Vec::new(),
         }
     }
 
@@ -213,6 +223,7 @@ impl Scripts {
         *self.shared.borrow_mut() = Shared {
             flags: flags.clone(),
             set: Vec::new(),
+            signals: Vec::new(),
             player: Some(handle.clone()),
         };
         let dt = dt as f64;
@@ -266,6 +277,7 @@ impl Scripts {
         for (name, text) in shared.set.drain(..) {
             flags.set(&name, &text);
         }
+        self.signals.append(&mut shared.signals);
     }
 
     /// A script's compiled form and generation, read again when it's new
@@ -585,6 +597,16 @@ mod tests {
         assert!(scripts.errors.is_empty(), "{:?}", scripts.errors);
         assert_eq!(view.velocity.y, 3.0);
         assert_eq!(flags.get("count").as_number(), 2.0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn scripts_emit_signals_for_graphs() {
+        let (mut scripts, dir) = scripts_with("emit", r#"fn update(player, dt) { emit("bell"); }"#);
+        let mut flags = Flags::default();
+        frame(&mut scripts, &mut PlayerView::default(), &mut flags);
+        assert!(scripts.errors.is_empty(), "{:?}", scripts.errors);
+        assert_eq!(scripts.signals, ["bell"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

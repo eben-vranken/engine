@@ -418,6 +418,7 @@ impl Editor {
                 active: &[],
                 found: &found,
             };
+            doc.view.scene_graph = crate::graph::scene_of_graph(&path).is_some();
             let events = graph_canvas::show(ui, rect, &mut doc.graph, &mut doc.view, &marks, true);
             if let Some(select) = events.select {
                 doc.selected = select;

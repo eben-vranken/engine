@@ -120,6 +120,11 @@ impl Behaviors {
         moved
     }
 
+    /// The pressure plate the player stands on.
+    pub fn plate(&self) -> Option<usize> {
+        self.plate
+    }
+
     /// How high Floating lifts the object right now (0 if it doesn't float).
     pub fn lift(&self, scene: &Scene, index: usize) -> f32 {
         let Some(moving) = self.moving.iter().find(|m| m.index == index) else {

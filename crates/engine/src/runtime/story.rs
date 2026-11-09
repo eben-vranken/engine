@@ -10,7 +10,7 @@ use crate::behaviors::Behaviors;
 use crate::dialogue::DialogueStyle;
 use crate::editor::graph_canvas::CanvasView;
 use crate::graph::flags::FlagDefs;
-use crate::graph::run::{Command, GraphRunner, LineView, World};
+use crate::graph::run::{Command, Event, GraphRunner, LineView, World};
 use crate::graph::{DoorAction, key};
 use crate::player::{Player, Spawn};
 use crate::project::Project;
@@ -46,8 +46,10 @@ pub(super) struct Story {
     /// A short message ("GAME SAVED") and the seconds it stays.
     pub toast: Option<(String, f32)>,
     /// Objects the player used and picked up this frame.
-    used: Vec<ObjectRef>,
-    picked: Vec<ObjectRef>,
+    /// What happened since the graphs last ran (uses, pickups, signals).
+    pub events: Vec<Event>,
+    /// The pressure plate the player stood on last frame.
+    plate: Option<usize>,
     /// `VisibleWhen` objects: whether their condition held last frame, so
     /// only a change shows or hides them.
     conditions: std::collections::HashMap<usize, bool>,
@@ -108,8 +110,8 @@ impl Running {
             debug_view: CanvasView::default(),
             debug_graph: 0,
             toast: None,
-            used: Vec::new(),
-            picked: Vec::new(),
+            events: Vec::new(),
+            plate: None,
             conditions: Default::default(),
         });
         self.apply_scene_state();
@@ -297,13 +299,14 @@ impl Running {
         if !self.input.pressed(KeyCode::KeyE) {
             return None;
         }
+        // Every use is an event graphs can wait for.
+        if let Some(story) = &mut self.story {
+            story
+                .events
+                .push(Event::Used(ObjectRef::to(&self.scene.objects[index])));
+        }
         match action {
-            Use::Switch => {
-                if let Some(story) = &mut self.story {
-                    story.used.push(ObjectRef::to(&self.scene.objects[index]));
-                }
-                return Some(index);
-            }
+            Use::Switch => return Some(index),
             Use::Pickup => self.pick_up(index),
             Use::Talk(graph) => {
                 if let Some(story) = &mut self.story {
@@ -325,7 +328,7 @@ impl Running {
         });
         let picked = ObjectRef::to(object);
         if let Some(story) = &mut self.story {
-            story.picked.push(picked);
+            story.events.push(Event::PickedUp(picked));
             if let Some(pickup) = &pickup {
                 story.runner.flags.set(&pickup.flag.0, "true");
             }
@@ -350,8 +353,17 @@ impl Running {
     /// Moves the story on by a frame: dialogue keys, the graphs, what they
     /// ask for, gates and visited zones.
     pub(super) fn update_story(&mut self, dt: f32) {
-        if self.story.is_none() {
+        let plate = self.behaviors.as_ref().and_then(Behaviors::plate);
+        let Some(story) = &mut self.story else {
             return;
+        };
+        // Stepping onto a pressure plate uses it.
+        if plate != story.plate {
+            story.plate = plate;
+            if let Some(index) = plate {
+                let used = ObjectRef::to(&self.scene.objects[index]);
+                story.events.push(Event::Used(used));
+            }
         }
         self.dialogue_keys();
         let scene_key = self.scene_key();
@@ -376,8 +388,7 @@ impl Running {
         if let Some(zone) = &zone {
             story.world.visit(&scene_key, zone);
         }
-        let used = std::mem::take(&mut story.used);
-        let picked = std::mem::take(&mut story.picked);
+        let events = std::mem::take(&mut story.events);
         story.clock += dt;
         let clock = story.clock;
         if zone != story.last_zone {
@@ -386,20 +397,19 @@ impl Running {
             }
             story.last_zone = zone.clone();
         }
-        for object in &used {
-            story.log.push((clock, format!("USED {}", object.name)));
-        }
-        for object in &picked {
-            story
-                .log
-                .push((clock, format!("PICKED UP {}", object.name)));
+        for event in &events {
+            let entry = match event {
+                Event::Used(object) => format!("USED {}", object.name),
+                Event::PickedUp(object) => format!("PICKED UP {}", object.name),
+                Event::Signal(name) => format!("SIGNAL {name}"),
+            };
+            story.log.push((clock, entry));
         }
         let world = World {
             scene: &scene_key,
             zone: zone.as_deref(),
             triggers: &triggers,
-            used: &used,
-            picked: &picked,
+            events: &events,
         };
         let commands = story.runner.update(&world, dt);
         for entry in std::mem::take(&mut story.runner.log) {
@@ -663,6 +673,8 @@ impl Running {
         story
             .scripts
             .update(&mut view, &mut objects, &mut story.runner.flags, dt);
+        let signals = std::mem::take(&mut story.scripts.signals);
+        story.events.extend(signals.into_iter().map(Event::Signal));
         if self.mode == CameraMode::Player {
             self.player.apply_script(&view, &self.settings);
         }

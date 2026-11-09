@@ -77,10 +77,15 @@ pub enum NodeKind {
     WhenInTrigger { trigger: ObjectRef },
     /// Waits until the player is outside this TriggerZone object.
     WhenOutOfTrigger { trigger: ObjectRef },
-    /// Waits until the player uses this object (a switch).
+    /// Waits until the player uses this object: E at a switch, pickup,
+    /// character or save point, or stepping on a pressure plate.
     WhenUsed { object: ObjectRef },
     /// Waits until the player picks up this object (a Pickup).
     WhenPickedUp { object: ObjectRef },
+    /// Waits until a script calls `emit("name")`.
+    WhenSignal { name: String },
+    /// Waits until this graph ends (nothing in it is active any more).
+    WhenGraphEnded { graph: GraphRef },
     /// Waits until the condition holds.
     WaitUntil { condition: Condition },
     /// Waits this many seconds.
@@ -200,6 +205,12 @@ impl NodeKind {
             WhenPickedUp {
                 object: ObjectRef::default(),
             },
+            WhenSignal {
+                name: String::new(),
+            },
+            WhenGraphEnded {
+                graph: GraphRef::default(),
+            },
             Wait { seconds: 1.0 },
             WaitUntil {
                 condition: Condition::default(),
@@ -262,6 +273,7 @@ impl NodeKind {
                 Category::Story
             }
             WhenOutOfTrigger { .. } | WhenUsed { .. } | WhenPickedUp { .. } => Category::Story,
+            WhenSignal { .. } | WhenGraphEnded { .. } => Category::Story,
             Note { .. } | Wait { .. } | WaitUntil { .. } | Branch { .. } | RunGraph { .. } => {
                 Category::Logic
             }
@@ -282,6 +294,8 @@ impl NodeKind {
             WhenOutOfTrigger { .. } => "WHEN OUT OF TRIGGER",
             WhenUsed { .. } => "WHEN USED",
             WhenPickedUp { .. } => "WHEN PICKED UP",
+            WhenSignal { .. } => "WHEN SIGNAL",
+            WhenGraphEnded { .. } => "WHEN GRAPH ENDED",
             WaitUntil { .. } => "WAIT UNTIL",
             Wait { .. } => "WAIT",
             Branch { .. } => "BRANCH",
@@ -310,8 +324,14 @@ impl NodeKind {
             WhenInZone { .. } => "Waits until the player is in this zone (also if already there).",
             WhenInTrigger { .. } => "Waits until the player is inside this trigger zone.",
             WhenOutOfTrigger { .. } => "Waits until the player is outside this trigger zone.",
-            WhenUsed { .. } => "Waits until the player presses E at this switch.",
+            WhenUsed { .. } => {
+                "Waits until the player uses this: E at a switch, pickup, character or save point, or stepping on a plate."
+            }
             WhenPickedUp { .. } => "Waits until the player takes this pickup.",
+            WhenSignal { .. } => "Waits until a script calls emit(\"name\") with this name.",
+            WhenGraphEnded { .. } => {
+                "Waits until this graph ends (nothing in it is active any more)."
+            }
             WaitUntil { .. } => "Waits until the condition holds.",
             Wait { .. } => "Waits this many seconds.",
             Branch { .. } => "Goes on through YES or NO, by the condition.",
@@ -412,7 +432,7 @@ impl NodeKind {
         use NodeKind::*;
         match self {
             WhenInScene { scene } | LoadScene { scene } => vec![("SCENE", scene.0.as_str())],
-            RunGraph { graph } => vec![("GRAPH", graph.0.as_str())],
+            RunGraph { graph } | WhenGraphEnded { graph } => vec![("GRAPH", graph.0.as_str())],
             Ability { script, .. } => vec![("SCRIPT", script.0.as_str())],
             PlaySound { sound, .. } | Line { sound, .. } => vec![("SOUND", sound.0.as_str())],
             _ => Vec::new(),
@@ -450,6 +470,8 @@ impl NodeKind {
                 vec![or_none(&trigger.name)]
             }
             WhenUsed { object } | WhenPickedUp { object } => vec![or_none(&object.name)],
+            WhenSignal { name } => vec![or_none(name)],
+            WhenGraphEnded { graph } => vec![or_none(&graph.0)],
             WaitUntil { condition } | Branch { condition } => vec![condition.describe()],
             Wait { seconds } => vec![format!("{seconds} S")],
             SetFlag { flag, value } => vec![format!("{} = {value}", or_none(&flag.0))],

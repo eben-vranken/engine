@@ -22,10 +22,20 @@ pub struct World<'a> {
     pub zone: Option<&'a str>,
     /// TriggerZone objects the player is inside.
     pub triggers: &'a [ObjectRef],
-    /// Objects the player used this frame.
-    pub used: &'a [ObjectRef],
-    /// Objects the player picked up this frame.
-    pub picked: &'a [ObjectRef],
+    /// What happened since the last update.
+    pub events: &'a [Event],
+}
+
+/// Something that happened, for graphs' WHEN nodes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Event {
+    /// The player used an object: E at a switch, pickup, character or save
+    /// point, or stepping onto a pressure plate.
+    Used(ObjectRef),
+    /// The player picked up a Pickup (it is also `Used`).
+    PickedUp(ObjectRef),
+    /// A script called `emit(name)`.
+    Signal(String),
 }
 
 /// Something the world should do.
@@ -136,6 +146,10 @@ pub struct GraphRunner {
     queue: Vec<(u64, NodeId)>,
     /// What happened, for the test drawer's events (the game takes them).
     pub log: Vec<String>,
+    /// Graphs that ended in the last update, and those WHEN GRAPH ENDED
+    /// sees in this one.
+    ended: Vec<String>,
+    ended_before: Vec<String>,
 }
 
 impl GraphRunner {
@@ -154,6 +168,8 @@ impl GraphRunner {
             commands: Vec::new(),
             queue: Vec::new(),
             log: Vec::new(),
+            ended: Vec::new(),
+            ended_before: Vec::new(),
         }
     }
 
@@ -261,6 +277,7 @@ impl GraphRunner {
 
     /// Moves the graphs on; returns what the world should do.
     pub fn update(&mut self, world: &World, dt: f32) -> Vec<Command> {
+        self.ended_before = std::mem::take(&mut self.ended);
         for thread in &mut self.threads {
             for active in &mut thread.active {
                 active.time += dt;
@@ -302,9 +319,20 @@ impl GraphRunner {
                     NodeKind::WhenOutOfTrigger { trigger } => {
                         !world.triggers.iter().any(|t| trigger.matches(t))
                     }
-                    NodeKind::WhenUsed { object } => world.used.iter().any(|u| object.matches(u)),
-                    NodeKind::WhenPickedUp { object } => {
-                        world.picked.iter().any(|p| object.matches(p))
+                    NodeKind::WhenUsed { object } => world
+                        .events
+                        .iter()
+                        .any(|e| matches!(e, Event::Used(u) if object.matches(u))),
+                    NodeKind::WhenPickedUp { object } => world
+                        .events
+                        .iter()
+                        .any(|e| matches!(e, Event::PickedUp(p) if object.matches(p))),
+                    NodeKind::WhenSignal { name } => world
+                        .events
+                        .iter()
+                        .any(|e| matches!(e, Event::Signal(s) if s == name)),
+                    NodeKind::WhenGraphEnded { graph } => {
+                        self.ended_before.iter().any(|g| same_path(g, &graph.0))
                     }
                     NodeKind::WaitUntil { condition } => condition.holds(&self.flags),
                     NodeKind::Wait { seconds } => active.time >= *seconds,
@@ -491,8 +519,14 @@ impl GraphRunner {
     /// them go on next frame.
     fn end_threads(&mut self) {
         let queued: Vec<u64> = self.queue.iter().map(|(t, _)| *t).collect();
-        self.threads
-            .retain(|t| !t.active.is_empty() || queued.contains(&t.id));
+        let ended = &mut self.ended;
+        self.threads.retain(|t| {
+            let runs = !t.active.is_empty() || queued.contains(&t.id);
+            if !runs {
+                ended.push(t.graph.clone());
+            }
+            runs
+        });
     }
 
     /// Shows the first active line if none is on screen.
@@ -795,9 +829,9 @@ mod tests {
         assert!(runner.update(&hall, 0.1).is_empty());
 
         // The switch sets the flag; the hall wait has passed already.
-        let used = [ObjectRef::named("switch")];
+        let used = [Event::Used(ObjectRef::named("switch"))];
         let using = World {
-            used: &used,
+            events: &used,
             ..Default::default()
         };
         assert!(runner.update(&using, 0.1).is_empty());
@@ -896,6 +930,62 @@ mod tests {
                 (6, 0, 7),
             ],
         )
+    }
+
+    /// Scripts' signals and graphs ending are events graphs can wait for.
+    #[test]
+    fn signals_and_ended_graphs_wake_waits() {
+        let show = || NodeKind::Show {
+            object: ObjectRef::named("lamp"),
+            visible: true,
+        };
+        let on_signal = graph(
+            vec![
+                NodeKind::Start,
+                NodeKind::WhenSignal {
+                    name: "bell".into(),
+                },
+                show(),
+            ],
+            &[(0, 0, 1), (1, 0, 2)],
+        );
+        let short = graph(vec![NodeKind::Start, NodeKind::SaveGame], &[(0, 0, 1)]);
+        let on_end = graph(
+            vec![
+                NodeKind::Start,
+                NodeKind::WhenGraphEnded {
+                    graph: GraphRef("short".into()),
+                },
+                show(),
+            ],
+            &[(0, 0, 1), (1, 0, 2)],
+        );
+        let mut runner = runner(vec![
+            ("signal", on_signal),
+            ("short", short),
+            ("end", on_end),
+        ]);
+        runner.start("signal");
+        runner.start("end");
+        assert!(runner.update(&World::default(), 0.1).is_empty());
+        let bell = [Event::Signal("bell".into())];
+        let shown = |c: &Vec<Command>| {
+            c.iter()
+                .filter(|c| matches!(c, Command::Show { .. }))
+                .count()
+        };
+        let commands = runner.update(
+            &World {
+                events: &bell,
+                ..Default::default()
+            },
+            0.1,
+        );
+        assert_eq!(shown(&commands), 1);
+        runner.start("short");
+        runner.update(&World::default(), 0.1); // runs and ends
+        let commands = runner.update(&World::default(), 0.1);
+        assert_eq!(shown(&commands), 1, "the end of \"short\" woke \"end\"");
     }
 
     /// RUN GRAPH of a graph that runs already waits for that one: there is
@@ -1029,9 +1119,9 @@ mod tests {
         let paused = runner.suspend("scene");
         assert_eq!(paused.len(), 1);
         assert!(runner.running().is_empty());
-        let lever = [ObjectRef::named("lever")];
+        let lever = [Event::Used(ObjectRef::named("lever"))];
         let using = World {
-            used: &lever,
+            events: &lever,
             ..Default::default()
         };
         assert!(
@@ -1076,7 +1166,7 @@ mod tests {
         let mut runner = GraphRunner::new(dir, flags.start());
         runner.bind_abilities(flags.abilities());
         assert!(runner.start("graphs/scenes/test_level.ron"));
-        let lever = [ObjectRef::named("lever")];
+        let lever = [Event::Used(ObjectRef::named("lever"))];
         let doorstep = [ObjectRef::named("doorstep")];
         let at_door = World {
             triggers: &doorstep,
@@ -1088,7 +1178,7 @@ mod tests {
         );
         runner.update(
             &World {
-                used: &lever,
+                events: &lever,
                 ..Default::default()
             },
             0.1,
@@ -1105,10 +1195,10 @@ mod tests {
         );
 
         // The feather turns on the double jump.
-        let feather = [ObjectRef::named("feather")];
+        let feather = [Event::PickedUp(ObjectRef::named("feather"))];
         runner.update(
             &World {
-                picked: &feather,
+                events: &feather,
                 ..Default::default()
             },
             0.1,

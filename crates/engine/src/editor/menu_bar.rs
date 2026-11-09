@@ -327,7 +327,10 @@ impl Editor {
             }
             Workspace::Logic => {
                 ui.menu_button("ADD", |ui| {
-                    if let Some(kind) = super::graph_canvas::add_menu(ui)
+                    let scene_graph =
+                        crate::graph::scene_of_graph(&crate::graph::key(&self.scene_path))
+                            .is_some();
+                    if let Some(kind) = super::graph_canvas::add_menu(ui, scene_graph)
                         && let Some(doc) = &mut self.graph
                     {
                         doc.add_in_view(kind);

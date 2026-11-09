@@ -24,6 +24,8 @@ pub struct CanvasView {
     linking: Option<(NodeId, u32)>,
     /// Where the add menu was opened, in canvas units.
     menu_at: glam::Vec2,
+    /// The graph is a scene's own (its add menu leaves out WHEN IN SCENE).
+    pub scene_graph: bool,
 }
 
 impl Default for CanvasView {
@@ -33,6 +35,7 @@ impl Default for CanvasView {
             zoom: 1.0,
             linking: None,
             menu_at: glam::Vec2::ZERO,
+            scene_graph: false,
         }
     }
 }
@@ -394,7 +397,7 @@ pub fn show(
         }
         let at = view.menu_at;
         background.context_menu(|ui| {
-            if let Some(kind) = add_menu(ui) {
+            if let Some(kind) = add_menu(ui, view.scene_graph) {
                 events.add = Some((kind, at));
             }
         });
@@ -403,7 +406,9 @@ pub fn show(
 }
 
 /// The node types by category; returns the one picked.
-pub fn add_menu(ui: &mut Ui) -> Option<NodeKind> {
+/// `scene_graph`: a scene's own graph, which only runs in its scene, so
+/// WHEN IN SCENE would always be true there and isn't offered.
+pub fn add_menu(ui: &mut Ui, scene_graph: bool) -> Option<NodeKind> {
     let mut picked = None;
     ui.set_min_width(180.0);
     for category in crate::graph::Category::ALL {
@@ -412,6 +417,7 @@ pub fn add_menu(ui: &mut Ui) -> Option<NodeKind> {
             for kind in NodeKind::all()
                 .into_iter()
                 .filter(|k| k.category() == category)
+                .filter(|k| !(scene_graph && matches!(k, NodeKind::WhenInScene { .. })))
             {
                 if ui.button(kind.title()).clicked() {
                     picked = Some(kind);
