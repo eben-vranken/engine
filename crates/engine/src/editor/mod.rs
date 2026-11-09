@@ -35,6 +35,7 @@ mod project_doc;
 mod project_index;
 mod project_page;
 mod refactor;
+mod scene_rename;
 mod script_tab;
 mod selection;
 mod settings_panel;
@@ -100,6 +101,9 @@ pub struct Editor {
     problem_count: (usize, Option<std::time::Instant>),
     /// Objects copied (CTRL+C), to paste.
     clipboard: Vec<crate::scene::Object>,
+    /// An environment copied from the outliner (and the scene it came
+    /// from), to paste into another scene.
+    environment_clipboard: Option<(crate::scene::Environment, PathBuf)>,
     /// Put the keyboard in the inspector's name field (RENAME, F2).
     focus_name: bool,
     /// ADD's searchable dialog, while open.
@@ -361,6 +365,7 @@ impl Editor {
             play_controls: PlayControls::default(),
             add_dialog: None,
             clipboard: Vec::new(),
+            environment_clipboard: None,
             problems_open: false,
             box_rect: None,
             problem_count: (0, None),
@@ -474,7 +479,7 @@ impl Editor {
         }
         self.shortcuts_ui(ui);
         self.confirm_dialog(ui, scene, player, &mut output);
-        self.name_dialog(ui, &mut output);
+        self.name_dialog(ui, scene, &mut output);
 
         if self.playing {
             // The game fills the window; the test drawer sits on the right.

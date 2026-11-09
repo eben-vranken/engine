@@ -596,6 +596,21 @@ impl Graph {
         changed
     }
 
+    /// Points WHEN IN SCENE and LOAD SCENE nodes at `old` (a project path
+    /// with `/`) to `new`. Returns whether any did.
+    pub fn rename_scene(&mut self, old: &str, new: &str) -> bool {
+        let mut changed = false;
+        for node in &mut self.nodes {
+            if let NodeKind::WhenInScene { scene } | NodeKind::LoadScene { scene } = &mut node.kind
+                && scene.0 == old
+            {
+                scene.0 = new.to_owned();
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// Points this graph's object references at its scene's `objects` (see
     /// `scene::link`). For a scene's own graph.
     pub fn link_objects(&mut self, objects: &[ObjectRef]) {

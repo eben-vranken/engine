@@ -111,6 +111,28 @@ impl ProjectDoc {
         Ok(())
     }
 
+    /// A scene file moved from `old` to `new` (project paths): the start
+    /// scene follows in every state, undo steps included, and `game.ron`
+    /// is written with only that change (the file has already moved, so
+    /// the old path would be broken). Other unsaved edits stay unsaved.
+    /// Returns whether the start scene was `old`.
+    pub fn rename_scene(&mut self, old: &Path, new: &Path, dir: &Path) -> Result<bool, String> {
+        if self.saved.game.start_scene != old && self.now.game.start_scene != old {
+            return Ok(false);
+        }
+        let states = [&mut self.now, &mut self.saved, &mut self.committed]
+            .into_iter()
+            .chain(self.undo.iter_mut())
+            .chain(self.redo.iter_mut());
+        for state in states {
+            if state.game.start_scene == old {
+                state.game.start_scene = new.to_owned();
+            }
+        }
+        self.saved.game.save(dir).map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
     /// Back to the files (one undo step).
     pub fn revert(&mut self) {
         self.settle();

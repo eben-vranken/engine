@@ -303,6 +303,22 @@ impl Editor {
                     if tab.middle_clicked() && closable {
                         self.close_tab(index, output);
                     }
+                    let scene_tab = self.tab_path(index).starts_with("scenes");
+                    if scene_tab {
+                        let path = self.tab_path(index).to_owned();
+                        tab.context_menu(|ui| {
+                            if ui
+                                .button("RENAME…")
+                                .on_hover_text(
+                                    "ITS GRAPH, BAKES, THE START SCENE AND LOAD SCENE NODES FOLLOW",
+                                )
+                                .clicked()
+                            {
+                                self.ask_rename_scene(path);
+                                ui.close();
+                            }
+                        });
+                    }
                     if closable
                         && ui
                             .small_button("X")

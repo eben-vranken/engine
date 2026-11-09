@@ -16,12 +16,16 @@ pub(super) enum Renamed {
     /// A zone of one scene (`scene`, a project path): its own graph and the
     /// graphs that aren't a scene's follow.
     Zone,
+    /// A scene's file (project paths with `/`): LOAD SCENE and WHEN IN
+    /// SCENE nodes follow.
+    Scene,
 }
 
 fn in_graph(kind: Renamed, graph: &mut Graph, old: &str, new: &str) -> bool {
     match kind {
         Renamed::Flag => graph.rename_flag(old, new),
         Renamed::Zone => graph.rename_zone(old, new),
+        Renamed::Scene => graph.rename_scene(old, new),
     }
 }
 
@@ -38,8 +42,26 @@ impl Editor {
         scene: &mut Scene,
         zone_scene: Option<&str>,
     ) {
+        let touched = self.update_references(kind, old, new, scene, zone_scene);
+        if !touched.is_empty() {
+            self.show_message(
+                format!("\"{old}\" → \"{new}\" IN {}", touched.join(", ")).to_uppercase(),
+            );
+        }
+    }
+
+    /// `rename_references` without the message: returns the documents
+    /// and files that changed.
+    pub(super) fn update_references(
+        &mut self,
+        kind: Renamed,
+        old: &str,
+        new: &str,
+        scene: &mut Scene,
+        zone_scene: Option<&str>,
+    ) -> Vec<String> {
         if old == new || old.is_empty() || new.is_empty() {
-            return;
+            return Vec::new();
         }
         let mut touched: Vec<String> = Vec::new();
         // Which graphs a rename reaches: for a zone, its scene's graph and
@@ -56,14 +78,27 @@ impl Editor {
         if kind == Renamed::Flag && scene.rename_flag(old, new) {
             touched.push(active.clone());
         }
+        let mut open = vec![active];
+        // LOGIC's documents: the active one, then the others.
+        let logic = crate::graph::key(&self.logic_path);
         if let Some(doc) = &mut self.graph
-            && reaches(&active)
+            && reaches(&logic)
             && in_graph(kind, &mut doc.graph, old, new)
         {
-            touched.push(active.clone());
+            touched.push(logic.clone());
+        }
+        open.push(logic);
+        for tab in self.logic_tabs.iter_mut().flatten() {
+            let path = crate::graph::key(&tab.path);
+            open.push(path.clone());
+            if let Some(doc) = &mut tab.graph
+                && reaches(&path)
+                && in_graph(kind, &mut doc.graph, old, new)
+            {
+                touched.push(path);
+            }
         }
         // Parked tabs.
-        let mut open = vec![active];
         for parked in self.tabs.iter_mut().flatten() {
             let path = crate::graph::key(&parked.doc.scene_path);
             open.push(path.clone());
@@ -117,10 +152,6 @@ impl Editor {
         }
         self.index.refresh(&self.project_dir, true);
         touched.dedup();
-        if !touched.is_empty() {
-            self.show_message(
-                format!("\"{old}\" → \"{new}\" IN {}", touched.join(", ")).to_uppercase(),
-            );
-        }
+        touched
     }
 }

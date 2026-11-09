@@ -88,12 +88,59 @@ impl Editor {
         let mut zone_clicked = None;
         let mut zone_action = None;
         let environment = self.settings == Some(SettingsTarget::Environment);
-        if ui
+        let environment_row = ui
             .selectable_label(environment, picked("ENVIRONMENT", environment))
-            .on_hover_text("SUN, SKY, FOG, GRADE, BLOOM AND BAKE QUALITY FOR THE WHOLE SCENE")
-            .clicked()
-        {
+            .on_hover_text(
+                "SUN, SKY, FOG, GRADE, BLOOM AND BAKE QUALITY FOR THE WHOLE SCENE. \
+                 RIGHT-CLICK TO COPY OR PASTE IT",
+            );
+        if environment_row.clicked() {
             zone_clicked = Some(SettingsTarget::Environment);
+        }
+        let mut environment_action = None;
+        environment_row.context_menu(|ui| {
+            if ui
+                .button("COPY ENVIRONMENT")
+                .on_hover_text("TO PASTE INTO ANOTHER SCENE'S ENVIRONMENT")
+                .clicked()
+            {
+                environment_action = Some(EnvironmentAction::Copy);
+                ui.close();
+            }
+            let from = self
+                .environment_clipboard
+                .as_ref()
+                .map(|(_, from)| scene_name(from));
+            let hint = match &from {
+                Some(from) => format!("REPLACE THIS SCENE'S WITH THE ONE COPIED FROM {from}"),
+                None => "COPY ONE FIRST".to_owned(),
+            };
+            if ui
+                .add_enabled(from.is_some(), egui::Button::new("PASTE ENVIRONMENT"))
+                .on_hover_text(hint.clone())
+                .on_disabled_hover_text(hint)
+                .clicked()
+            {
+                environment_action = Some(EnvironmentAction::Paste);
+                ui.close();
+            }
+        });
+        match environment_action {
+            Some(EnvironmentAction::Copy) => {
+                self.environment_clipboard =
+                    Some((scene.environment.clone(), self.scene_path.clone()));
+                self.show_message(format!(
+                    "COPIED THE ENVIRONMENT OF {}",
+                    scene_name(&self.scene_path)
+                ));
+            }
+            Some(EnvironmentAction::Paste) => {
+                if let Some(change) = self.paste_environment(scene) {
+                    output.changed.push(change);
+                    output.settled = true;
+                }
+            }
+            None => {}
         }
         egui::ScrollArea::vertical()
             .auto_shrink(false)
@@ -470,6 +517,28 @@ impl Editor {
         }
     }
 
+    /// Replaces the scene's environment with the copied one, as one undo
+    /// step, and shows it in the inspector. `None` if nothing was copied or
+    /// it's the same.
+    pub(super) fn paste_environment(&mut self, scene: &mut Scene) -> Option<Change> {
+        let (environment, from) = self.environment_clipboard.clone()?;
+        self.select(scene, None);
+        self.settings = Some(SettingsTarget::Environment);
+        if scene.environment == environment {
+            self.show_message("THE ENVIRONMENT IS ALREADY THE SAME".to_owned());
+            return None;
+        }
+        let mut after = scene.clone();
+        after.environment = environment;
+        self.push_scene(scene, after);
+        self.show_message(format!(
+            "PASTED THE ENVIRONMENT FROM {} (CTRL+Z UNDOES IT)",
+            scene_name(&from)
+        ));
+        // Only settings changed: no meshes to re-upload.
+        Some(Change::Settings)
+    }
+
     /// Replaces the whole scene as one undo step.
     pub(super) fn push_scene(&mut self, scene: &mut Scene, after: Scene) -> Change {
         self.commit_pending(scene);
@@ -595,6 +664,19 @@ pub(super) enum ZoneAction {
     Delete(String),
 }
 
+/// What the ENVIRONMENT row's menu asked for.
+enum EnvironmentAction {
+    Copy,
+    Paste,
+}
+
+/// A scene's name as the editor shows it (`scenes/hall.ron` -> `HALL`).
+pub(super) fn scene_name(path: &std::path::Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().to_uppercase())
+        .unwrap_or_default()
+}
+
 /// A row's text in the hierarchy: inverted (amber background, text in the
 /// background color) when it's the one being inspected.
 fn picked(text: &str, selected: bool) -> RichText {
@@ -664,6 +746,35 @@ mod tests {
         let q = Query::parse("candle");
         assert!(q.part.is_none() && q.shows(&scene.objects[1], "test", &[]));
         assert!(!q.shows(&scene.objects[2], "test", &[]));
+    }
+
+    /// A copied environment pastes into another scene as one undo step.
+    #[test]
+    fn a_copied_environment_pastes_into_another_scene_and_undoes() {
+        let mut editor = editor();
+        let mut player = PlayerSettings::default();
+        let mut source = boxes(1);
+        source.environment.bloom = 0.7;
+        source.environment.fog_distance = 12.0;
+        editor.environment_clipboard = Some((source.environment.clone(), "scenes/hall.ron".into()));
+
+        let mut target = boxes(2);
+        let original = target.environment.clone();
+        assert_eq!(
+            editor.paste_environment(&mut target),
+            Some(Change::Settings)
+        );
+        assert_eq!(target.environment, source.environment);
+        assert_eq!(target.objects.len(), 2, "only the environment changes");
+        assert_eq!(editor.settings, Some(SettingsTarget::Environment));
+        assert_eq!(
+            editor.paste_environment(&mut target),
+            None,
+            "already the same"
+        );
+
+        editor.undo(&mut target, &mut player);
+        assert_eq!(target.environment, original);
     }
 
     #[test]

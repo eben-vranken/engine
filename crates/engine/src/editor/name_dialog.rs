@@ -1,5 +1,5 @@
 //! NEW SCENE, NEW GRAPH and NEW SCRIPT: naming the new file in the editor. Also SAVE
-//! SCENE AS once its file is picked.
+//! SCENE AS once its file is picked, and RENAME on a scene's tab.
 
 use super::{Editor, EditorOutput, dialog_heading};
 use crate::player::settings::PlayerSettings;
@@ -13,6 +13,8 @@ pub(super) enum Naming {
     Scene,
     Graph,
     Script,
+    /// A new name for the scene at `NameDialog::from`.
+    RenameScene,
 }
 
 /// The name dialog's state.
@@ -21,6 +23,8 @@ pub(super) struct NameDialog {
     pub text: String,
     /// Why the last name was refused.
     pub error: Option<String>,
+    /// The scene being renamed (RENAME).
+    pub from: PathBuf,
 }
 
 /// Checks a typed scene name; returns its file relative to the project
@@ -53,11 +57,31 @@ impl Editor {
             purpose,
             text: String::new(),
             error: None,
+            from: PathBuf::new(),
+        });
+    }
+
+    /// Asks for a new name for the scene at `path` (a project path).
+    pub(super) fn ask_rename_scene(&mut self, path: PathBuf) {
+        let text = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        self.naming = Some(NameDialog {
+            purpose: Naming::RenameScene,
+            text,
+            error: None,
+            from: path,
         });
     }
 
     /// The name dialog, while one is open.
-    pub(super) fn name_dialog(&mut self, ui: &egui::Ui, output: &mut EditorOutput) {
+    pub(super) fn name_dialog(
+        &mut self,
+        ui: &egui::Ui,
+        scene: &mut Scene,
+        output: &mut EditorOutput,
+    ) {
         let Some(dialog) = &mut self.naming else {
             return;
         };
@@ -68,6 +92,10 @@ impl Editor {
                 Naming::Scene => ("NEW SCENE", "CREATED IN SCENES/ AND OPENED IN A NEW TAB"),
                 Naming::Graph => ("NEW GRAPH", "CREATED IN GRAPHS/ AND OPENED IN A NEW TAB"),
                 Naming::Script => ("NEW SCRIPT", "CREATED IN SCRIPTS/ AND OPENED IN A NEW TAB"),
+                Naming::RenameScene => (
+                    "RENAME SCENE",
+                    "ITS GRAPH, BAKES, THE START SCENE AND LOAD SCENE NODES FOLLOW",
+                ),
             };
             dialog_heading(ui, title, hint);
             let field = ui.add(egui::TextEdit::singleline(&mut dialog.text).hint_text("NAME"));
@@ -99,6 +127,19 @@ impl Editor {
                 .and_then(|path| self.create_graph(&path, output)),
             Naming::Script => super::script_tab::script_file(&self.project_dir, &dialog.text)
                 .and_then(|path| self.create_script(&path, output)),
+            Naming::RenameScene => {
+                let from = dialog.from.clone();
+                let unchanged = from.file_stem().is_some_and(|stem| {
+                    let typed = dialog.text.trim();
+                    stem.to_string_lossy() == typed.strip_suffix(".ron").unwrap_or(typed)
+                });
+                if unchanged {
+                    Ok(())
+                } else {
+                    super::scene_rename::rename_target(&self.project_dir, &from, &dialog.text)
+                        .and_then(|path| self.rename_scene(&from, &path, scene))
+                }
+            }
         };
         match result {
             Ok(()) => self.naming = None,
