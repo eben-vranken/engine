@@ -258,7 +258,7 @@ The game's flow and its dialogue as node graphs, edited in the editor (BRIEF.md:
 
 ### 11.2 Flags, events and actions
 - [x] Flags (yes/no, number, text) declared in the project; a flags panel
-- [x] Events: game start, scene loaded, enter/exit a zone or TriggerZone, a switch used, an object picked up, a dialogue ended
+- [x] Events: game start, scene loaded, enter/exit a zone or TriggerZone, a switch used, an object picked up, a dialogue ended (WHEN GRAPH ENDED since the overhaul; before it, only RUN GRAPH waited for a graph to end)
 - [x] Actions: set a flag, open/close a door, show/hide an object, play a sound, load a scene, start a dialogue
 - [x] Conditions on connections, from flags
 - [x] The game runs the project's flow graph; several nodes can be active at once
@@ -282,7 +282,7 @@ The game's flow and its dialogue as node graphs, edited in the editor (BRIEF.md:
 **Acceptance:** the user saves mid-story, quits, loads, and the world, the flags and the next dialogue are as they left them.
 
 ### 11.5 Abilities and gates
-- [x] Abilities are flags; AbilityPickup sets one, AbilityGate blocks the way without it
+- [x] Abilities are flags; AbilityPickup sets one, AbilityGate blocks the way without it (since the overhaul: a Pickup sets a flag, and `VisibleWhen` replaces AbilityGate)
 - [x] Controller abilities read from flags (the first one a game needs, e.g. double jump)
 
 **Acceptance:** a gate the user can't pass opens after picking up the ability, and the ability survives a save and load.
@@ -320,7 +320,7 @@ The editor reorganised for ease of use; same look, same features (design: the "E
 - [ ] No game-wide flow graph: each scene's own graph holds its logic; only the loaded scene's graph (and what it started) stays in memory. Flags stay global
 - [ ] LOGIC opens the open scene's graph first
 - [ ] Scripts (Rhai) in the project's `scripts/`: `start()` once and `update(player, dt)` every frame while on; player state, velocity, jump, keys, flags; reload on save; errors shown, never crash
-- [ ] ABILITY node turns a script on or off; abilities that are on are saved with the game
+- [ ] ABILITY node turns a script on or off; abilities that are on are saved with the game (since the overhaul: an ability is a flag with a bound script, and the node sets that flag)
 - [ ] The controller's built-in double jump is gone; the sandbox's is `scripts/double_jump.rhai`, turned on by the feather
 - [ ] Script behavior: any object runs a script (`start(object)`, `update(object, dt)`): position, rotation, scale, visible; `player()` from any script. The sandbox's watcher turns to face the player
 - [ ] Script tabs in LOGIC: + SCRIPT / NEW SCRIPT from a template, colored code with line numbers, live syntax check with the line, formatting on save (Ctrl+S) or FORMAT, what uses the script and a reference of what it can call

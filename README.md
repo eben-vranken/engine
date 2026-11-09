@@ -62,13 +62,21 @@ Acoustics come from [Steam Audio](https://valvesoftware.github.io/steam-audio/) 
 | `PlayerStart` | Where the player spawns |
 | `Floating` | Bobbing platforms and rocks |
 | `Door` | Slides and/or swings open; acts as a sound portal |
-| `Switch` | Press E or stand on it (pressure plate) to toggle a target, e.g. a door |
+| `Switch` | Press E or stand on it (pressure plate) to toggle a target, e.g. a door; graphs see it as used |
 | `PhysicsBody` | Gravity and pushable props |
 | `LightSource` | Colored, flickering, shadowed lights |
 | `FogVolume` | Local fog beyond the zone default |
 | `SoundSource` | Bells, drips, ambience, music |
 | `AcousticMaterial` | How a surface sounds |
 | `ZoneVolume`, `Portal` | Zone extent and connections |
+| `TriggerZone` | A box graphs wait for the player to be in or out of |
+| `Character` | Someone to talk to (E): an id, a name and a dialogue graph |
+| `Pickup` | Taken with E: hides, sets a flag (an ability, if the flag has a script), plays a sound |
+| `SavePoint` | E saves the game |
+| `VisibleWhen` | Shown only while a flag condition holds (a gate, a bridge); no flag: hidden until a graph shows it |
+| `Script` | Runs a Rhai script on the object (see Scripts) |
+
+Every object has a stable id in its scene; graphs, switches and saves refer to objects by it, so renaming an object breaks nothing.
 
 ## Player
 
@@ -82,9 +90,9 @@ Themed as a sparse amber-on-black terminal, in three workspaces chosen in the to
 
 - **PROJECT:** the start screen (recent projects, new, open, packages) and every project-wide setting on one page: name, start scene, render scale, player feel, dialogue look with a live preview, flags and the saved game.
 - **BUILD:** scenes in tabs, each with its own undo history, selection, camera and unsaved state. The outliner groups objects by zone with a type tag each, filter chips and search (`candle > flame` finds parts); the assets drawer lists models (drag them in), textures and sounds. The viewport has floating move/rotate/scale tools, a SHOW menu (zone volumes, trigger boxes, probes) and the bakes' state with BAKE. The inspector shows collapsible cards generated from the components via `bevy_reflect`, an IN LOGIC card (the graphs that mention the object) and a grouped ADD BEHAVIOR. Multi-select edits apply to every selected object as one undo step.
-- **LOGIC:** scripts in a code editor (see Scripts), and gameplay graphs grouped by owner: one per scene (`graphs/scenes/<scene>.ron`: loaded and run only while the scene is, and carries on where it was when the player returns; flags are global, so one scene's graph can change what another's sees), one per character (their dialogue), and others started by RUN GRAPH. Each graph shows its owner, what uses it and references that point at nothing. Nodes: events (in a zone or trigger, used, picked up), waits, branches on flags, actions (doors, show/hide, sounds, load scene, save, turn an ability on or off) and dialogue (lines with an optional sound, replies with conditions, renaming characters). The CONVERSATION view reads a dialogue as a script with a live preview and TEST CONVERSATION. Flags (`flags.ron`) are edited beside the graphs.
+- **LOGIC:** scripts in a code editor (see Scripts), and gameplay graphs grouped by owner: one per scene (`graphs/scenes/<scene>.ron`: loaded and run only while the scene is, and carries on where it was when the player returns; flags are global, so one scene's graph can change what another's sees), one per character (their dialogue), and others started by RUN GRAPH. Each graph shows its owner, what uses it and references that point at nothing. Nodes: events (in a zone or trigger, used, picked up, a script's signal, another graph ended), waits, branches on flags, actions (doors, show/hide, sounds, load scene, save, turn an ability on or off) and dialogue (lines with an optional sound, replies with conditions, renaming characters). The CONVERSATION view reads a dialogue as a script with a live preview and TEST CONVERSATION. Flags (`flags.ron`) are edited beside the graphs; a yes/no flag can have a script bound to it, which makes it an ability. A graph runs once at a time: starting one that runs already (RUN GRAPH, talking) waits for that one.
 - **PLAY** (F5, or PLAY FROM SAVE) runs the scene in place; STOP restores it. The test drawer (F3) shows the running graphs and an events log, flips flags, holds the audio switches, the player feel, the map and frame stats.
-- **Game systems:** characters to talk to, pickups, save points (one save per project), ability gates, abilities written as Rhai scripts (`scripts/`) and turned on by the ABILITY node, and a map of visited zones (M).
+- **Game systems:** characters to talk to, pickups, save points (one save per project), objects visible when a flag condition holds (gates), abilities (yes/no flags with a Rhai script from `scripts/` bound to them), and a map of visited zones (M).
 - **Bakes:** BAKE LIGHTING and BAKE ACOUSTICS per scene. **Packages:** a whole project in one `.gamepack` file to hand to someone else.
 - **Models** are made in Blender (or any glTF exporter) and dragged in; re-exporting over the file updates every scene using it. A glTF's named nodes become **parts** (a candle's stick, wax and flame), which a scene can give their own glow, collision and light.
 
@@ -135,7 +143,7 @@ The engine stays generic: anything specific to a game is data in its project fol
 
 Small [Rhai](https://rhai.rs) scripts in the project's `scripts/`, made and edited in LOGIC (+ SCRIPT, or FILE ▸ NEW SCRIPT): a code editor with colors, line numbers, a live syntax check and formatting on save (Ctrl+S or FORMAT; a script with a syntax error is saved as typed). A script runs in one of two ways, after the controller has moved each frame:
 
-- **An ability:** a graph's ABILITY node turns it on or off (saved with the game); `start()` once, `update(player, dt)` every frame while it's on.
+- **An ability:** bound to a yes/no flag in LOGIC's FLAGS list, it runs while the flag is true (a pickup or a SET FLAG / ABILITY node turns it on; saved with the flags); `start()` once, `update(player, dt)` every frame while it's on.
 - **On an object:** BUILD ▸ ADD BEHAVIOR ▸ SCRIPT; `start(object)` once, `update(object, dt)` every frame while the game plays and the object is in the simulation radius. Each object has its own memory.
 
 A script reloads when its file is saved; one with an error stops until it's fixed, and the error shows in the editor and the test drawer. The sandbox has `double_jump.rhai` (an ability, from the feather) and `watcher.rhai` (on the watcher in the plaza: turns to face the player).
@@ -162,6 +170,7 @@ fn update(player, dt) {                  // every frame while on
 | `object.name`, `object.position`, `.rotation`, `.scale`, `.visible` | the object a script runs on (rotation in degrees; hidden = no collision) |
 | `player()` | the player, from any script (an object script uses it to find the player) |
 | `flag("name")`, `set_flag("name", value)` | the game's flags, shared with every graph |
+| `emit("name")` | a signal: graphs waiting in WHEN SIGNAL with that name go on |
 | `vec3(x, y, z)` | `.x .y .z`, `+ - * /`, `.length()`; plus Rhai's maths (`sin`, `atan`, `to_degrees`...) |
 | `print(...)` | writes to the log |
 
