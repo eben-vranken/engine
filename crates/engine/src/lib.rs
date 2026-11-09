@@ -26,6 +26,7 @@ pub mod input;
 pub mod launcher;
 pub mod lightmap;
 pub mod package;
+pub mod perf;
 pub mod physics;
 pub mod player;
 pub mod project;

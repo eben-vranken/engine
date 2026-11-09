@@ -123,11 +123,13 @@ impl Running {
     /// The physics world for the current state: dynamic bodies only while
     /// the game runs.
     pub(super) fn rebuild_physics(&mut self) {
-        self.physics = if self.behaviors.is_some() {
-            PhysicsWorld::for_game(&self.scene, &mut self.assets)
-        } else {
-            PhysicsWorld::from_scene(&self.scene, &mut self.assets)
-        };
+        crate::perf::time("REBUILD PHYSICS", || {
+            self.physics = if self.behaviors.is_some() {
+                PhysicsWorld::for_game(&self.scene, &mut self.assets)
+            } else {
+                PhysicsWorld::from_scene(&self.scene, &mut self.assets)
+            };
+        });
     }
 
     /// Editor: Play runs the scene from its PlayerStart; Stop puts back the

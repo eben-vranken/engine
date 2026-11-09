@@ -248,26 +248,35 @@ impl Shadows {
         }
 
         if let Some(sun) = sun {
-            for (i, matrix) in sun.into_iter().enumerate() {
-                let view = &self.cascade_views[i];
-                self.pass(encoder, view, i, matrix, object_bind_group, casters, None);
-            }
+            crate::perf::time("SUN SHADOW PASSES", || {
+                for (i, matrix) in sun.into_iter().enumerate() {
+                    let view = &self.cascade_views[i];
+                    self.pass(encoder, view, i, matrix, object_bind_group, casters, None);
+                }
+            });
         }
-        for (slot, light) in todo {
-            for face in 0..6 {
-                let layer = slot * 6 + face;
-                let range = Some((light.object, light.position, light.range));
-                self.pass(
-                    encoder,
-                    &self.face_views[layer],
-                    CASCADES + layer,
-                    faces[layer],
-                    object_bind_group,
-                    casters,
-                    range,
-                );
-            }
+        if todo.is_empty() {
+            return;
         }
+        // Cube faces re-rendered: each is a pass over the casters in reach.
+        crate::perf::count("CUBE FACES", todo.len() * 6);
+        crate::perf::time("CUBE SHADOW PASSES", || {
+            for (slot, light) in todo {
+                for face in 0..6 {
+                    let layer = slot * 6 + face;
+                    let range = Some((light.object, light.position, light.range));
+                    self.pass(
+                        encoder,
+                        &self.face_views[layer],
+                        CASCADES + layer,
+                        faces[layer],
+                        object_bind_group,
+                        casters,
+                        range,
+                    );
+                }
+            }
+        });
     }
 
     /// One depth pass. `light`: the light's object (it doesn't shadow

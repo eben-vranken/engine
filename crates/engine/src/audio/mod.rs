@@ -384,7 +384,7 @@ impl Audio {
                 log::error!("audio source: {err}");
             }
         }
-        self.direct.run_direct();
+        crate::perf::time("RUN DIRECT", || self.direct.run_direct());
 
         // Reflections on their own thread, from the latest snapshot.
         let baked = self.toggles.baked
@@ -804,15 +804,20 @@ impl Audio {
             self.geometry_checked = Instant::now();
             let signature = geometry::signature(scene);
             if signature != self.geometry_signature {
-                let built = AcousticGeometry::build(&self.context, scene, assets)
-                    .and_then(|d| Ok((d, AcousticGeometry::build(&self.context, scene, assets)?)));
+                let built = crate::perf::time("ACOUSTIC BUILD", || {
+                    AcousticGeometry::build(&self.context, scene, assets).and_then(|d| {
+                        Ok((d, AcousticGeometry::build(&self.context, scene, assets)?))
+                    })
+                });
                 match built {
                     Ok((direct, reflection)) => {
-                        self.direct_geometry = direct;
-                        self.direct.set_scene(&self.direct_geometry.scene);
-                        self.direct.commit();
-                        self.reflection_geometry = reflection;
-                        self.reflection.set_scene(&self.reflection_geometry.scene);
+                        crate::perf::time("ACOUSTIC SET SCENE", || {
+                            self.direct_geometry = direct;
+                            self.direct.set_scene(&self.direct_geometry.scene);
+                            self.reflection_geometry = reflection;
+                            self.reflection.set_scene(&self.reflection_geometry.scene);
+                        });
+                        crate::perf::time("ACOUSTIC COMMIT", || self.direct.commit());
                         self.simulation.request_simulator_commit();
                         self.geometry_signature = signature;
                     }
@@ -822,7 +827,9 @@ impl Audio {
             }
         }
         if self.direct_geometry.follow(scene) {
-            self.direct_geometry.scene.commit();
+            crate::perf::time("ACOUSTIC MOVE COMMIT", || {
+                self.direct_geometry.scene.commit()
+            });
         }
         if self.reflection_geometry.follow(scene) {
             self.simulation

@@ -13,7 +13,8 @@
 //! `--scene <path>` opens another scene than the project's start scene
 //! (relative to the project folder, e.g. `scenes/test_level.ron`).
 //! `--quality low` uses the low preset (for integrated graphics);
-//! `--perf-log` logs FPS and GPU times every couple of seconds.
+//! `--perf-log` logs frame-time percentiles, long frames, hitch timers, FPS
+//! and GPU times every two seconds (the same numbers are in F3 STATS).
 //! `--new-game` plays from the start even if there is a saved game.
 //! `--player` plays the game as a player gets it: no tuning panel, test
 //! drawer, debug readout or debug keys (the editor's Shift+F5 opens this).

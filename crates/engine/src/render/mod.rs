@@ -241,6 +241,8 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     adapter_name: String,
+    /// What the surface supports, to tell which mode `Auto*` picked.
+    present_modes: Vec<wgpu::PresentMode>,
 
     /// `None` picks the factor from the window height.
     scale_override: Option<u32>,
@@ -364,6 +366,7 @@ impl Renderer {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
+        log::info!("present modes supported: {:?}", caps.present_modes);
 
         // Scene pass resources.
         let storage = |binding| wgpu::BindGroupLayoutEntry {
@@ -882,6 +885,7 @@ impl Renderer {
             lights: Vec::new(),
             light_buffer,
             shadows,
+            present_modes: caps.present_modes.clone(),
             fog,
             post,
             zone: None,
@@ -1042,6 +1046,10 @@ impl Renderer {
     /// Uploads every object's mesh and transform, the lights and the
     /// zones' color grades.
     pub fn set_scene(&mut self, scene: &Scene, assets: &mut Assets) {
+        crate::perf::time("SET SCENE", || self.upload_scene(scene, assets));
+    }
+
+    fn upload_scene(&mut self, scene: &Scene, assets: &mut Assets) {
         self.environment = scene.environment.clone();
         self.zone_fogs = scene.zones.iter().map(|z| z.fog.clone()).collect();
         self.lights = scene_lights(scene, assets);
@@ -1387,6 +1395,23 @@ impl Renderer {
         &self.adapter_name
     }
 
+    /// The present mode in use: what wgpu resolves `AutoVsync` (FIFO
+    /// relaxed, else FIFO) and `AutoNoVsync` (immediate, else mailbox, else
+    /// FIFO) to on this surface.
+    pub fn present_mode(&self) -> wgpu::PresentMode {
+        use wgpu::PresentMode::*;
+        let order: &[wgpu::PresentMode] = match self.config.present_mode {
+            AutoVsync => &[FifoRelaxed, Fifo],
+            AutoNoVsync => &[Immediate, Mailbox, Fifo],
+            mode => return mode,
+        };
+        order
+            .iter()
+            .copied()
+            .find(|m| self.present_modes.contains(m))
+            .unwrap_or(Fifo)
+    }
+
     pub fn vsync(&self) -> bool {
         self.config.present_mode == wgpu::PresentMode::AutoVsync
     }
@@ -1405,6 +1430,7 @@ impl Renderer {
             Err(err) => log::error!("could not recreate the surface: {err}"),
         }
         self.surface.configure(&self.device, &self.config);
+        log::info!("present mode: {:?}", self.present_mode());
     }
 
     pub fn surface_format(&self) -> wgpu::TextureFormat {
@@ -1450,10 +1476,12 @@ impl Renderer {
             wgpu::CurrentSurfaceTexture::Success(frame) => frame,
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
                 // Use it this time, reconfigure for the next frame.
+                crate::perf::count("SUBOPTIMAL", 1);
                 self.surface.configure(&self.device, &self.config);
                 frame
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                crate::perf::count("OUTDATED / LOST", 1);
                 self.surface.configure(&self.device, &self.config);
                 return;
             }

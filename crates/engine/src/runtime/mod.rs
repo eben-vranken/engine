@@ -22,6 +22,7 @@ use crate::camera::{Camera, FlyCamera};
 use crate::editor::{Editor, EditorStats};
 use crate::input::Input;
 use crate::lightmap;
+use crate::perf;
 use crate::physics::PhysicsWorld;
 use crate::player::Player;
 use crate::player::settings::{PlayerSettings, SettingsFile};
@@ -145,8 +146,14 @@ struct Running {
     rmb_look: bool,
     last_frame: Instant,
     fps: FpsCounter,
-    /// `--perf-log`: when FPS and GPU times were last logged.
-    perf_log: Option<Instant>,
+    /// `--perf-log`: log the numbers below every `perf::INTERVAL`.
+    perf_log: bool,
+    /// Frame times, summarised every `perf::INTERVAL` (`perf_rolled`).
+    frame_times: perf::FrameTimes,
+    perf_rolled: Instant,
+    /// The last interval's frame times and timers, for the log and STATS.
+    frame_summary: perf::FrameSummary,
+    perf_stats: Vec<perf::Stat>,
     scene: Scene,
     /// Present when running the editor.
     editor: Option<Editor>,
@@ -364,6 +371,7 @@ impl Running {
         );
         let mut renderer = Renderer::new(window.clone(), config.quality)?;
         renderer.set_render_scale(config.render_scale);
+        log::info!("present mode: {:?}", renderer.present_mode());
         let mut assets = Assets::new(config.game_dir.clone());
         renderer.set_scene(&config.scene, &mut assets);
         let overlay = Overlay::new(&window, renderer.device(), renderer.surface_format());
@@ -421,7 +429,11 @@ impl Running {
             rmb_look: false,
             last_frame: Instant::now(),
             fps: FpsCounter::default(),
-            perf_log: config.perf_log.then(Instant::now),
+            perf_log: config.perf_log,
+            frame_times: perf::FrameTimes::default(),
+            perf_rolled: Instant::now(),
+            frame_summary: perf::FrameSummary::default(),
+            perf_stats: Vec::new(),
             scene: config.scene.clone(),
             editor,
             highlighted: Vec::new(),
@@ -479,48 +491,88 @@ impl Running {
         self.set_looking(wanted);
     }
 
+    /// The refresh interval of the window's monitor in milliseconds (60 Hz
+    /// if it can't be told).
+    fn refresh_ms(&self) -> f32 {
+        self.window
+            .current_monitor()
+            .and_then(|m| m.refresh_rate_millihertz())
+            .map_or(1000.0 / 60.0, |mhz| 1_000_000.0 / mhz as f32)
+    }
+
+    /// Ends a `perf::INTERVAL`: summarises it for STATS and `--perf-log`.
+    fn roll_perf(&mut self) {
+        perf::roll();
+        self.frame_summary = self.frame_times.summary(self.refresh_ms());
+        self.perf_stats = perf::last();
+        if !self.perf_log {
+            return;
+        }
+        let f = self.frame_summary;
+        log::info!(
+            "perf: frames {} | p50 {:.2} ms | p99 {:.2} ms | max {:.2} ms | {} long (> {:.1} ms) | present {:?}",
+            f.frames,
+            f.p50,
+            f.p99,
+            f.max,
+            f.long,
+            f.refresh_ms * perf::LONG_FRAME,
+            self.renderer.present_mode(),
+        );
+        if !self.perf_stats.is_empty() {
+            let stats: Vec<String> = self
+                .perf_stats
+                .iter()
+                .map(|s| format!("{} {}", s.name, s.text()).to_lowercase())
+                .collect();
+            log::info!("perf: {}", stats.join(" | "));
+        }
+        let [w, h] = self.renderer.layout().internal;
+        let gpu = match self.renderer.gpu_times() {
+            Some(times) => {
+                let stages: Vec<String> = crate::render::timings::STAGES
+                    .iter()
+                    .zip(times)
+                    .map(|(name, ms)| format!("{} {ms:.2}", name.to_lowercase()))
+                    .collect();
+                format!(
+                    "gpu {:.2} ms ({})",
+                    times.iter().sum::<f32>(),
+                    stages.join(", ")
+                )
+            }
+            None => "gpu times unavailable".into(),
+        };
+        log::info!(
+            "perf: {:.0} fps, {:.2} ms | {w}x{h} x{} {} | {gpu}",
+            self.fps.fps,
+            self.fps.frame_ms,
+            self.renderer.layout().factor,
+            self.renderer.quality().name(),
+        );
+        if let Some(audio) = &self.audio {
+            let t = audio.take_timing();
+            log::info!(
+                "perf: audio buffer {:.1} ms | slowest fill {:.2} ms | longest gap {:.2} ms | {} underruns",
+                t.buffer,
+                t.slowest_fill,
+                t.longest_gap,
+                t.underruns,
+            );
+        }
+    }
+
     fn frame(&mut self) {
         let now = Instant::now();
-        let dt = (now - self.last_frame).as_secs_f32().min(0.1);
+        // Unclamped for the stats: a long frame is what we want to see.
+        let frame_ms = (now - self.last_frame).as_secs_f32() * 1000.0;
+        let dt = (frame_ms / 1000.0).min(0.1);
         self.last_frame = now;
         self.fps.tick(dt);
-        if let Some(last) = self.perf_log
-            && last.elapsed().as_secs_f32() >= 2.0
-        {
-            self.perf_log = Some(Instant::now());
-            let [w, h] = self.renderer.layout().internal;
-            let gpu = match self.renderer.gpu_times() {
-                Some(times) => {
-                    let stages: Vec<String> = crate::render::timings::STAGES
-                        .iter()
-                        .zip(times)
-                        .map(|(name, ms)| format!("{} {ms:.2}", name.to_lowercase()))
-                        .collect();
-                    format!(
-                        "gpu {:.2} ms ({})",
-                        times.iter().sum::<f32>(),
-                        stages.join(", ")
-                    )
-                }
-                None => "gpu times unavailable".into(),
-            };
-            log::info!(
-                "perf: {:.0} fps, {:.2} ms | {w}x{h} x{} {} | {gpu}",
-                self.fps.fps,
-                self.fps.frame_ms,
-                self.renderer.layout().factor,
-                self.renderer.quality().name(),
-            );
-            if let Some(audio) = &self.audio {
-                let t = audio.take_timing();
-                log::info!(
-                    "perf: audio buffer {:.1} ms | slowest fill {:.2} ms | longest gap {:.2} ms | {} underruns",
-                    t.buffer,
-                    t.slowest_fill,
-                    t.longest_gap,
-                    t.underruns,
-                );
-            }
+        self.frame_times.push(frame_ms);
+        if self.perf_rolled.elapsed().as_secs_f32() >= perf::INTERVAL {
+            self.perf_rolled = Instant::now();
+            self.roll_perf();
         }
 
         let mut actions = HudActions::default();
@@ -600,10 +652,28 @@ impl Running {
         let game_drawer =
             self.editor.is_none() && self.story.as_ref().is_some_and(|s| s.debug_open);
         let game_dir = self.game_dir.clone();
-        let drawer_stats: Vec<(&'static str, String)> = vec![
+        let f = self.frame_summary;
+        let mut drawer_stats: Vec<(&'static str, String)> = vec![
             (
                 "FPS",
                 format!("{:.0}  {:.2} MS", self.fps.fps, self.fps.frame_ms),
+            ),
+            (
+                "FRAMES",
+                format!("P50 {:.2}  P99 {:.2}  MAX {:.2} MS", f.p50, f.p99, f.max),
+            ),
+            (
+                "LONG",
+                format!(
+                    "{} OF {} (> {:.1} MS)",
+                    f.long,
+                    f.frames,
+                    f.refresh_ms * perf::LONG_FRAME
+                ),
+            ),
+            (
+                "PRESENT",
+                format!("{:?}", self.renderer.present_mode()).to_uppercase(),
             ),
             (
                 "GPU",
@@ -643,6 +713,8 @@ impl Running {
                 },
             ),
         ];
+        // The last interval's timers and counters, in name order.
+        drawer_stats.extend(self.perf_stats.iter().map(|s| (s.name, s.text())));
         let mut drawer_actions = None;
         let hud = HudInfo {
             fps: self.fps.fps,

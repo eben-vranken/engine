@@ -14,7 +14,7 @@ impl Running {
     /// editor again on it (with the same command-line options) and closing
     /// this one. Unsaved changes were already dealt with.
     pub(super) fn open_project(&mut self, dir: &Path) {
-        match start_editor(dir, self.quality, self.perf_log.is_some()) {
+        match start_editor(dir, self.quality, self.perf_log) {
             Ok(()) => self.exit_requested = true,
             Err(err) => {
                 log::error!("{err}");
