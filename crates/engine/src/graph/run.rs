@@ -200,10 +200,20 @@ impl GraphRunner {
     /// Starts a graph from its START nodes, unless it is running already.
     /// Returns whether it started.
     pub fn start(&mut self, path: &str) -> bool {
-        if path.is_empty() || self.is_running(path) {
-            return false;
+        !path.is_empty() && !self.is_running(path) && self.start_thread(path, None).is_some()
+    }
+
+    /// The one rule for every way a graph starts (a scene loading, talking
+    /// to a character, RUN GRAPH): a graph runs once at a time, so starting
+    /// one that runs already gives its running thread. `None`: no such graph.
+    fn start_thread(&mut self, path: &str, parent: Option<(u64, NodeId)>) -> Option<u64> {
+        if path.is_empty() {
+            return None;
         }
-        self.spawn(path, None).is_some()
+        if let Some(running) = self.threads.iter().find(|t| t.graph == path) {
+            return Some(running.id);
+        }
+        self.spawn(path, parent)
     }
 
     fn spawn(&mut self, path: &str, parent: Option<(u64, NodeId)>) -> Option<u64> {
@@ -420,9 +430,11 @@ impl GraphRunner {
                     if self.is_active(thread, id) {
                         continue;
                     }
-                    match self.spawn(&path.0, Some((thread, id))) {
-                        Some(child) => self.activate(thread, id, Some(child)),
-                        None => self.pass(thread, id, 0),
+                    // Waits for the graph to end, also if it was running
+                    // already (a graph that runs itself just carries on).
+                    match self.start_thread(&path.0, Some((thread, id))) {
+                        Some(child) if child != thread => self.activate(thread, id, Some(child)),
+                        _ => self.pass(thread, id, 0),
                     }
                 }
                 // Events, waits and lines: active until their moment.
@@ -884,6 +896,46 @@ mod tests {
                 (6, 0, 7),
             ],
         )
+    }
+
+    /// RUN GRAPH of a graph that runs already waits for that one: there is
+    /// never a second copy.
+    #[test]
+    fn run_graph_waits_for_a_graph_already_running() {
+        let waiting = graph(
+            vec![NodeKind::Start, NodeKind::Wait { seconds: 1.0 }],
+            &[(0, 0, 1)],
+        );
+        let flow = graph(
+            vec![
+                NodeKind::Start,
+                NodeKind::RunGraph {
+                    graph: GraphRef("waiting".into()),
+                },
+                NodeKind::Show {
+                    object: ObjectRef::named("lamp"),
+                    visible: true,
+                },
+            ],
+            &[(0, 0, 1), (1, 0, 2)],
+        );
+        let mut runner = runner(vec![("flow", flow), ("waiting", waiting)]);
+        assert!(runner.start("waiting"));
+        runner.update(&World::default(), 0.1);
+        assert!(runner.start("flow"));
+        assert!(runner.update(&World::default(), 0.1).is_empty());
+        let copies = runner
+            .threads
+            .iter()
+            .filter(|t| t.graph == "waiting")
+            .count();
+        assert_eq!(copies, 1);
+        // Once it ends, the flow carries on.
+        let mut shown = Vec::new();
+        for _ in 0..20 {
+            shown.extend(runner.update(&World::default(), 0.1));
+        }
+        assert!(shown.iter().any(|c| matches!(c, Command::Show { .. })));
     }
 
     #[test]
