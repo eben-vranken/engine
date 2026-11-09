@@ -100,7 +100,7 @@ pub fn sections(ui: &mut Ui, s: &mut PlayerSettings) {
         row(ui, "SENSITIVITY", &mut c.sensitivity, 0.001..=1.0, "°/PX");
         toggle(ui, "HEAD BOB", &mut c.head_bob);
         row(ui, "BOB AMPLITUDE", &mut c.bob_amplitude, 0.0..=0.5, "M");
-        row(ui, "STEP LENGTH", &mut c.bob_stride, 0.1..=10.0, "M");
+        row(ui, "STEP LENGTH", &mut c.step_length, 0.1..=10.0, "M");
         row(ui, "LANDING DIP", &mut c.landing_dip, 0.0..=1.0, "M");
         row(
             ui,

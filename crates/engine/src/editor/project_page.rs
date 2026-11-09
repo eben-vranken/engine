@@ -313,7 +313,7 @@ impl Editor {
                 ui.add_space(6.0);
                 if ui
                     .add_enabled(exists, egui::Button::new("DELETE THE SAVED GAME"))
-                    .on_hover_text("PLAY FROM SAVE AND THE GAME'S START BEGIN FRESH AGAIN")
+                    .on_hover_text("CONTINUE SAVE AND THE GAME'S START BEGIN FRESH AGAIN")
                     .clicked()
                 {
                     match std::fs::remove_file(&file) {

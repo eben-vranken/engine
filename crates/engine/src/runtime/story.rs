@@ -256,7 +256,7 @@ impl Running {
         }
     }
 
-    /// Where the player's body is, for trigger zones.
+    /// Where the player's body is, for triggers.
     fn body(&self) -> Vec3 {
         match self.mode {
             CameraMode::Player => self.player.feet + Vec3::Y * 0.9,
@@ -383,7 +383,7 @@ impl Running {
             .iter()
             .filter(|o| {
                 o.components.iter().any(|c| match c {
-                    Component::TriggerZone(t) => t.contains(&o.transform, body),
+                    Component::Trigger(t) => t.contains(&o.transform, body),
                     _ => false,
                 })
             })

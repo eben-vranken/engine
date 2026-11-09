@@ -137,7 +137,7 @@ pub struct Editor {
     pub show_inspector: bool,
     /// Zone volume and portal markers in the viewport (H).
     pub show_zones: bool,
-    /// Trigger zone boxes in the viewport.
+    /// Trigger boxes in the viewport.
     show_triggers: bool,
     /// Reverb probe dots in the viewport.
     show_probes: bool,

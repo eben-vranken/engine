@@ -46,7 +46,7 @@ impl Editor {
                 }
                 ui.add(
                     egui::TextEdit::singleline(&mut self.search)
-                        .hint_text("NAME, ZONE OR COMPONENT; MODEL > PART")
+                        .hint_text("NAME, ZONE OR BEHAVIOR; MODEL > PART")
                         .desired_width(ui.available_width().max(0.0)),
                 );
             });
@@ -89,7 +89,7 @@ impl Editor {
         let mut zone_action = None;
         let environment = self.settings == Some(SettingsTarget::Environment);
         if ui
-            .selectable_label(environment, picked("SCENE SETTINGS", environment))
+            .selectable_label(environment, picked("ENVIRONMENT", environment))
             .on_hover_text("SUN, SKY, FOG, GRADE, BLOOM AND BAKE QUALITY FOR THE WHOLE SCENE")
             .clicked()
         {
@@ -838,7 +838,7 @@ pub(super) fn tag(object: &Object) -> String {
         Component::VisibleWhen(v) if !v.condition.flag.0.is_empty() => 4,
         Component::Switch(_) => 5,
         Component::Door(_) => 6,
-        Component::TriggerZone(_) => 7,
+        Component::Trigger(_) => 7,
         Component::Portal(_) => 8,
         Component::ZoneVolume(_) => 9,
         Component::LightSource(_) => 10,
@@ -862,7 +862,7 @@ pub(super) fn tag(object: &Object) -> String {
         Component::Switch(s) if s.pressure_plate => "PLATE".into(),
         Component::Switch(_) => "SWITCH".into(),
         Component::Door(_) => "DOOR".into(),
-        Component::TriggerZone(_) => "TRIGGER".into(),
+        Component::Trigger(_) => "TRIGGER".into(),
         Component::Portal(p) => format!("PORTAL › {}", p.to.0.to_uppercase()),
         Component::ZoneVolume(_) => "VOLUME".into(),
         Component::LightSource(_) => "LIGHT".into(),

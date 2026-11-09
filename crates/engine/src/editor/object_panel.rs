@@ -10,7 +10,7 @@ use crate::player::settings::PlayerSettings;
 use crate::render::mesh::Shape;
 use crate::scene::{
     AcousticMaterial, Character, Component, Door, Floating, FogVolume, LightSource, Material,
-    Object, ObjectRef, PhysicsBody, Pickup, Portal, Scene, SoundSource, Switch, TriggerZone,
+    Object, ObjectRef, PhysicsBody, Pickup, Portal, Scene, SoundSource, Switch, Trigger,
     ZoneVolume,
 };
 use egui::{Align, Layout, RichText, Ui};
@@ -265,10 +265,7 @@ pub(super) fn new_components() -> [(&'static str, Component); 17] {
         ),
         ("fog volume", Component::FogVolume(FogVolume::default())),
         ("material", Component::Material(Material::default())),
-        (
-            "trigger zone",
-            Component::TriggerZone(TriggerZone::default()),
-        ),
+        ("trigger", Component::Trigger(Trigger::default())),
         ("character", Component::Character(Character::default())),
         ("pickup", Component::Pickup(Pickup::default())),
         ("save point", Component::SavePoint),

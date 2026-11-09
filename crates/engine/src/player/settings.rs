@@ -150,7 +150,8 @@ pub struct CameraFeel {
     pub bob_amplitude: f32,
     /// m walked per step: one head bob down and up, and one footstep. Smaller
     /// = quicker steps.
-    pub bob_stride: f32,
+    #[serde(alias = "bob_stride")]
+    pub step_length: f32,
     /// m: how far the view dips on a hard landing (scaled by impact speed).
     pub landing_dip: f32,
     /// s: time to the bottom of the dip.
@@ -170,7 +171,7 @@ impl Default for CameraFeel {
             sensitivity: 0.08,
             head_bob: true,
             bob_amplitude: 0.035,
-            bob_stride: 1.9,
+            step_length: 1.9,
             landing_dip: 0.12,
             landing_dip_time: 0.09,
             sprint_fov_kick: 6.0,
@@ -307,6 +308,15 @@ fn modified_time(path: &Path) -> Option<SystemTime> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The sandbox's player.ron still says `bob_stride` (now `step_length`).
+    #[test]
+    fn old_names_still_load() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sandbox/player.ron");
+        let text = std::fs::read_to_string(dir).unwrap();
+        let settings: PlayerSettings = ron::from_str(&text).unwrap();
+        assert_eq!(settings.camera.step_length, 4.0);
+    }
 
     #[test]
     fn round_trips_through_ron() {

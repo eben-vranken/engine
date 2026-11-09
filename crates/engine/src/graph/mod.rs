@@ -73,9 +73,9 @@ pub enum NodeKind {
     WhenInScene { scene: SceneRef },
     /// Waits until the player is in this zone.
     WhenInZone { zone: ZoneRef },
-    /// Waits until the player is inside this TriggerZone object.
+    /// Waits until the player is inside this Trigger object.
     WhenInTrigger { trigger: ObjectRef },
-    /// Waits until the player is outside this TriggerZone object.
+    /// Waits until the player is outside this Trigger object.
     WhenOutOfTrigger { trigger: ObjectRef },
     /// Waits until the player uses this object: E at a switch, pickup,
     /// character or save point, or stepping on a pressure plate.
@@ -144,7 +144,7 @@ pub enum DoorAction {
 /// How the add menu groups node types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Category {
-    Story,
+    Event,
     Logic,
     Action,
     Dialogue,
@@ -152,7 +152,7 @@ pub enum Category {
 
 impl Category {
     pub const ALL: [Category; 4] = [
-        Category::Story,
+        Category::Event,
         Category::Logic,
         Category::Action,
         Category::Dialogue,
@@ -161,7 +161,7 @@ impl Category {
     /// One node's category, for its header.
     pub fn tag(self) -> &'static str {
         match self {
-            Category::Story => "EVENT",
+            Category::Event => "EVENT",
             Category::Logic => "LOGIC",
             Category::Action => "ACTION",
             Category::Dialogue => "DIALOGUE",
@@ -170,7 +170,7 @@ impl Category {
 
     pub fn title(self) -> &'static str {
         match self {
-            Category::Story => "EVENTS",
+            Category::Event => "EVENTS",
             Category::Logic => "LOGIC",
             Category::Action => "ACTIONS",
             Category::Dialogue => "DIALOGUE",
@@ -270,10 +270,10 @@ impl NodeKind {
         use NodeKind::*;
         match self {
             Start | WhenInScene { .. } | WhenInZone { .. } | WhenInTrigger { .. } => {
-                Category::Story
+                Category::Event
             }
-            WhenOutOfTrigger { .. } | WhenUsed { .. } | WhenPickedUp { .. } => Category::Story,
-            WhenSignal { .. } | WhenGraphEnded { .. } => Category::Story,
+            WhenOutOfTrigger { .. } | WhenUsed { .. } | WhenPickedUp { .. } => Category::Event,
+            WhenSignal { .. } | WhenGraphEnded { .. } => Category::Event,
             Note { .. } | Wait { .. } | WaitUntil { .. } | Branch { .. } | RunGraph { .. } => {
                 Category::Logic
             }
@@ -322,8 +322,8 @@ impl NodeKind {
             Note { .. } => "A comment on the canvas. Does nothing.",
             WhenInScene { .. } => "Waits until this scene is the one loaded.",
             WhenInZone { .. } => "Waits until the player is in this zone (also if already there).",
-            WhenInTrigger { .. } => "Waits until the player is inside this trigger zone.",
-            WhenOutOfTrigger { .. } => "Waits until the player is outside this trigger zone.",
+            WhenInTrigger { .. } => "Waits until the player is inside this trigger.",
+            WhenOutOfTrigger { .. } => "Waits until the player is outside this trigger.",
             WhenUsed { .. } => {
                 "Waits until the player uses this: E at a switch, pickup, character or save point, or stepping on a plate."
             }

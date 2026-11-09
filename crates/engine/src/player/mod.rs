@@ -437,7 +437,7 @@ impl Player {
         self.stepped = false;
         if self.grounded {
             let before = self.bob_phase;
-            self.bob_phase = (before + speed * dt / camera.bob_stride.max(0.1)).fract();
+            self.bob_phase = (before + speed * dt / camera.step_length.max(0.1)).fract();
             self.stepped = speed > 0.5 && crossed_half(before, self.bob_phase);
         }
 
@@ -645,7 +645,7 @@ mod tests {
             steps += player.stepped as u32;
         }
         let walked = (player.feet - start).length();
-        let expected = walked / settings.camera.bob_stride;
+        let expected = walked / settings.camera.step_length;
         assert!(
             (steps as f32 - expected).abs() <= 1.0,
             "{steps} steps over {walked} m, expected about {expected}"

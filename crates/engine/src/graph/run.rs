@@ -20,7 +20,7 @@ pub struct World<'a> {
     pub scene: &'a str,
     /// The zone the player is in.
     pub zone: Option<&'a str>,
-    /// TriggerZone objects the player is inside.
+    /// Trigger objects the player is inside.
     pub triggers: &'a [ObjectRef],
     /// What happened since the last update.
     pub events: &'a [Event],

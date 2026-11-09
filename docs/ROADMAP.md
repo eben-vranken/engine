@@ -258,7 +258,7 @@ The game's flow and its dialogue as node graphs, edited in the editor (BRIEF.md:
 
 ### 11.2 Flags, events and actions
 - [x] Flags (yes/no, number, text) declared in the project; a flags panel
-- [x] Events: game start, scene loaded, enter/exit a zone or TriggerZone, a switch used, an object picked up, a dialogue ended (WHEN GRAPH ENDED since the overhaul; before it, only RUN GRAPH waited for a graph to end)
+- [x] Events: game start, scene loaded, enter/exit a zone or Trigger (then called TriggerZone), a switch used, an object picked up, a dialogue ended (WHEN GRAPH ENDED since the overhaul; before it, only RUN GRAPH waited for a graph to end)
 - [x] Actions: set a flag, open/close a door, show/hide an object, play a sound, load a scene, start a dialogue
 - [x] Conditions on connections, from flags
 - [x] The game runs the project's flow graph; several nodes can be active at once

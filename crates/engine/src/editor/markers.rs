@@ -94,7 +94,7 @@ pub fn zones(
     for (index, object) in scene.objects.iter().enumerate() {
         for component in &object.components {
             let wanted = match component {
-                Component::TriggerZone(_) => show_triggers,
+                Component::Trigger(_) => show_triggers,
                 _ => show_zones,
             };
             if !wanted {
@@ -102,13 +102,11 @@ pub fn zones(
             }
             let (corners, edges, label_at, text): (Vec<Vec3>, &[(usize, usize)], Vec3, String) =
                 match component {
-                    Component::ZoneVolume(_)
-                    | Component::FogVolume(_)
-                    | Component::TriggerZone(_) => {
+                    Component::ZoneVolume(_) | Component::FogVolume(_) | Component::Trigger(_) => {
                         let (size, text) = match component {
                             Component::ZoneVolume(v) => (v.size, object.zone.to_uppercase()),
                             Component::FogVolume(v) => (v.size, "FOG".to_owned()),
-                            Component::TriggerZone(t) => {
+                            Component::Trigger(t) => {
                                 (t.size, format!("TRIGGER · {}", object.name.to_uppercase()))
                             }
                             _ => unreachable!(),

@@ -269,7 +269,9 @@ pub enum Component {
     LightSource(LightSource),
     FogVolume(FogVolume),
     Material(Material),
-    TriggerZone(TriggerZone),
+    /// Written `TriggerZone` before the rename.
+    #[serde(alias = "TriggerZone")]
+    Trigger(Trigger),
     Character(Character),
     Pickup(Pickup),
     /// Pressing E at it saves the game.
@@ -313,12 +315,12 @@ pub struct Script {
 /// graphs wait for the player to be in or out of it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 #[serde(default)]
-pub struct TriggerZone {
+pub struct Trigger {
     /// Meters, before the object's scale.
     pub size: Vec3,
 }
 
-impl Default for TriggerZone {
+impl Default for Trigger {
     fn default() -> Self {
         Self {
             size: Vec3::new(2.0, 2.0, 2.0),
@@ -326,7 +328,7 @@ impl Default for TriggerZone {
     }
 }
 
-impl TriggerZone {
+impl Trigger {
     /// Whether `point` is inside the box placed by `transform`.
     pub fn contains(&self, transform: &Transform, point: Vec3) -> bool {
         let local = transform.matrix().inverse().transform_point3(point);
