@@ -238,9 +238,9 @@ Reverb that doesn't come from geometry, so an open void or an empty plain can st
 ## 10.9 Remove the modeler
 Models come from Blender; the built-in modeler goes.
 
-- [ ] Modeler code, model tabs, NEW MODEL, double-click to open from the MODELS list and the orthographic camera removed
-- [ ] Model parts keep working: a glTF's named nodes are its parts, set up per scene as before
-- [ ] README updated
+- [x] Modeler code, model tabs, NEW MODEL, double-click to open from the MODELS list and the orthographic camera removed
+- [x] Model parts keep working: a glTF's named nodes are its parts, set up per scene as before
+- [x] README updated
 
 **Acceptance:** the editor opens and works as before without any modeler entry; models are still placed from the MODELS list and by dropping files, and a candle's parts can still be given their own glow and light.
 
