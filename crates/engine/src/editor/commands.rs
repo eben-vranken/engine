@@ -327,6 +327,11 @@ impl Editor {
     }
 
     /// The workspace on screen.
+    /// Whether the 3D view is on screen (BUILD), for what's drawn over it.
+    pub fn shows_view(&self) -> bool {
+        self.workspace() == Workspace::Build
+    }
+
     pub fn workspace(&self) -> Workspace {
         if self.project_page.is_some() {
             Workspace::Project

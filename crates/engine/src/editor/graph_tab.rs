@@ -229,15 +229,12 @@ impl Editor {
                             self.ask_name(super::name_dialog::Naming::Graph);
                         }
                     });
-                    egui::Panel::bottom("graph_flags")
-                        .resizable(true)
-                        .default_size(260.0)
-                        .min_size(140.0)
-                        .show(ui, |ui| {
-                            super::section(ui, "FLAGS");
-                            self.flags_panel(ui);
-                        });
+                    // Graphs on top (up to about half the height), flags below;
+                    // each scrolls on its own.
                     self.graph_browser(ui, &path, output);
+                    ui.add_space(8.0);
+                    super::section(ui, "FLAGS · GLOBAL");
+                    self.flags_panel(ui);
                 });
         } else {
             self.show_scene =
@@ -501,7 +498,8 @@ impl Editor {
         let mut create = None;
         egui::ScrollArea::vertical()
             .id_salt("graph_browser_list")
-            .auto_shrink([false, false])
+            .auto_shrink([false, true])
+            .max_height(ui.available_height() * 0.55)
             .show(ui, |ui| {
                 for (order, title, runs) in [
                     (1, "SCENES", "RUN WHILE LOADED"),

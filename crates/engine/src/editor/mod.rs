@@ -373,10 +373,12 @@ impl Editor {
                         self.run(command, scene, player, view, &mut output);
                     }
                     // The panel's lower part: the project's models.
+                    let max = (ui.available_height() - 200.0).max(120.0);
                     egui::Panel::bottom("editor_models")
                         .resizable(true)
-                        .default_size(240.0)
+                        .default_size(240.0f32.min(max))
                         .min_size(120.0)
+                        .max_size(max)
                         .show(ui, |ui| {
                             ui.add_enabled_ui(!playing, |ui| self.model_list(ui, &mut output));
                         });

@@ -679,6 +679,8 @@ impl Running {
         let settings = &mut self.settings;
         let (status, error) = (&self.settings_status, self.settings_error.as_deref());
         let mut tuning_action = None;
+        // Only over the 3D view: not over LOGIC's canvas or the PROJECT page.
+        let view_shown = self.editor.as_ref().is_none_or(Editor::shows_view);
         let editor = &mut self.editor;
         let scene = &mut self.scene;
         let mut editor_output = None;
@@ -777,7 +779,7 @@ impl Running {
                     draw_toast(ui, view.image, text);
                 }
                 // The audio switches' corner readout, unless the drawer shows them.
-                if let Some(toggles) = toggles.filter(|_| drawer_actions.is_none()) {
+                if let Some(toggles) = toggles.filter(|_| drawer_actions.is_none() && view_shown) {
                     draw_audio_panel(ui, view.image, &toggles, game_running);
                 }
             },
