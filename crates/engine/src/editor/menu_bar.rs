@@ -52,6 +52,19 @@ impl Editor {
                 if ui.small_button(play).clicked() {
                     output.toggle_play = true;
                 }
+                if !self.playing {
+                    let saved = crate::save::exists(&self.project_dir);
+                    if ui
+                        .add_enabled(saved, egui::Button::new(" CONTINUE ").small())
+                        .on_hover_text("PLAY FROM THE SAVED GAME")
+                        .on_disabled_hover_text(
+                            "NO SAVED GAME YET (SAVE POINTS AND SAVE GAME NODES MAKE ONE)",
+                        )
+                        .clicked()
+                    {
+                        output.resume_play = true;
+                    }
+                }
                 if self.playing {
                     ui.label(RichText::new("[PLAYING]").color(theme::AMBER));
                 }

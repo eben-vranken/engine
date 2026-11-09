@@ -53,6 +53,17 @@ pub(super) fn draw_prompt(ui: &egui::Ui, image: egui::Rect, text: &str) {
         });
 }
 
+/// A short message near the top of the view ("GAME SAVED").
+pub(super) fn draw_toast(ui: &egui::Ui, image: egui::Rect, text: &str) {
+    egui::Area::new(egui::Id::unique("toast"))
+        .pivot(egui::Align2::CENTER_TOP)
+        .fixed_pos(image.center_top() + egui::vec2(0.0, 24.0))
+        .interactable(false)
+        .show(ui.ctx(), |ui| {
+            ui.label(egui::RichText::new(format!("[{text}]")).color(crate::ui::theme::AMBER));
+        });
+}
+
 /// The simulation radius for the HUD: the active zones, or ALL.
 pub(crate) fn active_text(zones: &[String]) -> String {
     if zones.is_empty() {
@@ -249,7 +260,8 @@ pub(super) fn draw_hud(ui: &mut egui::Ui, hud: &HudInfo, actions: &mut HudAction
                     let hints: &[&str] = match hud.mode {
                         CameraMode::Player => &[
                             "WASD MOVE  SPACE JUMP  SHIFT SPRINT",
-                            "CTRL/C CROUCH  R RESPAWN",
+                            "CTRL/C CROUCH  R RESPAWN  E USE",
+                            "TAB MAP  F3 GRAPHS",
                             "F1 TUNING  F2 FLY  ESC FREE MOUSE",
                         ],
                         CameraMode::Fly => &[

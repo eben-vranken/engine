@@ -113,6 +113,17 @@ pub fn sections(ui: &mut Ui, s: &mut PlayerSettings) {
         );
         row(ui, "COYOTE TIME", &mut j.coyote_time, 0.0..=1.0, "S");
         row(ui, "JUMP BUFFER", &mut j.buffer_time, 0.0..=1.0, "S");
+        ui.label(RichText::new("AIR JUMPS").color(theme::AMBER_DIM));
+        ui.add(
+            egui::DragValue::new(&mut j.air_jumps)
+                .range(0..=5)
+                .speed(0.05),
+        );
+        ui.end_row();
+        ui.label(RichText::new("UNLOCKED BY FLAG").color(theme::AMBER_DIM))
+            .on_hover_text("EMPTY: ALWAYS");
+        ui.text_edit_singleline(&mut j.air_jump_flag);
+        ui.end_row();
         let gravity = j.gravity();
         ui.label(
             RichText::new(format!(

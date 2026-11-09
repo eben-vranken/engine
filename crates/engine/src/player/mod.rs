@@ -56,6 +56,9 @@ pub struct Player {
     bob_weight: f32,
     /// A foot came down this frame (the head bob's lowest point).
     pub stepped: bool,
+    /// Jumps allowed in mid-air now (abilities can lock them).
+    pub air_jumps: u32,
+    air_jumps_used: u32,
     dip_offset: f32,
     dip_velocity: f32,
     /// View offset that eases out height changes from stairs and slopes.
@@ -81,6 +84,8 @@ impl Player {
             bob_phase: 0.0,
             bob_weight: 0.0,
             stepped: false,
+            air_jumps: settings.jump.air_jumps,
+            air_jumps_used: 0,
             dip_offset: 0.0,
             dip_velocity: 0.0,
             fov_kick: 0.0,
@@ -193,6 +198,13 @@ impl Player {
             self.jumped = true;
             self.grounded = false;
             jumped_now = true;
+        } else if input.pressed(KeyCode::Space) && self.air_jumps_used < self.air_jumps {
+            // An air jump: a fresh full jump from wherever the player is.
+            self.velocity.y = jump.takeoff_speed();
+            self.jump_buffer = 0.0;
+            self.jumped = true;
+            self.air_jumps_used += 1;
+            jumped_now = true;
         }
 
         // Gravity: lighter on the way up while jump is held, heavier when
@@ -255,6 +267,7 @@ impl Player {
                         self.land(fall_speed, settings);
                     }
                     self.grounded = true;
+                    self.air_jumps_used = 0;
                     self.jumped = false;
                     self.time_since_grounded = 0.0;
                 } else {

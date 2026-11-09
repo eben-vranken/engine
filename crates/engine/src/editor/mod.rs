@@ -161,6 +161,8 @@ pub struct EditorOutput {
     pub exit: bool,
     /// The Play/Stop button was clicked.
     pub toggle_play: bool,
+    /// CONTINUE: play from the saved game.
+    pub resume_play: bool,
     /// BAKE ACOUSTICS was clicked.
     pub bake: bool,
     /// BAKE LIGHTING was clicked.
@@ -196,6 +198,7 @@ impl EditorOutput {
             gizmo_hovered: false,
             exit: false,
             toggle_play: false,
+            resume_play: false,
             bake: false,
             bake_lighting: false,
             export_package: None,

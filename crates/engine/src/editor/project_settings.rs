@@ -3,7 +3,8 @@
 //! render scale shows live while the dialog is open; OK saves, CANCEL puts
 //! everything back.
 
-use super::{Editor, EditorOutput, EditorStats, dialog_heading, dim, scene_files};
+use super::files::graph_files;
+use super::{Editor, EditorOutput, EditorStats, dialog_heading, dim, inspector, scene_files};
 use crate::project::{GameSettings, Project};
 use crate::render::scale::MAX_FACTOR;
 use crate::ui::theme;
@@ -46,6 +47,7 @@ impl Editor {
             return;
         };
         let scenes = scene_files(&self.project_dir);
+        let graphs = graph_files(&self.project_dir);
         let settings = &mut dialog.settings;
         let scale_before = settings.render_scale;
         let (mut ok, mut cancel) = (false, false);
@@ -71,6 +73,23 @@ impl Editor {
                             for path in &scenes {
                                 let text = path.display().to_string().to_uppercase();
                                 ui.selectable_value(&mut settings.start_scene, path.clone(), text);
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label(dim("FLOW GRAPH"))
+                        .on_hover_text("RUNS FROM ITS START WHEN THE GAME BEGINS");
+                    let flow = settings
+                        .flow
+                        .as_ref()
+                        .map_or("NONE".into(), |p| p.display().to_string().to_uppercase());
+                    egui::ComboBox::from_id_salt("flow_graph")
+                        .selected_text(flow)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut settings.flow, None, "NONE");
+                            for path in &graphs {
+                                let text = path.display().to_string().to_uppercase();
+                                ui.selectable_value(&mut settings.flow, Some(path.clone()), text);
                             }
                         });
                     ui.end_row();
@@ -103,6 +122,15 @@ impl Editor {
                 stats.factor, stats.internal[0], stats.internal[1]
             )));
             ui.label(dim("THIS IS THE SCALE EVERY START BEGINS AT."));
+            ui.add_space(8.0);
+            egui::CollapsingHeader::new("DIALOGUE LOOK")
+                .id_salt("dialogue_look")
+                .show(ui, |ui| {
+                    inspector::fields(ui, &mut settings.dialogue, &inspector::Names::default());
+                    if ui.small_button("RESET TO DEFAULT").clicked() {
+                        settings.dialogue = Default::default();
+                    }
+                });
             if let Some(error) = &dialog.error {
                 ui.label(RichText::new(error).small().color(theme::ALERT));
             }

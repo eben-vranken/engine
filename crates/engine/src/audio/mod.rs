@@ -566,6 +566,14 @@ impl Audio {
         Ok(Some((signature, probes)))
     }
 
+    /// A project sound (`audio/hum.wav`) once at `position`, through the
+    /// acoustic simulation. A missing file is logged once and skipped.
+    pub fn play_sound(&mut self, path: &str, position: Vec3, volume: f32) {
+        if let Some(clip) = self.load(path) {
+            self.play(clip, position, volume.max(0.0), MAX_REVERB);
+        }
+    }
+
     /// A hand clap at `position` (usually the listener).
     pub fn clap(&mut self, position: Vec3) {
         let rate = self.rate;

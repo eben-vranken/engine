@@ -9,10 +9,11 @@ use std::path::PathBuf;
 impl Running {
     /// The current scene's file, in the project.
     pub(super) fn scene_file(&self) -> PathBuf {
-        let relative = self
-            .editor
-            .as_ref()
-            .map_or(&self.scene_path, |e| &e.scene_path);
+        let relative = match (&self.play_scene, &self.editor) {
+            (Some(path), _) => path,
+            (None, Some(editor)) => &editor.scene_path,
+            (None, None) => &self.scene_path,
+        };
         self.game_dir.join(relative)
     }
 

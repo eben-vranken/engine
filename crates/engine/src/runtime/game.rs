@@ -2,7 +2,7 @@
 //! and the editor's Play / Stop.
 
 use super::{CameraMode, PlaySnapshot, Running};
-use crate::behaviors::{Behaviors, Interaction, is_usable_switch};
+use crate::behaviors::{Behaviors, Interaction};
 use crate::physics::PhysicsWorld;
 use crate::player::{Player, Spawn};
 use crate::scene::{Component, Scene};
@@ -17,7 +17,16 @@ impl Running {
             return;
         }
         self.game_sounds();
-        let interaction = self.interaction();
+        let used = self.use_objects();
+        let interaction = Interaction {
+            used,
+            standing_on: if self.mode == CameraMode::Player {
+                self.physics
+                    .object_below(self.player.feet + Vec3::Y * 0.1, 0.4)
+            } else {
+                None
+            },
+        };
         let Some(behaviors) = &mut self.behaviors else {
             return;
         };
@@ -55,6 +64,7 @@ impl Running {
             self.renderer
                 .update_object(&self.scene, index, &mut self.assets);
         }
+        self.update_story(dt);
     }
 
     /// Sounds the player makes: claps (Q), footsteps by floor material, and
@@ -110,30 +120,6 @@ impl Running {
         }
     }
 
-    /// What the player does that behaviors react to: pressing E at a switch
-    /// in reach (a prompt shows while one is aimed at), standing on things.
-    pub(super) fn interaction(&mut self) -> Interaction {
-        self.prompt = None;
-        if self.mode != CameraMode::Player {
-            return Interaction::default();
-        }
-        let eye = self.player.camera(&self.settings);
-        let aimed = self
-            .physics
-            .pick(eye.position, eye.forward(), REACH)
-            .map(|(object, _)| object)
-            .filter(|&object| is_usable_switch(&self.scene, object));
-        if aimed.is_some() {
-            self.prompt = Some("E  USE");
-        }
-        Interaction {
-            used: aimed.filter(|_| self.input.pressed(KeyCode::KeyE)),
-            standing_on: self
-                .physics
-                .object_below(self.player.feet + Vec3::Y * 0.1, 0.4),
-        }
-    }
-
     /// The physics world for the current state: dynamic bodies only while
     /// the game runs.
     pub(super) fn rebuild_physics(&mut self) {
@@ -156,11 +142,13 @@ impl Running {
         if self.play.is_some() {
             self.stop_play();
         } else {
-            self.start_play();
+            self.start_play(false);
         }
     }
 
-    pub(super) fn start_play(&mut self) {
+    /// Play from the PlayerStart with the game's flow graph from its start,
+    /// or (`resume`) from the saved game.
+    pub(super) fn start_play(&mut self, resume: bool) {
         let Some(editor) = &mut self.editor else {
             return;
         };
@@ -177,6 +165,7 @@ impl Running {
         self.mode = CameraMode::Player;
         self.mouse_released = false;
         self.tuning_open = false;
+        self.start_story(resume);
     }
 
     pub(super) fn stop_play(&mut self) {
@@ -186,6 +175,13 @@ impl Running {
         self.scene = snapshot.scene;
         self.fly.camera = snapshot.camera;
         self.behaviors = None;
+        self.story = None;
+        self.prompt = None;
+        if self.play_scene.take().is_some() {
+            // A graph loaded another scene: the edited one's bakes again.
+            self.load_bake();
+            self.load_lightmaps();
+        }
         self.renderer.set_scene(&self.scene, &mut self.assets);
         self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
         self.mode = CameraMode::Fly;

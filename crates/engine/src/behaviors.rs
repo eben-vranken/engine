@@ -150,6 +150,29 @@ impl Behaviors {
     }
 }
 
+impl Behaviors {
+    /// Each door's index and whether it is open (or opening).
+    pub fn doors(&self) -> impl Iterator<Item = (usize, bool)> + '_ {
+        self.doors.iter().map(|(&i, d)| (i, d.open))
+    }
+
+    /// Opens (`Some(true)`), closes or toggles (`None`) a door; it moves
+    /// there over its duration.
+    pub fn set_door(&mut self, index: usize, open: Option<bool>) {
+        if let Some(door) = self.doors.get_mut(&index) {
+            door.open = open.unwrap_or(!door.open);
+        }
+    }
+
+    /// Puts a door open or closed at once (a loaded game).
+    pub fn snap_door(&mut self, index: usize, open: bool) {
+        if let Some(door) = self.doors.get_mut(&index) {
+            door.open = open;
+            door.openness = if open { 1.0 } else { 0.0 };
+        }
+    }
+}
+
 /// True if `index` is a switch the player can press (not a pressure plate).
 pub fn is_usable_switch(scene: &Scene, index: usize) -> bool {
     switch(scene, index).is_some_and(|s| !s.pressure_plate)

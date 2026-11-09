@@ -11,6 +11,12 @@ impl Running {
         if self.editor.is_some() && self.input.pressed(KeyCode::F5) {
             self.toggle_play();
         }
+        // The running graphs and flags, for testing.
+        if self.input.pressed(KeyCode::F3)
+            && let Some(story) = &mut self.story
+        {
+            story.debug_open = !story.debug_open;
+        }
         // A/B comparison of the acoustic simulation, anywhere.
         if let Some(audio) = &mut self.audio {
             let toggles = &mut audio.toggles;

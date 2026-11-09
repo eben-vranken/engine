@@ -14,6 +14,7 @@
 //! (relative to the project folder, e.g. `scenes/hall.ron`).
 //! `--quality low` uses the low preset (for integrated graphics);
 //! `--perf-log` logs FPS and GPU times every couple of seconds.
+//! `--new-game` plays from the start even if there is a saved game.
 //! Game projects are content-only folders; they never contain engine code.
 //!
 //! Release builds on Windows are window-only apps (no console window);
@@ -37,6 +38,7 @@ struct Args {
     scene: Option<PathBuf>,
     quality: engine::render::quality::Quality,
     perf_log: bool,
+    new_game: bool,
 }
 
 fn parse_args() -> Args {
@@ -45,6 +47,7 @@ fn parse_args() -> Args {
     let mut scene = None;
     let mut quality = Default::default();
     let mut perf_log = false;
+    let mut new_game = false;
     let mut args = std::env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -63,6 +66,7 @@ fn parse_args() -> Args {
                 None => eprintln!("--quality needs high or low"),
             },
             "--perf-log" => perf_log = true,
+            "--new-game" => new_game = true,
             other => eprintln!("ignoring unknown argument: {other}"),
         }
     }
@@ -73,6 +77,7 @@ fn parse_args() -> Args {
         scene,
         quality,
         perf_log,
+        new_game,
     }
 }
 
@@ -140,6 +145,7 @@ fn main() -> anyhow::Result<()> {
         quality: args.quality,
         render_scale: project.settings.render_scale,
         perf_log: args.perf_log,
+        new_game: args.new_game,
     })?;
     Ok(())
 }

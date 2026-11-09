@@ -68,7 +68,7 @@ impl Editor {
             return;
         }
         let text = if self.playing {
-            "F5 STOP  E USE  ESC FREE MOUSE  CLICK CAPTURE MOUSE  R RESPAWN  F1 TUNING  F2 FLY"
+            "F5 STOP  E USE / TALK  TAB MAP  F3 GRAPHS  ESC FREE MOUSE  CLICK CAPTURE MOUSE  R RESPAWN  F1 TUNING  F2 FLY"
         } else {
             "CLICK SELECT  ESC DESELECT  HOLD RMB: WASD FLY  Q/E DOWN/UP  SHIFT FAST  WHEEL SPEED"
         };

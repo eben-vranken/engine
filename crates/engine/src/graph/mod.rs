@@ -517,7 +517,7 @@ mod tests {
         assert!(graph.connect(start, 0, branch));
         assert!(!graph.connect(start, 0, branch), "already connected");
         assert!(!graph.connect(start, 1, branch), "START has one output");
-        assert!(graph.connect(branch, 1, branch) == false, "not to itself");
+        assert!(!graph.connect(branch, 1, branch), "not to itself");
         assert!(!graph.connect(branch, 0, start), "START has no input");
         assert!(!graph.connect(branch, 0, note), "notes have no input");
         assert_eq!(graph.targets(start, 0).collect::<Vec<_>>(), vec![branch]);

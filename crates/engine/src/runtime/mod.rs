@@ -4,10 +4,13 @@
 
 mod bakes;
 mod game;
+mod graph_debug;
 mod hot_reload;
 mod hud;
 mod keys;
+mod map;
 mod project;
+mod story;
 pub(crate) use project::start_editor;
 mod tabs;
 
@@ -32,6 +35,7 @@ use glam::Vec2;
 pub(crate) use hud::active_text;
 use hud::{
     FpsCounter, HudActions, HudInfo, PlayerReadout, draw_audio_panel, draw_hud, draw_prompt,
+    draw_toast,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -70,6 +74,8 @@ pub struct RunConfig {
     /// Log FPS and GPU times every couple of seconds (for measuring on
     /// machines you can't watch).
     pub perf_log: bool,
+    /// Play mode: start from the beginning even if there is a saved game.
+    pub new_game: bool,
 }
 
 pub fn run(config: RunConfig) -> Result<(), RunError> {
@@ -160,7 +166,12 @@ struct Running {
     /// Running behaviors: always in play mode, in the editor while playing.
     behaviors: Option<Behaviors>,
     /// A text prompt for what the player is looking at.
-    prompt: Option<&'static str>,
+    prompt: Option<String>,
+    /// The game's graphs, dialogue and world state while it runs.
+    story: Option<story::Story>,
+    /// A scene a graph loaded while playing (the editor's own comes back
+    /// on Stop).
+    play_scene: Option<PathBuf>,
     /// Whether the player was on the ground last frame (landing makes a
     /// footstep).
     was_grounded: bool,
@@ -208,21 +219,25 @@ impl ApplicationHandler for App {
         let Some(app) = &mut self.running else {
             return;
         };
-        // Editor: Tab toggles the scene panel, Shift+Tab the inspector.
-        // Handled before egui, which would otherwise move keyboard focus
-        // between buttons; left alone while typing in a field.
-        if let (Some(editor), WindowEvent::KeyboardInput { event: key, .. }) =
-            (&mut app.editor, &event)
+        // Tab: the map while the game runs; in the editor, the scene panel
+        // (Shift+Tab the inspector). Handled before egui, which would
+        // otherwise move keyboard focus between buttons; left alone while
+        // typing in a field.
+        if let WindowEvent::KeyboardInput { event: key, .. } = &event
             && key.physical_key == PhysicalKey::Code(KeyCode::Tab)
             && !app.overlay.wants_keyboard()
         {
             if key.state.is_pressed() && !key.repeat {
-                let shift =
-                    app.input.held(KeyCode::ShiftLeft) || app.input.held(KeyCode::ShiftRight);
-                if shift {
-                    editor.show_inspector = !editor.show_inspector;
-                } else {
-                    editor.show_scene = !editor.show_scene;
+                if let Some(story) = &mut app.story {
+                    story.map_open = !story.map_open;
+                } else if let Some(editor) = &mut app.editor {
+                    let shift =
+                        app.input.held(KeyCode::ShiftLeft) || app.input.held(KeyCode::ShiftRight);
+                    if shift {
+                        editor.show_inspector = !editor.show_inspector;
+                    } else {
+                        editor.show_scene = !editor.show_scene;
+                    }
                 }
             }
             return;
@@ -326,6 +341,9 @@ impl Running {
         let mut running = Self::open(event_loop, config)?;
         running.load_bake();
         running.load_lightmaps();
+        if !config.editor {
+            running.start_story(!config.new_game);
+        }
         Ok(running)
     }
 
@@ -409,6 +427,8 @@ impl Running {
             play: None,
             behaviors: (!config.editor).then(|| Behaviors::start(&config.scene)),
             prompt: None,
+            story: None,
+            play_scene: None,
             was_grounded: true,
             audio: Audio::new(config.game_dir.clone())
                 .inspect_err(|err| log::error!("{err}; running without sound"))
@@ -501,10 +521,14 @@ impl Running {
         self.update_mouse_capture();
         self.run_game(dt);
 
+        self.update_abilities();
         let camera = match self.mode {
             CameraMode::Player => {
-                self.player
-                    .update(&self.input, &self.settings, &self.physics, dt);
+                // In dialogue or on the map the player stands still.
+                let busy = self.story.as_ref().is_some_and(story::Story::busy);
+                let idle = Input::default();
+                let input = if busy { &idle } else { &self.input };
+                self.player.update(input, &self.settings, &self.physics, dt);
                 self.player.camera(&self.settings)
             }
             CameraMode::Fly => {
@@ -528,6 +552,43 @@ impl Running {
             );
         }
 
+        // The story's parts on screen: the line, the map, a toast, F3.
+        let line = self.story.as_ref().and_then(|s| s.line.as_ref()).map(|l| {
+            (
+                self.speaker_name(&l.view.speaker),
+                l.view.text.clone(),
+                l.time,
+                l.view.replies.clone(),
+                l.choice,
+            )
+        });
+        let scene_key = self.scene_key();
+        let map = self.story.as_ref().filter(|s| s.map_open).map(|s| {
+            map::map_data(
+                &self.scene,
+                s.world.visited.get(&scene_key),
+                zone.as_deref(),
+                self.player.feet,
+                self.player.yaw,
+            )
+        });
+        let toast = self
+            .story
+            .as_ref()
+            .and_then(|s| s.toast.as_ref().map(|t| t.0.clone()));
+        let style = self.story.as_ref().map(|s| s.style.clone());
+        let use_font = self.story.as_ref().and_then(|s| s.custom_font) == Some(true);
+        let load_font = self.story.as_ref().is_some_and(|s| s.custom_font.is_none());
+        let mut font_loaded = None;
+        let mut debug = self.story.as_mut().filter(|s| s.debug_open).map(|s| {
+            (
+                s.runner.running(),
+                s.runner.flags.clone(),
+                std::mem::take(&mut s.debug_view),
+                s.debug_graph,
+            )
+        });
+        let game_dir = self.game_dir.clone();
         let hud = HudInfo {
             fps: self.fps.fps,
             frame_ms: self.fps.frame_ms,
@@ -594,7 +655,7 @@ impl Running {
                 None
             },
         };
-        let prompt = self.prompt;
+        let prompt = self.prompt.clone();
         let toggles = self.audio.as_ref().map(|a| a.toggles);
         let game_running = self.behaviors.is_some();
         let ui_frame = self.overlay.run(
@@ -617,8 +678,33 @@ impl Running {
                         }
                     }
                 }
-                if let Some(text) = prompt {
+                if let Some(text) = &prompt {
                     draw_prompt(ui, view.image, text);
+                }
+                if load_font && let Some(style) = &style {
+                    // Usable from the next frame on.
+                    font_loaded = Some(crate::dialogue::load_font(ui.ctx(), &game_dir, style));
+                }
+                if let (Some((speaker, text, time, replies, choice)), Some(style)) = (&line, &style)
+                {
+                    let (shown, complete) = crate::dialogue::typed(text, *time, style.typing_speed);
+                    let shown = crate::dialogue::Shown {
+                        speaker,
+                        text: shown,
+                        complete,
+                        replies,
+                        choice: *choice,
+                    };
+                    crate::dialogue::draw(ui, view.image, style, use_font, &shown);
+                }
+                if let Some(map) = &map {
+                    map::draw_map(ui, view.image, map);
+                }
+                if let Some(text) = &toast {
+                    draw_toast(ui, view.image, text);
+                }
+                if let Some((running, flags, view_state, index)) = &mut debug {
+                    graph_debug::window(ui, running, flags, view_state, index);
                 }
                 if let Some(toggles) = toggles {
                     draw_audio_panel(ui, view.image, &toggles, game_running);
@@ -627,6 +713,15 @@ impl Running {
         );
         if let Some(action) = tuning_action {
             self.apply_tuning(action);
+        }
+        if let Some(story) = &mut self.story {
+            if font_loaded.is_some() {
+                story.custom_font = font_loaded;
+            }
+            if let Some((_, _, view_state, index)) = debug {
+                story.debug_view = view_state;
+                story.debug_graph = index;
+            }
         }
 
         // A click in the viewport selects what's under it, unless it was on a gizmo handle.
@@ -673,6 +768,9 @@ impl Running {
         if let Some(output) = &editor_output {
             if output.toggle_play {
                 self.toggle_play();
+            }
+            if output.resume_play && self.play.is_none() {
+                self.start_play(true);
             }
             if output.exit {
                 self.exit_requested = true;

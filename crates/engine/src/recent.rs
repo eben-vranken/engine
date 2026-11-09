@@ -18,13 +18,19 @@ pub struct RecentProject {
     pub opened: u64,
 }
 
-/// Where the list lives; `None` if the system has no config folder.
-fn file() -> Option<PathBuf> {
+/// The engine's folder in the user's config folder; `None` if the system
+/// has none.
+pub fn config_dir() -> Option<PathBuf> {
     let base = std::env::var_os("APPDATA")
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join(crate::NAME).join("recent.ron"))
+    Some(base.join(crate::NAME))
+}
+
+/// Where the list lives; `None` if the system has no config folder.
+fn file() -> Option<PathBuf> {
+    Some(config_dir()?.join("recent.ron"))
 }
 
 /// The list, most recent first; empty if there is none (or it can't be
