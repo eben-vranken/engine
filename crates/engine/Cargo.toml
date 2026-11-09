@@ -7,7 +7,7 @@ description = "Core runtime: rendering, audio, scenes, zones, behaviors."
 
 [dependencies]
 audionimbus = { version = "0.16.2", features = ["auto-install"] }
-bevy_reflect = { version = "0.20.1", features = ["glam"] }
+bevy_reflect = { version = "0.20.1", features = ["glam", "reflect_documentation"] }
 bytemuck = { version = "1.25.2", features = ["derive"] }
 cpal = "0.18.2"
 egui = { version = "0.37.0", features = ["default_fonts"] }

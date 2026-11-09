@@ -1,5 +1,5 @@
 //! Floating controls over the BUILD viewport: the gizmo tools and what
-//! the view shows (top left), and the bakes' state with BAKE (top right).
+//! the view shows (top left), and the bakes' state (top right; the BAKE menu bakes).
 
 use super::{Editor, EditorOutput, dim};
 use crate::ui::theme;
@@ -7,7 +7,7 @@ use egui::{Align2, Rect, RichText, Ui, vec2};
 use transform_gizmo::config::GizmoModeKind;
 
 impl Editor {
-    pub(super) fn viewport_tools(&mut self, ui: &Ui, viewport: Rect, output: &mut EditorOutput) {
+    pub(super) fn viewport_tools(&mut self, ui: &Ui, viewport: Rect, _output: &mut EditorOutput) {
         egui::Area::new(egui::Id::unique("viewport_tools"))
             .pivot(Align2::LEFT_TOP)
             .fixed_pos(viewport.left_top() + vec2(10.0, 10.0))
@@ -85,29 +85,6 @@ impl Editor {
                                 };
                                 ui.label(RichText::new(format!("{name} {text}")).color(color));
                             }
-                            ui.menu_button("BAKE ▾", |ui| {
-                                ui.set_min_width(260.0);
-                                let lighting = !self.light_status.starts_with("BAKING");
-                                if ui
-                                    .add_enabled(lighting, egui::Button::new("LIGHTING"))
-                                    .on_hover_text(
-                                        "BOUNCE, SKY AND EMISSIVE LIGHT INTO LIGHTMAPS AND PROBES",
-                                    )
-                                    .clicked()
-                                {
-                                    output.bake_lighting = true;
-                                    ui.close();
-                                }
-                                let acoustics = !self.bake_status.starts_with("BAKING");
-                                if ui
-                                    .add_enabled(acoustics, egui::Button::new("ACOUSTICS"))
-                                    .on_hover_text("REVERB PROBES IN EVERY ZONE VOLUME")
-                                    .clicked()
-                                {
-                                    output.bake = true;
-                                    ui.close();
-                                }
-                            });
                         });
                     });
             });

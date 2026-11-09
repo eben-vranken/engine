@@ -461,6 +461,21 @@ fn drag_speed(name: &str) -> f64 {
     }
 }
 
+/// A behavior's description: its `///` doc comment in `scene.rs` (the
+/// variant's, else the struct's it holds).
+pub fn doc_of(component: &crate::scene::Component) -> Option<&'static str> {
+    use bevy_reflect::enums::Enum;
+    use bevy_reflect::{TypeInfo, Typed};
+    let TypeInfo::Enum(info) = crate::scene::Component::type_info() else {
+        return None;
+    };
+    let variant = info.variant(component.variant_name())?;
+    variant
+        .docs()
+        .or_else(|| component.field_at(0)?.get_represented_type_info()?.docs())
+        .map(str::trim)
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

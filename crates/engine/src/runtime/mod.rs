@@ -661,6 +661,9 @@ impl Running {
         }
 
         self.refresh_zone_map();
+        if let Some(editor) = &mut self.editor {
+            editor.vsync = self.renderer.vsync();
+        }
         let mut actions = HudActions::default();
         self.handle_keys(&mut actions);
         self.poll_files();
@@ -1043,6 +1046,10 @@ impl Running {
             }
             if output.free_camera && self.play.is_some() {
                 self.toggle_free_camera();
+            }
+            if output.toggle_vsync {
+                let vsync = self.renderer.vsync();
+                self.renderer.set_vsync(!vsync);
             }
             if output.restart_play {
                 self.stop_play();

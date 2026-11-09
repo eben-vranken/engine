@@ -34,6 +34,8 @@ pub(super) enum GizmoTool {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Command {
     SaveAll,
+    AddDialog,
+    ToggleVsync,
     Deselect,
     Gizmo(GizmoTool),
     NewProject,
@@ -95,6 +97,8 @@ impl Command {
             NewScript => "NEW SCRIPT…".into(),
             Save => "SAVE".into(),
             SaveAll => "SAVE ALL".into(),
+            AddDialog => "ADD…".into(),
+            ToggleVsync => "VSYNC".into(),
             Deselect => "DESELECT".into(),
             Gizmo(GizmoTool::Move) => "MOVE TOOL".into(),
             Gizmo(GizmoTool::Rotate) => "ROTATE TOOL".into(),
@@ -202,6 +206,7 @@ impl Command {
             ToggleProbes,
             ToggleHints,
             ToggleStats,
+            ToggleVsync,
             Shortcuts,
             Quit,
         ]);
@@ -241,7 +246,7 @@ impl Editor {
                 build && !scene.zones.is_empty()
             }
             AddZone | ToggleZones | ToggleTriggers | ToggleProbes => build,
-            Deselect | Gizmo(_) => build,
+            Deselect | Gizmo(_) | AddDialog => build,
             AddBehavior(_) => build && self.selected.is_some(),
             AddNode(_) => self.graph.is_some(),
             _ => true,
@@ -278,6 +283,8 @@ impl Editor {
                 output.settled |= settled;
             }
             Deselect => output.settled |= self.select(scene, None),
+            AddDialog => self.open_add_dialog(),
+            ToggleVsync => output.toggle_vsync = true,
             Gizmo(tool) => {
                 use transform_gizmo::config::GizmoModeKind;
                 self.gizmo.kind = match tool {

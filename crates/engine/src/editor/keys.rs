@@ -145,6 +145,7 @@ pub(super) fn bindings() -> Vec<Binding> {
             "FLY; SHIFT FAST, WHEEL SPEED",
         ),
         grounded(run("CTRL+D", KeyCode::KeyD, Build, Command::Duplicate)),
+        grounded(run("A", KeyCode::KeyA, Build, Command::AddDialog)),
         run("DEL", KeyCode::Delete, Build, Command::Delete),
         run("ESC", KeyCode::Escape, Build, Command::Deselect),
         grounded(run("H", KeyCode::KeyH, Build, Command::ToggleZones)),

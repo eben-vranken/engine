@@ -36,26 +36,27 @@ impl Editor {
             }
             self.workspace_switch(ui, output);
             ui.add_space(6.0);
+            // The menu bar takes the rest of the row, so everything else
+            // goes inside it.
             egui::MenuBar::new().ui(ui, |ui| {
                 let mut run = None;
                 self.menus(ui, scene, &mut run);
                 if let Some(command) = run {
                     self.run(command, scene, player, view, output);
                 }
-            });
-            ui.add_space(6.0);
-            ui.label(self.breadcrumb());
-
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                self.right_controls(ui, scene, player, view, output);
-                let width = (ui.available_width() - 16.0).clamp(120.0, 380.0);
-                let search = ui.add_sized(
-                    [width, 22.0],
-                    egui::Button::new(dim("SEARCH OR RUN ANYTHING…        CTRL+K")),
-                );
-                if search.clicked() {
-                    self.open_palette(None);
-                }
+                ui.add_space(10.0);
+                self.play_group(ui, output);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    self.right_controls(ui, scene, player, view, output);
+                    let width = (ui.available_width() - 16.0).clamp(120.0, 300.0);
+                    let search = ui.add_sized(
+                        [width, 22.0],
+                        egui::Button::new(dim("SEARCH OR RUN ANYTHING…   CTRL+K")),
+                    );
+                    if search.clicked() {
+                        self.open_palette(None);
+                    }
+                });
             });
         });
         ui.add_space(3.0);
@@ -168,36 +169,6 @@ impl Editor {
         ui.spacing_mut().item_spacing.x = 8.0;
     }
 
-    fn breadcrumb(&self) -> RichText {
-        let project = self.game_name.to_uppercase();
-        let tail = match self.workspace() {
-            Workspace::Project => format!(
-                "SETTINGS › {}",
-                self.project_page.as_ref().map_or("", |p| p.section.title())
-            ),
-            Workspace::Build => format!(
-                "SCENES › {}",
-                self.scene_path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_uppercase())
-                    .unwrap_or_default()
-            ),
-            Workspace::Logic => {
-                let key = crate::graph::key(&self.scene_path);
-                let owner = self.index.owner(&key);
-                format!(
-                    "LOGIC › {} › {}",
-                    owner.group(),
-                    self.scene_path
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_uppercase())
-                        .unwrap_or_default()
-                )
-            }
-        };
-        RichText::new(format!("{project} › {tail}")).color(theme::AMBER_DIM)
-    }
-
     /// Undo, redo, the save state and PLAY (or SAVE GAME.RON on the
     /// project page), laid out right to left.
     fn right_controls(
@@ -211,83 +182,78 @@ impl Editor {
         if self.workspace() == Workspace::Project {
             let changes = self.project_changes();
             if ui
-                .add_enabled(changes > 0, egui::Button::new(" SAVE GAME.RON "))
-                .clicked()
-            {
-                self.save_project_settings(output);
-            }
-            if ui
                 .add_enabled(changes > 0, egui::Button::new("REVERT"))
                 .clicked()
             {
                 self.revert_project_settings(output);
             }
+            if ui
+                .add_enabled(changes > 0, egui::Button::new(" SAVE  CTRL+S "))
+                .clicked()
+            {
+                self.save_project_settings(output);
+            }
             let state = if changes == 0 {
-                dim("[SAVED]")
+                dim("[PROJECT SAVED]")
             } else {
-                RichText::new(format!("[{changes} CHANGES]"))
+                RichText::new(format!("[PROJECT: {changes} CHANGES]"))
             };
             ui.label(state);
             return;
         }
-        if self.workspace() == Workspace::Build {
-            let saved = crate::save::exists(&self.project_dir);
-            ui.menu_button("▾", |ui| {
-                ui.set_min_width(MENU_WIDTH);
-                if item(ui, "PLAY FROM START", "F5", true).clicked() {
-                    output.toggle_play = true;
-                }
-                if item(ui, "PLAY FROM HERE", "", true)
-                    .on_hover_text("THE PLAYER STARTS WHERE THE EDITOR CAMERA IS, FACING THE SAME WAY")
-                    .clicked()
-                {
-                    output.play_from_here = true;
-                }
-                if item(ui, "PLAY FROM SAVE", "", saved)
-                    .on_disabled_hover_text(
-                        "NO SAVED GAME YET: SAVE POINTS AND SAVE GAME NODES MAKE ONE",
-                    )
-                    .clicked()
-                {
-                    output.resume_play = true;
-                }
-                if item(ui, "PLAY IN A WINDOW, AS A PLAYER", "SHIFT+F5", true)
-                    .on_hover_text("THE GAME AS A PLAYER GETS IT: ITS OWN WINDOW, NO TUNING OR DEBUG TOOLS, FROM THE SAVED FILES")
-                    .clicked()
-                {
-                    output.play_window = true;
-                }
-            })
-            .response
-            .on_hover_text("PLAY FROM THE SAVED GAME");
-            let play = egui::Button::new(
-                RichText::new(" PLAY  F5 ")
-                    .color(theme::BACKGROUND)
-                    .strong(),
-            )
-            .fill(theme::AMBER);
-            if ui.add(play).clicked() {
-                output.toggle_play = true;
-            }
-        } else {
-            ui.label(dim("PLAY FROM BUILD"));
+        let unsaved = self.dirty_paths().len() + usize::from(self.project_unsaved());
+        if ui
+            .add_enabled(unsaved > 0, egui::Button::new("SAVE ALL"))
+            .on_hover_text("CTRL+SHIFT+S")
+            .clicked()
+        {
+            self.run(Command::SaveAll, scene, player, view, output);
         }
-        ui.add_space(6.0);
-        let state = if self.any_dirty() {
-            RichText::new("[UNSAVED]")
-        } else {
+        let state = if unsaved == 0 {
             dim("[SAVED]")
+        } else {
+            RichText::new(format!("[{unsaved} UNSAVED]"))
         };
         ui.label(state);
-        for command in [Command::Redo, Command::Undo] {
-            let enabled = self.can_run(&command, scene);
-            if ui
-                .add_enabled(enabled, egui::Button::new(command.label()).small())
-                .on_hover_text(command.shortcut())
-                .clicked()
-            {
-                self.run(command, scene, player, view, output);
-            }
+    }
+
+    /// PLAY (the scene open in BUILD), PLAY FROM HERE and CONTINUE SAVE.
+    fn play_group(&mut self, ui: &mut Ui, output: &mut EditorOutput) {
+        if self.workspace() != Workspace::Build {
+            ui.label(dim("PLAY FROM BUILD"));
+            return;
+        }
+        let play = egui::Button::new(
+            RichText::new(" ▶ PLAY  F5 ")
+                .color(theme::BACKGROUND)
+                .strong(),
+        )
+        .fill(theme::AMBER);
+        if ui.add(play).clicked() {
+            output.toggle_play = true;
+        }
+        if ui
+            .button("PLAY FROM HERE")
+            .on_hover_text("THE PLAYER STARTS WHERE THE EDITOR CAMERA IS, FACING THE SAME WAY")
+            .clicked()
+        {
+            output.play_from_here = true;
+        }
+        let saved = crate::save::exists(&self.project_dir);
+        if ui
+            .add_enabled(saved, egui::Button::new("CONTINUE SAVE"))
+            .on_hover_text("PLAY FROM THE SAVED GAME")
+            .on_disabled_hover_text("NO SAVED GAME YET: SAVE POINTS AND SAVE GAME NODES MAKE ONE")
+            .clicked()
+        {
+            output.resume_play = true;
+        }
+        if ui
+            .small_button("WINDOW")
+            .on_hover_text("PLAY IN A WINDOW OF ITS OWN, AS A PLAYER GETS IT (SHIFT+F5)")
+            .clicked()
+        {
+            output.play_window = true;
         }
     }
 
@@ -319,35 +285,24 @@ impl Editor {
             None,
             Some(Search),
         ];
-        let mut view = vec![
+        // What the view shows (zones, triggers, probes) is in SHOW over it.
+        let view = vec![
             Some(ToggleLeft),
             Some(ToggleRight),
             None,
-            Some(ToggleZones),
-            Some(ToggleTriggers),
-            Some(ToggleProbes),
-            None,
+            Some(ToggleVsync),
             Some(ToggleHints),
             Some(ToggleStats),
             None,
             Some(Shortcuts),
         ];
-        if self.workspace() != Workspace::Build {
-            view.retain(|c| {
-                !matches!(
-                    c,
-                    Some(ToggleZones) | Some(ToggleTriggers) | Some(ToggleProbes)
-                )
-            });
-        }
         for (title, list) in [("FILE", file), ("EDIT", edit)] {
             ui.menu_button(title, |ui| self.menu_items(ui, scene, &list, run));
         }
         match self.workspace() {
             Workspace::Build => {
-                let mut add: Vec<Option<Command>> = (0..super::objects::primitives().len())
-                    .map(|i| Some(AddPrimitive(i)))
-                    .collect();
+                let mut add: Vec<Option<Command>> = vec![Some(AddDialog), None];
+                add.extend((0..super::objects::primitives().len()).map(|i| Some(AddPrimitive(i))));
                 add.extend([
                     None,
                     Some(AddPlayerStart),
@@ -355,9 +310,6 @@ impl Editor {
                     Some(AddZone),
                     Some(AddZoneVolume),
                     Some(AddPortal),
-                    None,
-                    Some(BakeLighting),
-                    Some(BakeAcoustics),
                 ]);
                 ui.menu_button("ADD", |ui| self.menu_items(ui, scene, &add, run));
             }
@@ -376,6 +328,10 @@ impl Editor {
             Workspace::Project => {}
         }
         ui.menu_button("VIEW", |ui| self.menu_items(ui, scene, &view, run));
+        if self.workspace() == Workspace::Build {
+            let bake = vec![Some(BakeLighting), Some(BakeAcoustics)];
+            ui.menu_button("BAKE", |ui| self.menu_items(ui, scene, &bake, run));
+        }
     }
 
     fn menu_items(
@@ -414,6 +370,7 @@ impl Editor {
             Command::ToggleProbes => self.show_probes,
             Command::ToggleHints => self.show_hints,
             Command::ToggleStats => self.show_stats,
+            Command::ToggleVsync => self.vsync,
             _ => return None,
         })
     }

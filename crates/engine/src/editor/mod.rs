@@ -7,6 +7,7 @@
 //! value is being dragged or typed, the change is applied live but held as
 //! *pending*; it becomes one undo step when the interaction ends.
 
+mod add_dialog;
 mod commands;
 mod confirm;
 mod conversation;
@@ -79,6 +80,10 @@ impl Default for PlayControls {
 pub struct Editor {
     /// PLAY's pause, step and speed.
     pub play_controls: PlayControls,
+    /// Whether vsync is on (the runtime keeps it current), for VIEW.
+    pub vsync: bool,
+    /// ADD's searchable dialog, while open.
+    add_dialog: Option<add_dialog::AddDialog>,
     /// Open this graph at this node once Play has stopped (OPEN AT NODE in
     /// the test drawer).
     pub open_at_node: Option<(PathBuf, crate::graph::NodeId)>,
@@ -219,6 +224,8 @@ pub struct EditorOutput {
     pub play_from_here: bool,
     /// FREE CAMERA while playing (F2).
     pub free_camera: bool,
+    /// VIEW › VSYNC.
+    pub toggle_vsync: bool,
     /// RESTART while playing: stop, then play from the start.
     pub restart_play: bool,
     /// Where PLAY's test drawer goes (the runtime fills it).
@@ -265,6 +272,7 @@ impl EditorOutput {
             toggle_play: false,
             play_from_here: false,
             free_camera: false,
+            toggle_vsync: false,
             restart_play: false,
             drawer: None,
             resume_play: false,
@@ -316,6 +324,8 @@ impl Editor {
             gizmo: TransformGizmo::default(),
             queued: Vec::new(),
             play_controls: PlayControls::default(),
+            add_dialog: None,
+            vsync: true,
             open_at_node: None,
             select_on_open: None,
             feel_changed: None,
@@ -374,6 +384,11 @@ impl Editor {
         egui::Panel::bottom("editor_status").show(ui, |ui| self.status_bar(ui, stats, &mut output));
         self.global_keys(ui, scene, player, view, &mut output);
         self.palette_ui(ui, scene, player, view, &mut output);
+        let mut picked = None;
+        self.add_dialog_ui(ui, scene, &mut picked, &mut output);
+        if let Some(command) = picked {
+            self.run(command, scene, player, view, &mut output);
+        }
         self.shortcuts_ui(ui);
         self.confirm_dialog(ui, scene, player, &mut output);
         self.name_dialog(ui, &mut output);
@@ -420,28 +435,13 @@ impl Editor {
                     let playing = self.playing;
                     let mut run = None;
                     self.show_scene = !panel_header(ui, "OUTLINER", Side::Left, "TAB", |ui| {
-                        ui.menu_button("+ ADD", |ui| {
-                            ui.set_min_width(200.0);
-                            let mut list: Vec<commands::Command> = (0..objects::primitives().len())
-                                .map(commands::Command::AddPrimitive)
-                                .collect();
-                            list.extend([
-                                commands::Command::AddPlayerStart,
-                                commands::Command::AddZone,
-                                commands::Command::AddZoneVolume,
-                                commands::Command::AddPortal,
-                            ]);
-                            for command in list {
-                                let enabled = self.can_run(&command, scene);
-                                if ui
-                                    .add_enabled(enabled, egui::Button::new(command.label()))
-                                    .clicked()
-                                {
-                                    run = Some(command);
-                                    ui.close();
-                                }
-                            }
-                        });
+                        if ui
+                            .button("+ ADD")
+                            .on_hover_text("SEARCHABLE: SHAPES, MODELS, BEHAVIORS, ZONES  (A)")
+                            .clicked()
+                        {
+                            run = Some(commands::Command::AddDialog);
+                        }
                     });
                     if let Some(command) = run {
                         self.run(command, scene, player, view, &mut output);
