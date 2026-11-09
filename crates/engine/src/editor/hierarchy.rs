@@ -760,6 +760,7 @@ pub(super) fn tag(object: &Object) -> String {
         Component::LightSource(_) => 10,
         Component::SoundSource(_) => 11,
         Component::FogVolume(_) => 12,
+        Component::Script(_) => 13,
         Component::Model(_) => 13,
         Component::Primitive(_) => 14,
         _ => 20,
@@ -782,6 +783,9 @@ pub(super) fn tag(object: &Object) -> String {
         Component::LightSource(_) => "LIGHT".into(),
         Component::SoundSource(_) => "SOUND".into(),
         Component::FogVolume(_) => "FOG".into(),
+        Component::Script(s) => {
+            format!("SCRIPT › {}", crate::graph::script_name(&s.script.0)).to_uppercase()
+        }
         Component::Model(_) => "MODEL".into(),
         Component::Primitive(p) => p.shape.kind().to_uppercase(),
         _ => "OBJECT".into(),

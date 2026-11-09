@@ -47,14 +47,29 @@ impl Running {
         }
     }
 
-    /// Editor: opens a graph from the project in a new graph tab (or
-    /// switches to it if it's open).
+    /// Editor: opens a graph (or a `.rhai` script) from the project in a
+    /// new tab, or switches to it if it's open.
     pub(super) fn open_graph(&mut self, path: PathBuf) {
         let Some(editor) = &mut self.editor else {
             return;
         };
         if let Some(index) = editor.tab_of(&path) {
             self.switch_tab(index);
+            return;
+        }
+        if path.extension().is_some_and(|e| e == "rhai") {
+            match std::fs::read_to_string(self.game_dir.join(&path)) {
+                Ok(text) => {
+                    let doc = crate::editor::ScriptDoc::new(text);
+                    editor.open_script_tab(path, doc, &mut self.scene, &self.fly);
+                    self.scene_swapped();
+                }
+                Err(err) => {
+                    let err = format!("could not read {}: {err}", path.display());
+                    log::error!("{err}");
+                    editor.show_error(err);
+                }
+            }
             return;
         }
         match crate::graph::Graph::load(&self.game_dir.join(&path)) {

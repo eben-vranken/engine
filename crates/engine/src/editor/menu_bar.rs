@@ -260,6 +260,7 @@ impl Editor {
             None,
             Some(NewScene),
             Some(NewGraph),
+            Some(NewScript),
             Some(Save),
             Some(SaveSceneAs),
             None,

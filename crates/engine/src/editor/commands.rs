@@ -31,6 +31,7 @@ pub(super) enum Command {
     ExportPackage,
     NewScene,
     NewGraph,
+    NewScript,
     Save,
     SaveSceneAs,
     Settings(Section),
@@ -78,6 +79,7 @@ impl Command {
             ExportPackage => "EXPORT PACKAGE…".into(),
             NewScene => "NEW SCENE…".into(),
             NewGraph => "NEW GRAPH…".into(),
+            NewScript => "NEW SCRIPT…".into(),
             Save => "SAVE".into(),
             SaveSceneAs => "SAVE SCENE AS…".into(),
             Settings(section) => format!("SETTINGS › {}", section.title()),
@@ -165,6 +167,7 @@ impl Command {
             Go(Workspace::Logic),
             NewScene,
             NewGraph,
+            NewScript,
             SaveSceneAs,
             NewProject,
             OpenProject,
@@ -199,6 +202,8 @@ impl Editor {
         let waiting = self.file_dialog_open();
         match command {
             _ if self.playing => matches!(command, Search | Shortcuts | ToggleHints | ToggleStats),
+            // A script's text edits undo inside the code editor.
+            Undo | Redo | Duplicate | Delete if self.script.is_some() => false,
             NewProject | OpenProject | OpenPackage | ExportPackage => !waiting,
             SaveSceneAs => build && !waiting,
             Undo => match &self.graph {
@@ -249,6 +254,7 @@ impl Editor {
             SaveSceneAs => self.ask_file(Purpose::SaveSceneAs),
             NewScene => self.ask_name(Naming::Scene),
             NewGraph => self.ask_name(Naming::Graph),
+            NewScript => self.ask_name(Naming::Script),
             Save => output.settled |= self.save(scene, player),
             Settings(section) => self.open_project_page(section),
             Quit => {
@@ -335,7 +341,7 @@ impl Editor {
     pub fn workspace(&self) -> Workspace {
         if self.project_page.is_some() {
             Workspace::Project
-        } else if self.graph.is_some() {
+        } else if self.graph.is_some() || self.script.is_some() {
             Workspace::Logic
         } else {
             Workspace::Build

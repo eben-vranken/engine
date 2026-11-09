@@ -1,4 +1,4 @@
-//! NEW SCENE and NEW GRAPH: naming the new file in the editor. Also SAVE
+//! NEW SCENE, NEW GRAPH and NEW SCRIPT: naming the new file in the editor. Also SAVE
 //! SCENE AS once its file is picked.
 
 use super::{Editor, EditorOutput, dialog_heading};
@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub(super) enum Naming {
     Scene,
     Graph,
+    Script,
 }
 
 /// The name dialog's state.
@@ -66,6 +67,7 @@ impl Editor {
             let (title, hint) = match dialog.purpose {
                 Naming::Scene => ("NEW SCENE", "CREATED IN SCENES/ AND OPENED IN A NEW TAB"),
                 Naming::Graph => ("NEW GRAPH", "CREATED IN GRAPHS/ AND OPENED IN A NEW TAB"),
+                Naming::Script => ("NEW SCRIPT", "CREATED IN SCRIPTS/ AND OPENED IN A NEW TAB"),
             };
             dialog_heading(ui, title, hint);
             let field = ui.add(egui::TextEdit::singleline(&mut dialog.text).hint_text("NAME"));
@@ -95,6 +97,8 @@ impl Editor {
                 .and_then(|path| self.create_scene(&path, output)),
             Naming::Graph => project_file(&self.project_dir, "graphs", &dialog.text)
                 .and_then(|path| self.create_graph(&path, output)),
+            Naming::Script => super::script_tab::script_file(&self.project_dir, &dialog.text)
+                .and_then(|path| self.create_script(&path, output)),
         };
         match result {
             Ok(()) => self.naming = None,
@@ -112,6 +116,23 @@ impl Editor {
         crate::graph::Graph::starter()
             .save(&file)
             .map_err(|e| e.to_string())?;
+        log::info!("created {}", file.display());
+        self.index.refresh(&self.project_dir, true);
+        output.open_graph = Some(path.to_owned());
+        Ok(())
+    }
+
+    /// Writes a starter script to `path` and opens it.
+    fn create_script(&mut self, path: &Path, output: &mut EditorOutput) -> Result<(), String> {
+        let file = self.project_dir.join(path);
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        std::fs::write(&file, super::script_tab::template(&name)).map_err(|e| e.to_string())?;
         log::info!("created {}", file.display());
         self.index.refresh(&self.project_dir, true);
         output.open_graph = Some(path.to_owned());

@@ -102,6 +102,14 @@ impl Editor {
                     command: Command::OpenGraph(path),
                 });
             }
+            for path in super::files::script_files(&self.project_dir) {
+                items.push(Item {
+                    group: "SCRIPTS",
+                    text: path.display().to_string(),
+                    detail: "OPEN IN LOGIC".into(),
+                    command: Command::OpenGraph(path),
+                });
+            }
             for flag in &self.index.flags.flags {
                 items.push(Item {
                     group: "FLAGS",

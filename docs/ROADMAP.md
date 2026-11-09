@@ -322,8 +322,11 @@ The editor reorganised for ease of use; same look, same features (design: the "E
 - [ ] Scripts (Rhai) in the project's `scripts/`: `start()` once and `update(player, dt)` every frame while on; player state, velocity, jump, keys, flags; reload on save; errors shown, never crash
 - [ ] ABILITY node turns a script on or off; abilities that are on are saved with the game
 - [ ] The controller's built-in double jump is gone; the sandbox's is `scripts/double_jump.rhai`, turned on by the feather
+- [ ] Script behavior: any object runs a script (`start(object)`, `update(object, dt)`): position, rotation, scale, visible; `player()` from any script. The sandbox's watcher turns to face the player
+- [ ] Script tabs in LOGIC: + SCRIPT / NEW SCRIPT from a template, colored code with line numbers, live syntax check with the line, formatting on save (Ctrl+S) or FORMAT, what uses the script and a reference of what it can call
+- [ ] LOGIC's left panel: graphs, scripts and flags stacked, no longer drawn over each other
 
-**Acceptance:** the user plays the test level, can't double jump until picking up the feather, then can (and still can after a save and load); changes the script while playing and feels the change; and the gate story still works from the scene graph alone.
+**Acceptance:** the user plays the test level, can't double jump until picking up the feather, then can (and still can after a save and load); changes the script while playing and feels the change; and the gate story still works from the scene graph alone. They make a script of their own in the editor, saving formats it, they put it on an object and watch it run.
 
 ## 12. Stairs primitive
 A small step after the core milestones: stairs as an editor primitive, shaped from the inspector.

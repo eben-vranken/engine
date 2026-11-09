@@ -5,7 +5,7 @@
 
 use super::files::graph_files;
 use super::history::History;
-use super::{Confirm, Editor, EditorOutput, GraphDoc, SettingsTarget, dim, scene_files};
+use super::{Confirm, Editor, EditorOutput, GraphDoc, ScriptDoc, SettingsTarget, dim, scene_files};
 use crate::camera::FlyCamera;
 use crate::player::settings::PlayerSettings;
 use crate::scene::Scene;
@@ -27,6 +27,8 @@ pub(super) struct Document {
     pub probes: Vec<Vec3>,
     /// A graph tab's graph.
     pub graph: Option<GraphDoc>,
+    /// A script tab's script.
+    pub script: Option<ScriptDoc>,
 }
 
 /// A tab that isn't the active one.
@@ -39,6 +41,7 @@ pub(super) struct Parked {
 impl Parked {
     fn is_dirty(&self) -> bool {
         self.doc.graph.as_ref().is_some_and(GraphDoc::is_dirty)
+            || self.doc.script.as_ref().is_some_and(ScriptDoc::is_dirty)
             || self.doc.history.state() != self.doc.saved_state
     }
 }
@@ -58,6 +61,7 @@ impl Editor {
             search: std::mem::take(&mut self.search),
             probes: std::mem::take(&mut self.probes),
             graph: self.graph.take(),
+            script: self.script.take(),
         }
     }
 
@@ -71,6 +75,7 @@ impl Editor {
         self.search = doc.search;
         self.probes = doc.probes;
         self.graph = doc.graph;
+        self.script = doc.script;
         self.pending = None;
         self.zone_pending = None;
         self.player_pending = None;
@@ -131,9 +136,13 @@ impl Editor {
         }
     }
 
-    /// Whether tab `index` holds a graph (LOGIC) rather than a scene.
+    /// Whether tab `index` belongs to LOGIC (a graph or a script) rather
+    /// than BUILD (a scene).
     pub(super) fn is_graph_tab(&self, index: usize) -> bool {
-        index < self.tabs.len() && self.tab_path(index).starts_with("graphs")
+        index < self.tabs.len() && {
+            let path = self.tab_path(index);
+            path.starts_with("graphs") || path.starts_with("scripts")
+        }
     }
 
     /// The last tab of a kind (graphs or scenes), to go back to.
@@ -202,13 +211,16 @@ impl Editor {
             return !self.is_dirty();
         };
         let path = self.project_dir.join(&parked.doc.scene_path);
-        let saved = match &parked.doc.graph {
-            Some(doc) => doc
+        let saved = match (&parked.doc.graph, &parked.doc.script) {
+            (_, Some(script)) => std::fs::write(&path, &script.text)
+                .map(|()| false)
+                .map_err(|e| format!("could not write {}: {e}", path.display())),
+            (Some(doc), _) => doc
                 .graph
                 .save(&path)
                 .map(|()| false)
                 .map_err(|e| e.to_string()),
-            None => parked
+            (None, None) => parked
                 .scene
                 .save(&path)
                 .map_err(|e| e.to_string())
@@ -221,6 +233,9 @@ impl Editor {
                 if let Some(parked) = &mut self.tabs[index] {
                     parked.doc.saved_state = parked.doc.history.state();
                     if let Some(doc) = &mut parked.doc.graph {
+                        doc.mark_saved();
+                    }
+                    if let Some(doc) = &mut parked.doc.script {
                         doc.mark_saved();
                     }
                 }
@@ -255,7 +270,7 @@ impl Editor {
         ui.horizontal(|ui| {
             // Swapping scenes mid-play would lose the play snapshot.
             ui.add_enabled_ui(!self.playing, |ui| {
-                let graphs = self.graph.is_some();
+                let graphs = self.graph.is_some() || self.script.is_some();
                 let closable = self.tabs.len() > 1;
                 for index in 0..self.tabs.len() {
                     // Each workspace shows its own kind of tab.
@@ -272,6 +287,8 @@ impl Editor {
                         .unwrap_or_default();
                     let name = if path.starts_with("graphs") {
                         format!("GRAPHS/{stem}")
+                    } else if path.starts_with("scripts") {
+                        format!("SCRIPTS/{stem}")
                     } else {
                         stem
                     };
@@ -301,15 +318,13 @@ impl Editor {
                     }
                     ui.add_space(6.0);
                 }
-                let label = if graphs {
-                    "+ OPEN GRAPH"
-                } else {
-                    "+ OPEN SCENE"
-                };
+                let label = if graphs { "+ OPEN" } else { "+ OPEN SCENE" };
                 ui.menu_button(label, |ui| {
                     ui.label(dim("OPEN IN A NEW TAB"));
                     let files = if graphs {
-                        graph_files(&self.project_dir)
+                        let mut files = graph_files(&self.project_dir);
+                        files.extend(super::files::script_files(&self.project_dir));
+                        files
                     } else {
                         scene_files(&self.project_dir)
                     };

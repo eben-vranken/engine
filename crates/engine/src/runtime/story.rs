@@ -529,6 +529,9 @@ impl Running {
                     self.scene_path = PathBuf::from(path);
                 }
                 self.behaviors = Some(Behaviors::start(&self.scene));
+                if let Some(story) = &mut self.story {
+                    story.scripts.reset_objects();
+                }
                 self.player = Player::new(spawn_point(&self.scene), &self.settings);
                 self.zone.reset();
                 self.apply_scene_state();
@@ -590,14 +593,67 @@ impl Running {
         self.mode = CameraMode::Player;
     }
 
-    /// Runs the abilities the graphs turned on (scripts) for this frame,
-    /// after the controller moved; what they change goes back to it.
+    /// Runs the scripts for this frame, after the controller moved: the
+    /// abilities the graphs turned on, then the scripts on objects in the
+    /// simulation radius. What they change goes back to the player and the
+    /// objects.
     pub(super) fn run_scripts(&mut self, input: &crate::input::Input, dt: f32) {
         let Some(story) = &mut self.story else { return };
         story.scripts.sync(&story.runner.abilities);
         let mut view = self.player.script_view(input, &self.settings);
-        story.scripts.update(&mut view, &mut story.runner.flags, dt);
-        self.player.apply_script(&view, &self.settings);
+        let mut objects: Vec<crate::script::ObjectView> = self
+            .scene
+            .objects
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.active.object(*i))
+            .filter_map(|(index, object)| {
+                let script = object.components.iter().find_map(|c| match c {
+                    Component::Script(s) if !s.script.0.is_empty() => Some(s.script.0.clone()),
+                    _ => None,
+                })?;
+                Some(crate::script::ObjectView {
+                    index,
+                    script,
+                    name: object.name.clone(),
+                    position: object.transform.position,
+                    rotation: object.transform.rotation,
+                    scale: object.transform.scale,
+                    visible: !object.hidden,
+                })
+            })
+            .collect();
+        story
+            .scripts
+            .update(&mut view, &mut objects, &mut story.runner.flags, dt);
+        if self.mode == CameraMode::Player {
+            self.player.apply_script(&view, &self.settings);
+        }
+        let mut reshown = false;
+        for changed in &objects {
+            let object = &mut self.scene.objects[changed.index];
+            if object.hidden == changed.visible {
+                object.hidden = !changed.visible;
+                reshown = true;
+            }
+            let transform = crate::scene::Transform {
+                position: changed.position,
+                rotation: changed.rotation,
+                scale: changed.scale,
+            };
+            if transform != object.transform {
+                object.transform = transform;
+                self.renderer
+                    .update_object(&self.scene, changed.index, &mut self.assets);
+                self.physics
+                    .move_object(changed.index, &self.scene.objects[changed.index].transform);
+            }
+        }
+        if reshown {
+            self.renderer.set_scene(&self.scene, &mut self.assets);
+            self.rebuild_physics();
+        }
+        let Some(story) = &mut self.story else { return };
         let errors = std::mem::take(&mut story.scripts.errors);
         for error in errors {
             story

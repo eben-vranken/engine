@@ -524,21 +524,27 @@ impl Running {
         self.update_mouse_capture();
         self.run_game(dt);
 
-        let camera = match self.mode {
+        match self.mode {
             CameraMode::Player => {
                 // In dialogue or on the map the player stands still.
                 let busy = self.story.as_ref().is_some_and(story::Story::busy);
                 let idle = Input::default();
                 let input = if busy { &idle } else { &self.input };
                 self.player.update(input, &self.settings, &self.physics, dt);
-                let input = input.clone();
-                self.run_scripts(&input, dt);
-                self.player.camera(&self.settings)
             }
-            CameraMode::Fly => {
-                self.fly.update(&self.input, dt);
-                self.fly.camera.clone()
-            }
+            CameraMode::Fly => self.fly.update(&self.input, dt),
+        }
+        // Scripts after the controller: they see whether it jumped.
+        let busy = self.story.as_ref().is_some_and(story::Story::busy);
+        let input = if busy || self.mode == CameraMode::Fly {
+            Input::default()
+        } else {
+            self.input.clone()
+        };
+        self.run_scripts(&input, dt);
+        let camera = match self.mode {
+            CameraMode::Player => self.player.camera(&self.settings),
+            CameraMode::Fly => self.fly.camera.clone(),
         };
         let zones = ZoneMap::new(&self.scene);
         let current = self.zone.update(&self.scene, &zones, camera.position);

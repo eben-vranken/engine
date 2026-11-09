@@ -210,7 +210,7 @@ pub(super) fn shape_kind(ui: &mut Ui, id: usize, shape: &mut Shape) {
 }
 
 /// Components the inspector can add (one of each per object).
-pub(super) fn new_components() -> [(&'static str, Component); 17] {
+pub(super) fn new_components() -> [(&'static str, Component); 18] {
     [
         ("floating", Component::Floating(Floating::default())),
         ("door", Component::Door(Door::default())),
@@ -247,6 +247,7 @@ pub(super) fn new_components() -> [(&'static str, Component); 17] {
             Component::AbilityGate(AbilityGate::default()),
         ),
         ("starts hidden", Component::StartsHidden),
+        ("script", Component::Script(crate::scene::Script::default())),
     ]
 }
 
@@ -310,6 +311,7 @@ pub(super) const BEHAVIOR_GROUPS: [(&str, &[(usize, &str)]); 5] = [
             (14, "E saves the game here"),
             (15, "blocks the way until a flag"),
             (16, "hidden until a graph shows it"),
+            (17, "runs a script of yours on it"),
         ],
     ),
     (

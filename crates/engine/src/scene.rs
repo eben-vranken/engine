@@ -254,6 +254,16 @@ pub enum Component {
     AbilityGate(AbilityGate),
     /// Hidden when the game starts, until a graph shows it.
     StartsHidden,
+    Script(Script),
+}
+
+/// Runs a script on the object while the game plays (and the object is in
+/// the simulation radius): `start(object)` once, `update(object, dt)`
+/// every frame.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Script {
+    pub script: ScriptRef,
 }
 
 /// A box of space centered on the object (turned and scaled with it):

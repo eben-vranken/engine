@@ -214,32 +214,7 @@ impl Editor {
         };
         let path = crate::graph::key(&self.scene_path);
 
-        if self.show_scene {
-            egui::Panel::left("graph_browser")
-                .resizable(true)
-                .default_size(280.0)
-                .min_size(240.0)
-                .show(ui, |ui| {
-                    self.show_scene = !panel_header(ui, "GRAPHS", Side::Left, "TAB", |ui| {
-                        if ui
-                            .small_button("+ NEW")
-                            .on_hover_text("A GRAPH STARTED BY RUN GRAPH (A SCENE'S OWN GRAPH: + GRAPH BESIDE THE SCENE)")
-                            .clicked()
-                        {
-                            self.ask_name(super::name_dialog::Naming::Graph);
-                        }
-                    });
-                    // Graphs on top (up to about half the height), flags below;
-                    // each scrolls on its own.
-                    self.graph_browser(ui, &path, output);
-                    ui.add_space(8.0);
-                    super::section(ui, "FLAGS · GLOBAL");
-                    self.flags_panel(ui);
-                });
-        } else {
-            self.show_scene =
-                collapsed_panel(ui, "graph_browser_strip", Side::Left, "GRAPHS", "TAB");
-        }
+        self.logic_side_panel(ui, &path, output);
         if self.show_inspector {
             egui::Panel::right("graph_inspector")
                 .resizable(true)
@@ -480,6 +455,49 @@ impl Editor {
 
     /// Every graph in the project by owner, and each scene's slot for a
     /// graph of its own.
+    /// LOGIC's left panel, for graph and script tabs alike: the graphs by
+    /// owner, the scripts, and the flags.
+    pub(super) fn logic_side_panel(
+        &mut self,
+        ui: &mut Ui,
+        current: &str,
+        output: &mut EditorOutput,
+    ) {
+        if !self.show_scene {
+            self.show_scene =
+                collapsed_panel(ui, "graph_browser_strip", Side::Left, "LOGIC", "TAB");
+            return;
+        }
+        egui::Panel::left("graph_browser")
+            .resizable(true)
+            .default_size(280.0)
+            .min_size(240.0)
+            .show(ui, |ui| {
+                self.show_scene = !panel_header(ui, "LOGIC", Side::Left, "TAB", |ui| {
+                    if ui
+                        .small_button("+ SCRIPT")
+                        .on_hover_text("A SCRIPT: AN ABILITY, OR TO RUN ON AN OBJECT")
+                        .clicked()
+                    {
+                        self.ask_name(super::name_dialog::Naming::Script);
+                    }
+                    if ui
+                        .small_button("+ GRAPH")
+                        .on_hover_text("A GRAPH STARTED BY RUN GRAPH (A SCENE'S OWN GRAPH: + ADD GRAPH BESIDE THE SCENE)")
+                        .clicked()
+                    {
+                        self.ask_name(super::name_dialog::Naming::Graph);
+                    }
+                });
+                // Graphs and scripts on top (up to about half the height),
+                // flags below; each scrolls on its own.
+                self.graph_browser(ui, current, output);
+                ui.add_space(8.0);
+                super::section(ui, "FLAGS · GLOBAL");
+                self.flags_panel(ui);
+            });
+    }
+
     fn graph_browser(&mut self, ui: &mut Ui, current: &str, output: &mut EditorOutput) {
         let mut groups: BTreeMap<u8, Vec<(String, String)>> = BTreeMap::new();
         for (path, graph) in &self.index.graphs {
@@ -495,6 +513,7 @@ impl Editor {
                 .push((path.clone(), format!("{} NODES", graph.nodes.len())));
         }
         let scenes: Vec<String> = self.index.names.scenes.clone();
+        let scripts: Vec<String> = self.index.names.scripts.clone();
         let mut create = None;
         egui::ScrollArea::vertical()
             .id_salt("graph_browser_list")
@@ -555,6 +574,28 @@ impl Editor {
                             });
                         });
                     }
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("SCRIPTS · ABILITIES, OR ON OBJECTS")
+                        .small()
+                        .color(theme::AMBER_DIM),
+                );
+                if scripts.is_empty() {
+                    ui.label(dim("NONE: + SCRIPT ABOVE"));
+                }
+                for path in &scripts {
+                    let name = crate::graph::script_name(path).to_uppercase();
+                    let uses = self.index.script_users(path).len();
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(path == current, name).clicked() {
+                            output.open_graph = Some(PathBuf::from(path));
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let text = if uses == 0 { "UNUSED".into() } else { format!("{uses} USE{}", if uses == 1 { "" } else { "S" }) };
+                            ui.label(RichText::new(text).small().color(theme::AMBER_DIM));
+                        });
+                    });
                 }
             });
         if let Some(graph) = create {

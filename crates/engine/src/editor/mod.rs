@@ -29,6 +29,7 @@ mod palette;
 mod player_panel;
 mod project_index;
 mod project_page;
+mod script_tab;
 mod selection;
 mod settings_panel;
 mod status_bar;
@@ -47,6 +48,7 @@ use glam::Vec3;
 pub use graph_tab::GraphDoc;
 use history::{Change, Edit, History};
 pub use objects::{NEW_OBJECT_DISTANCE, placement};
+pub use script_tab::ScriptDoc;
 pub use selection::Pick;
 pub use settings_panel::SettingsTarget;
 use std::path::PathBuf;
@@ -129,6 +131,8 @@ pub struct Editor {
     naming: Option<name_dialog::NameDialog>,
     /// The open graph, when the active tab is a graph tab.
     pub graph: Option<GraphDoc>,
+    /// The open script, when the active tab is a script tab.
+    pub script: Option<ScriptDoc>,
     /// The part of the selected model shown in the inspector, by name.
     pub selected_part: Option<String>,
     /// Picked with shift-click besides `selected` / `selected_part`.
@@ -195,7 +199,8 @@ pub struct EditorOutput {
     pub new_tab: Option<PathBuf>,
     /// Close this tab (unsaved changes already dealt with).
     pub close_tab: Option<usize>,
-    /// Open this graph (relative to the project) in a graph tab.
+    /// Open this graph (relative to the project) in a graph tab, or this
+    /// script (`.rhai`) in a script tab.
     pub open_graph: Option<PathBuf>,
     /// Place this model (relative to the project) in the scene: where it
     /// was dropped on the scene image (points), or in front of the camera.
@@ -278,6 +283,7 @@ impl Editor {
             active_tab: 0,
             naming: None,
             graph: None,
+            script: None,
             file_dialog: None,
             selected_part: None,
             also: Vec::new(),
@@ -332,7 +338,11 @@ impl Editor {
                 return output;
             }
             Workspace::Logic => {
-                self.graph_ui(ui, &mut output);
+                if self.script.is_some() {
+                    self.script_ui(ui, &mut output);
+                } else {
+                    self.graph_ui(ui, &mut output);
+                }
                 return output;
             }
             Workspace::Build => {}
@@ -527,6 +537,7 @@ impl Editor {
     /// Unsaved changes, including an edit still in progress.
     pub fn is_dirty(&self) -> bool {
         self.graph.as_ref().is_some_and(GraphDoc::is_dirty)
+            || self.script.as_ref().is_some_and(ScriptDoc::is_dirty)
             || self.pending.is_some()
             || self.zone_pending.is_some()
             || self.player_pending.is_some()
@@ -539,6 +550,10 @@ impl Editor {
     pub fn save(&mut self, scene: &Scene, player: &PlayerSettings) -> bool {
         if self.graph.is_some() {
             self.save_graph();
+            return false;
+        }
+        if self.script.is_some() {
+            self.save_script();
             return false;
         }
         let settled = self.commit_pending(scene);

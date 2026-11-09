@@ -92,6 +92,12 @@
             components: [Primitive((shape: Box(size: (0.2, 2.0, 0.2)), color: (0.25, 0.25, 0.25))), Material((texture: "", meters: 2.0, roughness: 0.4, metalness: 1.0))],
         ),
         (
+            name: "watcher",
+            zone: "plaza",
+            transform: (position: (5.0, 1.6, 3.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (0.8, 0.5, 0.1)), color: (0.2, 0.2, 0.22), emissive: (0.0, 0.0, 0.0))), Script((script: "scripts/watcher.rhai"))],
+        ),
+        (
             name: "plaza lamp",
             zone: "plaza",
             transform: (position: (0.0, 2.2, 0.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),

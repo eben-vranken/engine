@@ -81,6 +81,8 @@ pub(super) struct ProjectIndex {
     pub scene_objects: BTreeMap<String, Vec<String>>,
     /// Characters: (scene, object name, id, dialogue graph).
     pub characters: Vec<(String, String, String, String)>,
+    /// Objects with a Script behavior: (scene, object name, script).
+    pub scripted: Vec<(String, String, String)>,
     /// Each character id's name before any RENAME.
     pub character_names: std::collections::HashMap<String, String>,
     /// How dialogue looks (`game.ron`).
@@ -116,6 +118,7 @@ impl ProjectIndex {
         };
         self.scene_objects.clear();
         self.characters.clear();
+        self.scripted.clear();
         for path in &scenes {
             let Ok(scene) = Scene::load(&dir.join(path)) else {
                 continue;
@@ -129,6 +132,15 @@ impl ProjectIndex {
                 names.objects.push(object.name.clone());
                 objects.push(object.name.clone());
                 for component in &object.components {
+                    if let Component::Script(s) = component
+                        && !s.script.0.is_empty()
+                    {
+                        self.scripted.push((
+                            scene_key.clone(),
+                            object.name.clone(),
+                            s.script.0.clone(),
+                        ));
+                    }
                     if let Component::Character(c) = component
                         && !c.id.is_empty()
                     {
@@ -180,6 +192,27 @@ impl ProjectIndex {
             };
         }
         Owner::Other
+    }
+
+    /// What uses a script: ABILITY nodes in graphs and objects with its
+    /// Script behavior, as (text, where to go).
+    pub fn script_users(&self, script: &str) -> Vec<(String, Go)> {
+        let mut uses = Vec::new();
+        for (path, graph) in &self.graphs {
+            let turns_on = graph
+                .nodes
+                .iter()
+                .any(|n| matches!(&n.kind, NodeKind::Ability { script: s, .. } if s.0 == script));
+            if turns_on {
+                uses.push((format!("ABILITY · {path}"), Go::Graph(path.clone())));
+            }
+        }
+        for (scene, object, s) in &self.scripted {
+            if s == script {
+                uses.push((format!("{object} · {scene}"), Go::Scene(scene.clone())));
+            }
+        }
+        uses
     }
 
     /// Everything that uses `graph`.
