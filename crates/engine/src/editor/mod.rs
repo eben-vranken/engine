@@ -187,6 +187,8 @@ pub struct EditorOutput {
     pub drawer: Option<Rect>,
     /// CONTINUE: play from the saved game.
     pub resume_play: bool,
+    /// Open the game in its own window, as a player gets it.
+    pub play_window: bool,
     /// BAKE ACOUSTICS was clicked.
     pub bake: bool,
     /// BAKE LIGHTING was clicked.
@@ -226,6 +228,7 @@ impl EditorOutput {
             restart_play: false,
             drawer: None,
             resume_play: false,
+            play_window: false,
             bake: false,
             bake_lighting: false,
             export_package: None,

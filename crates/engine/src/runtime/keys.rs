@@ -9,7 +9,26 @@ use winit::keyboard::KeyCode;
 impl Running {
     pub(super) fn handle_keys(&mut self, actions: &mut HudActions) {
         if self.editor.is_some() && self.input.pressed(KeyCode::F5) {
-            self.toggle_play();
+            let shift = self.input.held(KeyCode::ShiftLeft) || self.input.held(KeyCode::ShiftRight);
+            if shift {
+                self.play_in_window();
+            } else {
+                self.toggle_play();
+            }
+        }
+        // As a player gets the game: only its own keys (map, clap, use,
+        // dialogue; Esc frees the mouse). No debug keys.
+        if self.player_view {
+            if self.input.pressed(KeyCode::KeyM)
+                && let Some(story) = &mut self.story
+                && story.line.is_none()
+            {
+                story.map_open = !story.map_open;
+            }
+            if self.input.pressed(KeyCode::Escape) {
+                self.mouse_released = true;
+            }
+            return;
         }
         // The test drawer (running graphs, flags, audio, feel, map).
         if self.input.pressed(KeyCode::F3) {

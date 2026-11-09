@@ -149,6 +149,41 @@ impl Running {
         }
     }
 
+    /// Editor: opens the game in a window of its own, as a player gets it
+    /// (`--player`): the project's start scene, or the saved game, with no
+    /// editor or debug tools. It reads the files as saved.
+    pub(super) fn play_in_window(&mut self) {
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(err) => {
+                editor.show_error(format!("COULD NOT START THE GAME: {err}"));
+                return;
+            }
+        };
+        let started = std::process::Command::new(exe)
+            .arg("--game")
+            .arg(&self.game_dir)
+            .arg("--player")
+            .arg("--quality")
+            .arg(self.renderer.quality().name().to_lowercase())
+            .spawn();
+        match started {
+            Ok(_) => {
+                let unsaved = if editor.any_dirty() {
+                    ": UNSAVED CHANGES AREN'T IN IT, SAVE FIRST TO SEE THEM"
+                } else {
+                    ""
+                };
+                editor.show_message(format!("THE GAME OPENED IN ITS OWN WINDOW{unsaved}"));
+                log::info!("started the game in its own window");
+            }
+            Err(err) => editor.show_error(format!("COULD NOT START THE GAME: {err}")),
+        }
+    }
+
     /// Play from the PlayerStart with the scene's graph from its start, or
     /// (`resume`) from the saved game.
     pub(super) fn start_play(&mut self, resume: bool) {

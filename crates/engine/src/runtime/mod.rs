@@ -76,6 +76,9 @@ pub struct RunConfig {
     pub perf_log: bool,
     /// Play mode: start from the beginning even if there is a saved game.
     pub new_game: bool,
+    /// Play mode as a player gets it: no tuning panel, test drawer, debug
+    /// readout or debug keys.
+    pub player: bool,
 }
 
 pub fn run(config: RunConfig) -> Result<(), RunError> {
@@ -132,6 +135,8 @@ struct Running {
     fly: FlyCamera,
     mode: CameraMode,
     tuning_open: bool,
+    /// Playing as a player (`--player`): only the game, no debug tools.
+    player_view: bool,
     input: Input,
     focused: bool,
     /// Player mode: Esc gave the mouse back; a click takes it again.
@@ -409,6 +414,7 @@ impl Running {
                 CameraMode::Player
             },
             tuning_open: false,
+            player_view: config.player && !config.editor,
             input: Input::default(),
             focused: true,
             mouse_released: false,
@@ -682,6 +688,7 @@ impl Running {
         };
         let blink = hud.cursor_on;
         let tuning_open = self.tuning_open;
+        let player_view = self.player_view;
         let settings = &mut self.settings;
         let (status, error) = (&self.settings_status, self.settings_error.as_deref());
         let mut tuning_action = None;
@@ -751,7 +758,7 @@ impl Running {
                                     };
                                     drawer_actions = Some(test_drawer::drawer(ui, story, inputs));
                                 });
-                        } else {
+                        } else if !player_view {
                             draw_hud(ui, &hud, &mut actions);
                         }
                         if tuning_open {
@@ -785,7 +792,9 @@ impl Running {
                     draw_toast(ui, view.image, text);
                 }
                 // The audio switches' corner readout, unless the drawer shows them.
-                if let Some(toggles) = toggles.filter(|_| drawer_actions.is_none() && view_shown) {
+                if let Some(toggles) =
+                    toggles.filter(|_| drawer_actions.is_none() && view_shown && !player_view)
+                {
                     draw_audio_panel(ui, view.image, &toggles, game_running);
                 }
             },
@@ -861,6 +870,9 @@ impl Running {
             }
             if output.resume_play && self.play.is_none() {
                 self.start_play(true);
+            }
+            if output.play_window {
+                self.play_in_window();
             }
             if output.exit {
                 self.exit_requested = true;

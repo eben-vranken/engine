@@ -15,6 +15,8 @@
 //! `--quality low` uses the low preset (for integrated graphics);
 //! `--perf-log` logs FPS and GPU times every couple of seconds.
 //! `--new-game` plays from the start even if there is a saved game.
+//! `--player` plays the game as a player gets it: no tuning panel, test
+//! drawer, debug readout or debug keys (the editor's Shift+F5 opens this).
 //! Game projects are content-only folders; they never contain engine code.
 //!
 //! Release builds on Windows are window-only apps (no console window);
@@ -39,6 +41,7 @@ struct Args {
     quality: engine::render::quality::Quality,
     perf_log: bool,
     new_game: bool,
+    player: bool,
 }
 
 fn parse_args() -> Args {
@@ -48,6 +51,7 @@ fn parse_args() -> Args {
     let mut quality = Default::default();
     let mut perf_log = false;
     let mut new_game = false;
+    let mut player = false;
     let mut args = std::env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -67,6 +71,7 @@ fn parse_args() -> Args {
             },
             "--perf-log" => perf_log = true,
             "--new-game" => new_game = true,
+            "--player" => player = true,
             other => eprintln!("ignoring unknown argument: {other}"),
         }
     }
@@ -78,6 +83,7 @@ fn parse_args() -> Args {
         quality,
         perf_log,
         new_game,
+        player,
     }
 }
 
@@ -126,17 +132,23 @@ fn main() -> anyhow::Result<()> {
     );
 
     let editor = args.mode == Mode::Editor;
+    let player = args.player && !editor;
     if editor {
         // For the launcher's list.
         engine::recent::record(&project.dir, &project.settings.name);
     }
     engine::run(engine::RunConfig {
-        title: format!(
-            "{} — {}{}",
-            project.settings.name,
-            engine::NAME,
-            if editor { " editor" } else { "" }
-        ),
+        // As a player sees it: just the game's name.
+        title: if player {
+            project.settings.name.clone()
+        } else {
+            format!(
+                "{} — {}{}",
+                project.settings.name,
+                engine::NAME,
+                if editor { " editor" } else { "" }
+            )
+        },
         scene_path: project.settings.start_scene.clone(),
         game_name: project.settings.name.clone(),
         game_dir: project.dir,
@@ -146,6 +158,7 @@ fn main() -> anyhow::Result<()> {
         render_scale: project.settings.render_scale,
         perf_log: args.perf_log,
         new_game: args.new_game,
+        player,
     })?;
     Ok(())
 }

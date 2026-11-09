@@ -99,7 +99,7 @@ cargo run -p app -- --game my-game.gamepack         # unpack and open a project 
 cargo run -p app -- --scene scenes/hall.ron         # play another scene of the project
 ```
 
-Other flags: `--quality low` for integrated graphics, `--perf-log` to log FPS, GPU stage times and audio timing, `--new-game` to ignore the saved game.
+Other flags: `--player` to play as a player gets the game (no debug tools; the editor's Shift+F5 opens this in its own window), `--quality low` for integrated graphics, `--perf-log` to log FPS, GPU stage times and audio timing, `--new-game` to ignore the saved game.
 
 `sandbox/` is a small test project in this repo and the default `--game`. It has one scene, `test_level.ron`, with every feature once around a central plaza: the movement course to the north (ramps, stairs, gaps, heights, beam, tunnel, tower, a corner), the acoustics wing to the east (wood room, stone corridor, marble hall with the looping guitar), the dark hall to the west (window shaft, flickering lantern, mist, polished floor, a metal sphere, the arch model), the yard to the south (the keeper, lever, doorstep and gate, the feather and its walled ledge, the save stone, doors, switches, a pressure plate, physics crates, a floating platform, a walk-through curtain) and the void to the south-east (open, with a long stylized reverb). Run by the scene's own `graphs/scenes/test_level.ron` and the keeper's `graphs/keeper.ron`; the feather turns on `scripts/double_jump.rhai`.
 

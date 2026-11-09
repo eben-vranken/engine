@@ -277,6 +277,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("CTRL+S", "SAVE"),
     ("CTRL+Z / CTRL+Y", "UNDO / REDO"),
     ("F5", "PLAY / STOP"),
+    ("SHIFT+F5", "PLAY IN A WINDOW, AS A PLAYER"),
     ("TAB / SHIFT+TAB", "LEFT PANEL / INSPECTOR"),
     ("?", "THIS LIST"),
     ("[ ] 0 / V", "RENDER SCALE / AUTO / VSYNC"),

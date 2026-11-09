@@ -215,6 +215,12 @@ impl Editor {
                 {
                     output.resume_play = true;
                 }
+                if item(ui, "PLAY IN A WINDOW, AS A PLAYER", "SHIFT+F5", true)
+                    .on_hover_text("THE GAME AS A PLAYER GETS IT: ITS OWN WINDOW, NO TUNING OR DEBUG TOOLS, FROM THE SAVED FILES")
+                    .clicked()
+                {
+                    output.play_window = true;
+                }
             })
             .response
             .on_hover_text("PLAY FROM THE SAVED GAME");

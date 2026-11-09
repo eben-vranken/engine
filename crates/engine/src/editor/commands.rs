@@ -43,6 +43,7 @@ pub(super) enum Command {
     Search,
     Play,
     PlayFromSave,
+    PlayInWindow,
     BakeLighting,
     BakeAcoustics,
     /// An index into `primitives()`.
@@ -91,6 +92,7 @@ impl Command {
             Search => "SEARCH OR RUN…".into(),
             Play => "PLAY FROM START".into(),
             PlayFromSave => "PLAY FROM SAVE".into(),
+            PlayInWindow => "PLAY IN A WINDOW, AS A PLAYER".into(),
             BakeLighting => "BAKE LIGHTING".into(),
             BakeAcoustics => "BAKE ACOUSTICS".into(),
             AddPrimitive(i) => format!(
@@ -142,6 +144,7 @@ impl Command {
             Delete => "DEL",
             Search => "CTRL+K",
             Play => "F5",
+            PlayInWindow => "SHIFT+F5",
             ToggleLeft => "TAB",
             ToggleRight => "SHIFT+TAB",
             ToggleZones => "H",
@@ -162,6 +165,7 @@ impl Command {
             Delete,
             Play,
             PlayFromSave,
+            PlayInWindow,
             Go(Workspace::Project),
             Go(Workspace::Build),
             Go(Workspace::Logic),
@@ -269,6 +273,7 @@ impl Editor {
             Search => self.open_palette(None),
             Play => output.toggle_play = true,
             PlayFromSave => output.resume_play = true,
+            PlayInWindow => output.play_window = true,
             BakeLighting => output.bake_lighting = true,
             BakeAcoustics => output.bake = true,
             AddPrimitive(i) => {
