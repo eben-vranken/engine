@@ -261,7 +261,7 @@ pub(super) fn draw_hud(ui: &mut egui::Ui, hud: &HudInfo, actions: &mut HudAction
                         CameraMode::Player => &[
                             "WASD MOVE  SPACE JUMP  SHIFT SPRINT",
                             "CTRL/C CROUCH  R RESPAWN  E USE",
-                            "TAB MAP  F3 GRAPHS",
+                            "M MAP  F3 TEST DRAWER",
                             "F1 TUNING  F2 FLY  ESC FREE MOUSE",
                         ],
                         CameraMode::Fly => &[

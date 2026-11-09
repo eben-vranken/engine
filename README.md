@@ -78,19 +78,14 @@ Every value lives in the game's `player.ron` (meters, seconds, degrees). Tune it
 
 ## Editor
 
-Themed as a sparse amber-on-black terminal. The 3D viewport is drawn by the game renderer and takes most of the screen.
+Themed as a sparse amber-on-black terminal, in three workspaces chosen in the top bar. **CTRL+K** searches and runs everything (actions, objects, scenes, graphs, flags, settings); **?** lists every shortcut.
 
-- **Scene tabs:** several scenes open side by side, each with its own undo history, selection, camera and unsaved state.
-- **Building:** add primitives from the ADD menu, drag `.glb` / `.gltf` files from the desktop or the MODELS list onto the viewport (copied into the project and placed on the surface under the cursor), duplicate and delete. Re-exported models hot-reload.
-- **Selecting and moving:** click or shift-click in the viewport or the hierarchy (grouped by zone, with search such as `candle > flame`), then move, rotate and scale everything selected with the gizmo, with snapping.
-- **Inspector** generated from the components via `bevy_reflect`, never hand-written. Object references are picked from a list (a switch's target door). A change applies to every selected object as one undo step. Zones and the scene's environment (sun, sky, fog, grade) are edited the same way.
-- **Undo/redo** for every edit.
-- **Play/Stop in place** (F5).
-- **Bakes:** BAKE LIGHTING and BAKE ACOUSTICS per scene.
-- **Projects:** NEW / OPEN PROJECT, NEW SCENE, SAVE AS, PROJECT SETTINGS (name, start scene, render scale), and native file dialogs. `--launcher` opens a small window with recently edited projects.
-- **Packages:** EXPORT PACKAGE writes a whole project to one `.gamepack` file to hand to someone else; opening it unpacks it and opens it in the editor exactly as it was.
-- **Gameplay graphs:** the game's logic as nodes in a graph tab (PROJECT ▸ NEW GRAPH): events (in a zone or trigger, used, picked up), waits, branches on flags, actions (doors, show/hide, sounds, load scene, save) and dialogue (lines with an optional sound, replies with conditions, renaming characters). Flags in `flags.ron`; the flow graph is set in PROJECT SETTINGS, as is how dialogue looks. F3 while playing shows the running graphs.
-- **Game systems:** characters to talk to, pickups, save points (one save per project, CONTINUE in the editor), ability gates, double jump unlocked by a flag, and a map of visited zones (Tab).
+- **PROJECT:** the start screen (recent projects, new, open, packages) and every project-wide setting on one page: name, start scene, flow graph, render scale, player feel, dialogue look with a live preview, flags and the saved game.
+- **BUILD:** scenes in tabs, each with its own undo history, selection, camera and unsaved state. The outliner groups objects by zone with a type tag each, filter chips and search (`candle > flame` finds parts); the assets drawer lists models (drag them in), textures and sounds. The viewport has floating move/rotate/scale tools, a SHOW menu (zone volumes, trigger boxes, probes) and the bakes' state with BAKE. The inspector shows collapsible cards generated from the components via `bevy_reflect`, an IN LOGIC card (the graphs that mention the object) and a grouped ADD BEHAVIOR. Multi-select edits apply to every selected object as one undo step.
+- **LOGIC:** gameplay graphs grouped by owner: the game's flow (runs all game), one per scene (`graphs/scenes/<scene>.ron`: runs while the scene is loaded and carries on where it was when the player returns), one per character (their dialogue), and others started by RUN GRAPH. Each graph shows its owner, what uses it and references that point at nothing. Nodes: events (in a zone or trigger, used, picked up), waits, branches on flags, actions (doors, show/hide, sounds, load scene, save) and dialogue (lines with an optional sound, replies with conditions, renaming characters). The CONVERSATION view reads a dialogue as a script with a live preview and TEST CONVERSATION. Flags (`flags.ron`) are edited beside the graphs.
+- **PLAY** (F5, or PLAY FROM SAVE) runs the scene in place; STOP restores it. The test drawer (F3) shows the running graphs and an events log, flips flags, holds the audio switches, the player feel, the map and frame stats.
+- **Game systems:** characters to talk to, pickups, save points (one save per project), ability gates, double jump unlocked by a flag, and a map of visited zones (M).
+- **Bakes:** BAKE LIGHTING and BAKE ACOUSTICS per scene. **Packages:** a whole project in one `.gamepack` file to hand to someone else.
 - **Models** are made in Blender (or any glTF exporter) and dragged in; re-exporting over the file updates every scene using it. A glTF's named nodes become **parts** (a candle's stick, wax and flame), which a scene can give their own glow, collision and light.
 
 ## Run
@@ -106,7 +101,7 @@ cargo run -p app -- --scene scenes/hall.ron         # play another scene of the 
 
 Other flags: `--quality low` for integrated graphics, `--perf-log` to log FPS, GPU stage times and audio timing, `--new-game` to ignore the saved game.
 
-`sandbox/` is a small test project in this repo and the default `--game`. Its scenes: `test_level.ron` (movement test course), `acoustics.ron` (four spaces that sound different), `behaviors.ron`, `hall.ron` (the dark hall with one window and one lantern shown above) and `story.ron` (graphs, dialogue, a gate, a pickup and a save stone, run by `graphs/main.ron` and `graphs/keeper.ron`).
+`sandbox/` is a small test project in this repo and the default `--game`. It has one large scene, `test_level.ron`: the movement course, then (walking east along the walkways) four spaces that sound different, the behaviors (doors, switches, plates, physics), the dark hall with one window and one lantern, and the story yard (a keeper to talk to, a lever and gate, a feather that unlocks double jump, a save stone), run by `graphs/main.ron`, `graphs/keeper.ron` and the scene's own `graphs/scenes/test_level.ron`.
 
 **Building needs** a stable Rust toolchain and LLVM/Clang 9+ with `clang` on `PATH` (AudioNimbus generates bindings with bindgen; on Windows: `winget install LLVM.LLVM`). The first build downloads Steam Audio (about 180 MB) and can look stuck while it does. Developed on Windows (RTX 3060 Ti) and tested on Linux (Arch, KDE Wayland, Intel Iris Xe). On Linux, Steam Audio's `libphonon.so` from the build folder must be on `LD_LIBRARY_PATH`.
 
@@ -114,11 +109,11 @@ Other flags: `--quality low` for integrated graphics, `--perf-log` to log FPS, G
 
 | Where | Keys |
 |---|---|
-| Playing | WASD move, Space jump, Shift sprint, Ctrl/C crouch, E use / talk / take, Tab map, F3 running graphs, R respawn, F1 tuning panel, F2 fly camera, Esc free the mouse |
+| Playing | WASD move, Space jump, Shift sprint, Ctrl/C crouch, E use / talk / take, M map, F3 test drawer, R respawn, F1 tuning panel, F2 fly camera, Esc free the mouse |
 | Dialogue | W/S or arrows choose, 1–9 pick, E / Space / Enter continue |
 | Anywhere | `[` `]` render scale, 0 auto scale, V vsync |
-| Editor | Click select, Shift+click add to selection, W/E/R move/rotate/scale, Ctrl snap, right mouse + WASD fly, Ctrl+D duplicate, Del delete, Ctrl+Z/Y undo/redo, Ctrl+S save, F5 play/stop, Tab/Shift+Tab panels |
-| Audio A/B | F6 occlusion, F7 reflections, F8 HRTF, F9 air absorption, F10 baked/live reverb, Q clap, M move the looping sound to you |
+| Editor | Ctrl+K search or run anything, ? all shortcuts, click select, Shift+click add to selection, W/E/R move/rotate/scale, Ctrl snap, right mouse + WASD fly, Ctrl+D duplicate, Del delete, Ctrl+Z/Y undo/redo, Ctrl+S save, F5 play/stop, Tab/Shift+Tab panels, Space add a node (LOGIC) |
+| Audio A/B | F6 occlusion, F7 reflections, F8 HRTF, F9 air absorption, F10 baked/live reverb, Q clap; MOVE THE LOOPING SOUND HERE in the test drawer |
 
 ## A game project
 
@@ -148,7 +143,7 @@ sandbox/            the test project
 ```
 
 **Done:** renderer, first-person controller, editor, object creation, Play/Stop, behaviors, audio, zones, lighting, materials and reflections, scene tabs, project packages, model parts, multi-select, project settings and stylized reverb.
-**In testing:** gameplay graphs (flow and dialogue), flags, saving, abilities and the map.
+**In testing:** gameplay graphs (flow, scene and dialogue graphs), flags, saving, abilities, the map, and the editor redesign.
 **Next:** the stairs primitive. See the [roadmap](docs/ROADMAP.md).
 
 ## License

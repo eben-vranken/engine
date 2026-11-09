@@ -292,6 +292,30 @@ The game's flow and its dialogue as node graphs, edited in the editor (BRIEF.md:
 
 **Acceptance:** the user opens the map, sees only the zones they've been to, and it survives a save and load.
 
+## 11.7 Graph owners and scene graphs
+- [ ] Every graph shows its owner (the game's flow, a scene, a character, or none) and what uses it, with links there
+- [ ] Each scene can have a graph of its own (`graphs/scenes/<scene>.ron`): it starts when the scene loads, pauses when the player leaves and carries on where it was when they return; saved with the game
+- [ ] The inspector lists the graphs that mention the selected object; references that point at nothing are flagged under the canvas
+
+**Acceptance:** the user adds a graph to a scene from LOGIC, sees who owns each graph and what uses it, and a scene graph picks up where it was after leaving and coming back.
+
+## 11.8 Editor redesign
+The editor reorganised for ease of use; same look, same features (design: the "Editor UX Redesign" canvas).
+
+- [ ] Workspaces PROJECT / BUILD / LOGIC in the top bar with a breadcrumb; menus FILE, EDIT, ADD, VIEW; CTRL+K command palette; `?` shortcut list
+- [ ] PROJECT page: start screen (recent, new, open, packages) and every project-wide setting (name, startup, rendering, player feel, dialogue look with live preview, flags, saves)
+- [ ] BUILD: outliner with type tags and filters, assets drawer (models, textures, sounds), floating viewport tools with SHOW and bake state, trigger boxes in the viewport, inspector cards, grouped ADD BEHAVIOR
+- [ ] LOGIC: graphs grouped by owner with flags, canvas with category tags, FIND and an overview, CONVERSATION view with preview and TEST CONVERSATION
+- [ ] PLAY: playing bar with STOP and RESTART, test drawer (logic and events, flags, audio, feel, map, stats), map on M
+- [ ] Secondary text readable (6.3:1); lines in their own darker color
+
+**Acceptance:** the user finds every former feature in its new place, works a session in each workspace, and prefers it to the old layout.
+
+## 11.9 One test level
+- [ ] The sandbox's scenes merged into one large `test_level.ron`: the movement course, the acoustic spaces, the behaviors, the dark hall and the story yard, joined by walkways
+
+**Acceptance:** the user walks from the course through every area in one scene, after baking lighting and acoustics once.
+
 ## 12. Stairs primitive
 A small step after the core milestones: stairs as an editor primitive, shaped from the inspector.
 
