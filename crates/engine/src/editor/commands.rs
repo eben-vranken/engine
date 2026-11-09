@@ -358,6 +358,11 @@ impl Editor {
                 }
             }
             Workspace::Build | Workspace::Logic => {
+                // Unsaved game.ron changes aren't dropped without asking.
+                if self.project_unsaved() {
+                    self.confirm = Some(super::confirm::Confirm::LeaveProject(workspace));
+                    return;
+                }
                 self.project_page = None;
                 let graphs = workspace == Workspace::Logic;
                 if self.is_graph_tab(self.active_tab()) == graphs {

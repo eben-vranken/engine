@@ -99,6 +99,11 @@ impl ProjectPage {
 }
 
 impl Editor {
+    /// Whether the PROJECT page has `game.ron` changes not yet written.
+    pub(super) fn project_unsaved(&self) -> bool {
+        self.project_page.as_ref().is_some_and(|p| p.changes() > 0)
+    }
+
     pub(super) fn open_project_page(&mut self, section: Section) {
         if let Some(page) = &mut self.project_page {
             page.section = section;
@@ -134,6 +139,11 @@ impl Editor {
         let Some(section) = self.project_page.as_ref().map(|p| p.section) else {
             return;
         };
+        // Ctrl+S here writes game.ron (the scene behind the page isn't
+        // what's being edited).
+        if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
+            self.save_project_settings(output);
+        }
         egui::Panel::left("project_sections")
             .resizable(false)
             .exact_size(250.0)

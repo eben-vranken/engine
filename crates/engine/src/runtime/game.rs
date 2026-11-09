@@ -133,10 +133,13 @@ impl Running {
     /// Editor: Play runs the scene from its PlayerStart; Stop puts back the
     /// scene and the editor camera as they were.
     pub(super) fn toggle_play(&mut self) {
+        // Play runs the scene on screen: only from BUILD (a script tab or
+        // the PROJECT page would play an empty or hidden scene).
         if let Some(editor) = &mut self.editor
-            && editor.graph.is_some()
+            && self.play.is_none()
+            && !editor.shows_view()
         {
-            editor.show_message("PLAY FROM A SCENE TAB".into());
+            editor.show_message("PLAY FROM BUILD (A SCENE TAB)".into());
             return;
         }
         if self.play.is_some() {

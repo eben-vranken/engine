@@ -58,6 +58,22 @@ impl Running {
             actions.vsync = Some(!self.renderer.vsync());
         }
         if !playing && let Some(editor) = &mut self.editor {
+            // These keys act on what's on screen: the scene in BUILD, the
+            // graph in a graph tab. The PROJECT page and script tabs handle
+            // their own keys (a hidden scene must never be edited).
+            let workspace = editor.workspace();
+            let on_screen = workspace == crate::editor::Workspace::Build
+                || (workspace == crate::editor::Workspace::Logic && editor.graph.is_some());
+            if !on_screen {
+                if workspace == crate::editor::Workspace::Logic {
+                    let ctrl =
+                        input.held(KeyCode::ControlLeft) || input.held(KeyCode::ControlRight);
+                    if ctrl && input.pressed(KeyCode::KeyS) {
+                        editor.save(&self.scene, &self.settings);
+                    }
+                }
+                return;
+            }
             let ctrl = input.held(KeyCode::ControlLeft) || input.held(KeyCode::ControlRight);
             let shift = input.held(KeyCode::ShiftLeft) || input.held(KeyCode::ShiftRight);
             let mut settled = false;
