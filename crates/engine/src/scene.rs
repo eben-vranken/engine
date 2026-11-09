@@ -274,10 +274,30 @@ pub enum Component {
     Pickup(Pickup),
     /// Pressing E at it saves the game.
     SavePoint,
+    /// Old form, read as `VisibleWhen` (the flag is false) on load.
     AbilityGate(AbilityGate),
-    /// Hidden when the game starts, until a graph shows it.
+    /// Old form, read as `VisibleWhen` with no flag on load.
     StartsHidden,
     Script(Script),
+    VisibleWhen(VisibleWhen),
+}
+
+/// Shown only while a flag condition holds: a gate that opens (is hidden)
+/// once the player has an ability, a bridge that appears when a flag is
+/// set. Checked when the game starts and whenever the condition's answer
+/// changes, so a graph's SHOW / HIDE or a script still works in between.
+/// No flag: hidden from the start until a graph shows it.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct VisibleWhen {
+    pub condition: crate::graph::flags::Condition,
+}
+
+impl VisibleWhen {
+    /// Whether the object should be shown now.
+    pub fn shown(&self, flags: &crate::graph::flags::Flags) -> bool {
+        !self.condition.flag.0.is_empty() && self.condition.holds(flags)
+    }
 }
 
 /// Runs a script on the object while the game plays (and the object is in
@@ -337,7 +357,8 @@ pub struct Pickup {
     pub sound: SoundRef,
 }
 
-/// Blocks the way until a flag is true; then it is hidden (no collision).
+/// Old form of a gate: blocks the way until a flag is true. Loads as
+/// `VisibleWhen` the flag is false.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Reflect)]
 #[serde(default)]
 pub struct AbilityGate {
@@ -991,6 +1012,7 @@ impl Scene {
             source: Box::new(source),
         })?;
         scene.validate()?;
+        scene.migrate();
         scene.assign_ids();
         scene.link_refs();
         for name in scene.duplicate_names() {
@@ -1012,6 +1034,26 @@ impl Scene {
                 object.id = next;
                 seen.insert(next);
                 next += 1;
+            }
+        }
+    }
+
+    /// Brings components written in older forms up to date: AbilityGate and
+    /// StartsHidden become `VisibleWhen`.
+    pub fn migrate(&mut self) {
+        use crate::graph::flags::{Condition, Test};
+        for object in &mut self.objects {
+            for component in &mut object.components {
+                let condition = match component {
+                    Component::AbilityGate(gate) => Condition {
+                        flag: gate.requires.clone(),
+                        test: Test::IsFalse,
+                        value: String::new(),
+                    },
+                    Component::StartsHidden => Condition::default(),
+                    _ => continue,
+                };
+                *component = Component::VisibleWhen(VisibleWhen { condition });
             }
         }
     }
@@ -1288,6 +1330,28 @@ pub fn link(reference: &mut ObjectRef, objects: &[ObjectRef]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// AbilityGate and StartsHidden load as VisibleWhen, and it shows the
+    /// object only while its flag condition holds (never without a flag).
+    #[test]
+    fn old_gates_load_as_visible_when() {
+        use crate::graph::flags::Flags;
+        let mut scene = sample();
+        scene.objects[0].components = vec![Component::AbilityGate(AbilityGate {
+            requires: FlagRef("double_jump".into()),
+        })];
+        scene.objects[1].components = vec![Component::StartsHidden];
+        scene.migrate();
+        let when = |i: usize| match &scene.objects[i].components[0] {
+            Component::VisibleWhen(v) => v.clone(),
+            other => panic!("{other:?}"),
+        };
+        let mut flags = Flags::default();
+        assert!(when(0).shown(&flags));
+        flags.set("double_jump", "true");
+        assert!(!when(0).shown(&flags));
+        assert!(!when(1).shown(&flags));
+    }
 
     /// Old files name objects; new ones hold `(id, name)`. Both load, and
     /// a name-only reference is written back as just the name.

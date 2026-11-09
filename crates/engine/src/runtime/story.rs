@@ -48,6 +48,9 @@ pub(super) struct Story {
     /// Objects the player used and picked up this frame.
     used: Vec<ObjectRef>,
     picked: Vec<ObjectRef>,
+    /// `VisibleWhen` objects: whether their condition held last frame, so
+    /// only a change shows or hides them.
+    conditions: std::collections::HashMap<usize, bool>,
 }
 
 pub(super) struct LineUi {
@@ -107,6 +110,7 @@ impl Running {
             toast: None,
             used: Vec::new(),
             picked: Vec::new(),
+            conditions: Default::default(),
         });
         self.apply_scene_state();
         if resume && let Some(saved) = save::load(&self.game_dir) {
@@ -162,8 +166,7 @@ impl Running {
         let Some(story) = &mut self.story else { return };
         let mut state = SceneState::default();
         for object in &self.scene.objects {
-            let starts_hidden = object.components.contains(&Component::StartsHidden);
-            if object.hidden || starts_hidden {
+            if object.hidden || visible_when(object).is_some() {
                 state.objects.entry(object.id).or_default().hidden = Some(object.hidden);
             }
         }
@@ -179,11 +182,20 @@ impl Running {
     /// The scene as the player left it: hidden objects, open doors, gates.
     fn apply_scene_state(&mut self) {
         let key = self.scene_key();
-        let Some(story) = &self.story else { return };
+        let Some(story) = &mut self.story else { return };
         let state = story.world.scenes.get(&key);
-        for object in &mut self.scene.objects {
-            object.hidden = object.components.contains(&Component::StartsHidden);
-            let saved = state.and_then(|s| {
+        story.conditions.clear();
+        for (index, object) in self.scene.objects.iter_mut().enumerate() {
+            // A flag condition decides; what a graph showed or hid (saved)
+            // counts for everything else.
+            let condition = visible_when(object).cloned();
+            let shown = condition.as_ref().map(|c| c.shown(&story.runner.flags));
+            object.hidden = shown == Some(false);
+            if let Some(shown) = shown {
+                story.conditions.insert(index, shown);
+            }
+            let flagged = condition.is_some_and(|c| !c.condition.flag.0.is_empty());
+            let saved = state.filter(|_| !flagged).and_then(|s| {
                 let by_id = s.objects.get(&object.id).and_then(|o| o.hidden);
                 // An old save, by name.
                 by_id.or_else(|| s.hidden.get(&object.name).copied())
@@ -205,28 +217,25 @@ impl Running {
                 behaviors.snap_door(index, open);
             }
         }
-        self.update_gates();
         self.renderer.set_scene(&self.scene, &mut self.assets);
         self.rebuild_physics();
     }
 
-    /// Gates whose flag is true are hidden. Returns the objects shown or
-    /// hidden.
-    fn update_gates(&mut self) -> Vec<usize> {
-        let Some(story) = &self.story else {
+    /// `VisibleWhen` objects whose condition's answer changed are shown or
+    /// hidden. Returns them.
+    fn update_visibility(&mut self) -> Vec<usize> {
+        let Some(story) = &mut self.story else {
             return Vec::new();
         };
         let mut changed = Vec::new();
         for (index, object) in self.scene.objects.iter_mut().enumerate() {
-            for component in &object.components {
-                if let Component::AbilityGate(gate) = component {
-                    let open =
-                        !gate.requires.0.is_empty() && story.runner.flags.is_true(&gate.requires.0);
-                    if object.hidden != open {
-                        object.hidden = open;
-                        changed.push(index);
-                    }
-                }
+            let Some(condition) = visible_when(object) else {
+                continue;
+            };
+            let shown = condition.shown(&story.runner.flags);
+            if story.conditions.insert(index, shown) != Some(shown) {
+                object.hidden = !shown;
+                changed.push(index);
             }
         }
         changed
@@ -421,7 +430,7 @@ impl Running {
             (None, _) => story.line = None,
         }
         self.run_commands(commands);
-        for index in self.update_gates() {
+        for index in self.update_visibility() {
             self.reshow(index);
         }
     }
@@ -634,11 +643,17 @@ impl Running {
                     Component::Script(s) if !s.script.0.is_empty() => Some(s.script.0.clone()),
                     _ => None,
                 })?;
+                // A floating object's script works with where it floats
+                // around; the bob is added back after.
+                let lift = self
+                    .behaviors
+                    .as_ref()
+                    .map_or(0.0, |b| b.lift(&self.scene, index));
                 Some(crate::script::ObjectView {
                     index,
                     script,
                     name: object.name.clone(),
-                    position: object.transform.position,
+                    position: object.transform.position - glam::Vec3::Y * lift,
                     rotation: object.transform.rotation,
                     scale: object.transform.scale,
                     visible: !object.hidden,
@@ -658,11 +673,19 @@ impl Running {
                 object.hidden = !changed.visible;
                 reshown.push(changed.index);
             }
-            let transform = crate::scene::Transform {
+            let base = crate::scene::Transform {
                 position: changed.position,
                 rotation: changed.rotation,
                 scale: changed.scale,
             };
+            let mut transform = base;
+            if let Some(behaviors) = &mut self.behaviors
+                && object_floats(&self.scene.objects[changed.index])
+            {
+                behaviors.set_rest(changed.index, base);
+                transform.position.y += behaviors.lift(&self.scene, changed.index);
+            }
+            let object = &mut self.scene.objects[changed.index];
             if transform != object.transform {
                 object.transform = transform;
                 self.renderer
@@ -704,4 +727,19 @@ impl Running {
             })
             .unwrap_or_else(|| id.to_owned())
     }
+}
+
+/// The object's `VisibleWhen`, if it has one.
+fn visible_when(object: &crate::scene::Object) -> Option<&crate::scene::VisibleWhen> {
+    object.components.iter().find_map(|c| match c {
+        Component::VisibleWhen(v) => Some(v),
+        _ => None,
+    })
+}
+
+fn object_floats(object: &crate::scene::Object) -> bool {
+    object
+        .components
+        .iter()
+        .any(|c| matches!(c, Component::Floating(_)))
 }

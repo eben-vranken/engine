@@ -120,6 +120,29 @@ impl Behaviors {
         moved
     }
 
+    /// How high Floating lifts the object right now (0 if it doesn't float).
+    pub fn lift(&self, scene: &Scene, index: usize) -> f32 {
+        let Some(moving) = self.moving.iter().find(|m| m.index == index) else {
+            return 0.0;
+        };
+        scene.objects[index]
+            .components
+            .iter()
+            .find_map(|c| match c {
+                Component::Floating(f) => Some(bob(f, moving.time)),
+                _ => None,
+            })
+            .unwrap_or(0.0)
+    }
+
+    /// Moves where a moving object's behaviors work from (its script moved
+    /// it): Floating then bobs around the new place.
+    pub fn set_rest(&mut self, index: usize, rest: Transform) {
+        if let Some(moving) = self.moving.iter_mut().find(|m| m.index == index) {
+            moving.rest = rest;
+        }
+    }
+
     /// Toggles the doors that switches target this frame.
     fn flip_switches(&mut self, scene: &Scene, interaction: &Interaction) {
         let mut flipped = Vec::new();

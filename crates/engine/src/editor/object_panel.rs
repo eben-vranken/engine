@@ -9,9 +9,9 @@ use super::{Editor, EditorOutput, dim, inspector, section};
 use crate::player::settings::PlayerSettings;
 use crate::render::mesh::Shape;
 use crate::scene::{
-    AbilityGate, AcousticMaterial, Character, Component, Door, Floating, FogVolume, LightSource,
-    Material, Object, ObjectRef, PhysicsBody, Pickup, Portal, Scene, SoundSource, Switch,
-    TriggerZone, ZoneVolume,
+    AcousticMaterial, Character, Component, Door, Floating, FogVolume, LightSource, Material,
+    Object, ObjectRef, PhysicsBody, Pickup, Portal, Scene, SoundSource, Switch, TriggerZone,
+    ZoneVolume,
 };
 use egui::{Align, Layout, RichText, Ui};
 
@@ -132,6 +132,19 @@ impl Editor {
                     },
                 );
 
+                // One owner per transform: a script fights a door or a
+                // physics body (Floating adds its bob to the script's moves).
+                let has = |f: fn(&Component) -> bool| object.components.iter().any(f);
+                if has(|c| matches!(c, Component::Script(_)))
+                    && has(|c| matches!(c, Component::Door(_) | Component::PhysicsBody(_)))
+                {
+                    ui.label(
+                        RichText::new(
+                            "A SCRIPT AND A DOOR OR PHYSICS BODY BOTH MOVE THIS OBJECT:                              THE SCRIPT WINS EACH FRAME. KEEP ONE",
+                        )
+                        .color(crate::ui::theme::ALERT),
+                    );
+                }
                 let mut remove = None;
                 for (i, component) in object.components.iter_mut().enumerate() {
                     let title = inspector::title(component);
@@ -224,7 +237,7 @@ pub(super) fn shape_kind(ui: &mut Ui, id: usize, shape: &mut Shape) {
 }
 
 /// Components the inspector can add (one of each per object).
-pub(super) fn new_components() -> [(&'static str, Component); 18] {
+pub(super) fn new_components() -> [(&'static str, Component); 17] {
     [
         ("floating", Component::Floating(Floating::default())),
         ("door", Component::Door(Door::default())),
@@ -257,10 +270,9 @@ pub(super) fn new_components() -> [(&'static str, Component); 18] {
         ("pickup", Component::Pickup(Pickup::default())),
         ("save point", Component::SavePoint),
         (
-            "ability gate",
-            Component::AbilityGate(AbilityGate::default()),
+            "visible when",
+            Component::VisibleWhen(crate::scene::VisibleWhen::default()),
         ),
-        ("starts hidden", Component::StartsHidden),
         ("script", Component::Script(crate::scene::Script::default())),
     ]
 }
