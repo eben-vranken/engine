@@ -112,3 +112,41 @@ impl Editor {
         }
     }
 }
+
+impl Editor {
+    /// After Play: the player feel was changed while playing (tuning panel,
+    /// player.ron edited). KEEP makes it one undo step; DISCARD puts it back.
+    pub(super) fn keep_feel_dialog(&mut self, ui: &Ui, player: &mut PlayerSettings) {
+        let Some((before, after)) = self.feel_changed.clone() else {
+            return;
+        };
+        let mut decision = None;
+        egui::Modal::new(egui::Id::unique("keep_feel")).show(ui.ctx(), |ui| {
+            dialog_heading(
+                ui,
+                "PLAYER FEEL CHANGED WHILE PLAYING",
+                "EVERYTHING ELSE WENT BACK WHEN PLAY STOPPED. KEEP THE NEW FEEL?",
+            );
+            ui.horizontal(|ui| {
+                if ui.button("KEEP (UNDO-ABLE)").clicked() {
+                    decision = Some(true);
+                }
+                if ui.button("DISCARD").clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+        match decision {
+            Some(true) => {
+                self.history
+                    .record(super::history::Edit::SetPlayer { before, after });
+                self.feel_changed = None;
+            }
+            Some(false) => {
+                *player = *before;
+                self.feel_changed = None;
+            }
+            None => {}
+        }
+    }
+}

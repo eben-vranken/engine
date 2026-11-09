@@ -194,6 +194,11 @@ impl Editor {
         if let Some(objects) = self.scene_objects_of(&crate::graph::key(&path)) {
             doc.link_objects(&objects);
         }
+        // OPEN AT NODE (from Play's test drawer): select and show it.
+        if let Some((_, node)) = self.select_on_open.take().filter(|(p, _)| *p == path) {
+            doc.selected = Some(node);
+            graph_canvas::center_on(&doc.graph, &mut doc.view, node, egui::vec2(900.0, 600.0));
+        }
         self.open_tab(path, Scene::default(), scene, camera);
         self.graph = Some(doc);
     }

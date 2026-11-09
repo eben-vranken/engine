@@ -1,8 +1,8 @@
 //! Keys handled every frame: editor shortcuts, the game's keys and the
 //! debug keys.
 
+use super::Running;
 use super::hud::HudActions;
-use super::{CameraMode, Running};
 use winit::keyboard::KeyCode;
 
 impl Running {
@@ -65,23 +65,38 @@ impl Running {
             editor.press_keys(input, input.looking);
             return;
         }
-        if input.pressed(KeyCode::Escape) {
+        let [escape, f1, f2, f6, f7] = [
+            KeyCode::Escape,
+            KeyCode::F1,
+            KeyCode::F2,
+            KeyCode::F6,
+            KeyCode::F7,
+        ]
+        .map(|key| input.pressed(key));
+        if escape {
             self.mouse_released = true;
         }
-        if input.pressed(KeyCode::F1) {
-            self.tuning_open = !self.tuning_open;
+        // F1: the player feel, in the test drawer's FEEL tab.
+        if f1 && let Some(story) = &mut self.story {
+            story.tab = super::test_drawer::Tab::Feel;
+            match &mut self.editor {
+                Some(editor) => editor.drawer_open = true,
+                None => story.debug_open = true,
+            }
         }
-        if input.pressed(KeyCode::F2) {
-            self.mode = match self.mode {
-                CameraMode::Player => {
-                    // Start flying from where the player is looking.
-                    let view = self.player.camera(&self.settings);
-                    self.fly.camera = view;
-                    CameraMode::Fly
-                }
-                CameraMode::Fly => CameraMode::Player,
-            };
+        if f2 {
+            self.toggle_free_camera();
         }
+        // Editor Play: pause and step a frame.
+        if let Some(editor) = &mut self.editor {
+            if f6 {
+                editor.play_controls.paused = !editor.play_controls.paused;
+            }
+            if f7 && editor.play_controls.paused {
+                editor.play_controls.step = true;
+            }
+        }
+        let input = &self.input;
         if input.pressed(KeyCode::KeyR) {
             self.player.respawn(&self.settings);
         }

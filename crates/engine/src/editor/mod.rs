@@ -55,7 +55,38 @@ pub use settings_panel::SettingsTarget;
 use std::path::PathBuf;
 use widgets::{Side, collapsed_panel, dialog_heading, dim, panel_header, section};
 
+/// PLAY's controls: the game paused (and one step while paused) and its
+/// speed. The editor owns them; the runtime reads them each frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayControls {
+    pub paused: bool,
+    /// Advance one frame while paused (STEP).
+    pub step: bool,
+    /// Game time per real time: ¼, ½, 1 or 2.
+    pub speed: f32,
+}
+
+impl Default for PlayControls {
+    fn default() -> Self {
+        Self {
+            paused: false,
+            step: false,
+            speed: 1.0,
+        }
+    }
+}
+
 pub struct Editor {
+    /// PLAY's pause, step and speed.
+    pub play_controls: PlayControls,
+    /// Open this graph at this node once Play has stopped (OPEN AT NODE in
+    /// the test drawer).
+    pub open_at_node: Option<(PathBuf, crate::graph::NodeId)>,
+    /// The node to select when that graph's tab opens.
+    select_on_open: Option<(PathBuf, crate::graph::NodeId)>,
+    /// Player feel before and after it was changed while playing: KEEP or
+    /// DISCARD is asked when Play stops.
+    pub feel_changed: Option<(Box<PlayerSettings>, Box<PlayerSettings>)>,
     /// Commands from keys pressed this frame, run at the start of `ui`.
     queued: Vec<commands::Command>,
     /// Index into `Scene::objects`.
@@ -184,6 +215,10 @@ pub struct EditorOutput {
     pub exit: bool,
     /// The Play/Stop button was clicked.
     pub toggle_play: bool,
+    /// PLAY FROM HERE: play with the player where the editor camera is.
+    pub play_from_here: bool,
+    /// FREE CAMERA while playing (F2).
+    pub free_camera: bool,
     /// RESTART while playing: stop, then play from the start.
     pub restart_play: bool,
     /// Where PLAY's test drawer goes (the runtime fills it).
@@ -228,6 +263,8 @@ impl EditorOutput {
             gizmo_hovered: false,
             exit: false,
             toggle_play: false,
+            play_from_here: false,
+            free_camera: false,
             restart_play: false,
             drawer: None,
             resume_play: false,
@@ -268,7 +305,8 @@ impl Editor {
             outliner_filter: Default::default(),
             palette: None,
             shortcuts_open: false,
-            drawer_open: true,
+            // Opened with F3 when wanted; the game gets the room first.
+            drawer_open: false,
             project_page: None,
             show_hints: true,
             show_stats: true,
@@ -277,6 +315,10 @@ impl Editor {
             player_pending: None,
             gizmo: TransformGizmo::default(),
             queued: Vec::new(),
+            play_controls: PlayControls::default(),
+            open_at_node: None,
+            select_on_open: None,
+            feel_changed: None,
             playing: false,
             renaming: None,
             zone_delete: None,
@@ -311,11 +353,22 @@ impl Editor {
     ) -> EditorOutput {
         let mut output = EditorOutput::empty();
         self.poll_file_dialog(scene, player, &mut output);
+        if !self.playing
+            && let Some(request) = self.open_at_node.take()
+        {
+            output.open_graph = Some(request.0.clone());
+            self.select_on_open = Some(request);
+        }
+        self.keep_feel_dialog(ui, player);
         // Keys pressed this frame (`press_keys`), run like menu items.
         for command in std::mem::take(&mut self.queued) {
             self.run(command, scene, player, view, &mut output);
         }
-        egui::Panel::top("editor_menu").show(ui, |ui| {
+        let mut bar = egui::Frame::side_top_panel(ui.style());
+        if self.playing {
+            bar = bar.fill(crate::ui::theme::PLAYING);
+        }
+        egui::Panel::top("editor_menu").frame(bar).show(ui, |ui| {
             self.top_bar(ui, scene, player, blink, view, &mut output)
         });
         egui::Panel::bottom("editor_status").show(ui, |ui| self.status_bar(ui, stats, &mut output));

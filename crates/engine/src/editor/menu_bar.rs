@@ -74,7 +74,37 @@ impl Editor {
             .background_color(theme::AMBER)
             .strong(),
         );
-        ui.label(dim("EDITING IS LOCKED; STOP PUTS THE SCENE BACK AS IT WAS"));
+        ui.label(dim("EDITING IS LOCKED · STOP PUTS EVERYTHING BACK"));
+        ui.separator();
+        let controls = &mut self.play_controls;
+        let pause = if controls.paused {
+            "▶ RESUME  F6"
+        } else {
+            "❚❚ PAUSE  F6"
+        };
+        if ui.button(pause).clicked() {
+            controls.paused = !controls.paused;
+        }
+        if ui
+            .add_enabled(controls.paused, egui::Button::new("STEP  F7"))
+            .on_hover_text("ONE FRAME WHILE PAUSED")
+            .clicked()
+        {
+            controls.step = true;
+        }
+        ui.label(dim("SPEED"));
+        for (text, speed) in [("¼", 0.25), ("½", 0.5), ("1×", 1.0), ("2×", 2.0)] {
+            if ui.selectable_label(controls.speed == speed, text).clicked() {
+                controls.speed = speed;
+            }
+        }
+        if ui
+            .button("FREE CAMERA  F2")
+            .on_hover_text("FLY AROUND; F2 AGAIN GOES BACK TO THE PLAYER")
+            .clicked()
+        {
+            output.free_camera = true;
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui
                 .add(
@@ -206,6 +236,12 @@ impl Editor {
                 ui.set_min_width(MENU_WIDTH);
                 if item(ui, "PLAY FROM START", "F5", true).clicked() {
                     output.toggle_play = true;
+                }
+                if item(ui, "PLAY FROM HERE", "", true)
+                    .on_hover_text("THE PLAYER STARTS WHERE THE EDITOR CAMERA IS, FACING THE SAME WAY")
+                    .clicked()
+                {
+                    output.play_from_here = true;
                 }
                 if item(ui, "PLAY FROM SAVE", "", saved)
                     .on_disabled_hover_text(

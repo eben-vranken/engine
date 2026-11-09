@@ -157,6 +157,7 @@ pub(super) fn bindings() -> Vec<Binding> {
         note("E", Play, "USE, TALK, TAKE"),
         note("M", Play, "MAP"),
         note("ESC", Play, "FREE THE MOUSE"),
+        note("F1", Play, "PLAYER FEEL (THE TEST DRAWER'S FEEL TAB)"),
         note("F2", Play, "FREE CAMERA"),
         note(
             "F3",

@@ -30,6 +30,8 @@ pub(super) struct Actions {
     pub clap: bool,
     pub move_sound: bool,
     pub tuning: Option<TuningAction>,
+    /// OPEN AT NODE: this graph, at this node (in the editor).
+    pub open_node: Option<(String, crate::graph::NodeId)>,
 }
 
 pub(super) struct Inputs<'a> {
@@ -37,6 +39,10 @@ pub(super) struct Inputs<'a> {
     pub settings: &'a mut PlayerSettings,
     pub map: Option<&'a MapData>,
     pub stats: &'a [(&'static str, String)],
+    /// The FEEL tab's line: saved, reloaded; or player.ron's error.
+    pub feel_status: (&'a str, Option<&'a str>),
+    /// In the editor (OPEN AT NODE is offered).
+    pub editor: bool,
 }
 
 fn dim(text: &str) -> RichText {
@@ -73,7 +79,7 @@ pub(super) fn drawer(ui: &mut Ui, story: &mut Story, inputs: Inputs) -> Actions 
     });
     ui.separator();
     match story.tab {
-        Tab::Logic => logic(ui, story),
+        Tab::Logic => actions.open_node = logic(ui, story, inputs.editor),
         Tab::Flags => flags(ui, story),
         Tab::Audio => {
             match inputs.toggles {
@@ -105,7 +111,16 @@ pub(super) fn drawer(ui: &mut Ui, story: &mut Story, inputs: Inputs) -> Actions 
             });
         }
         Tab::Feel => {
-            ui.label(dim("THE GAME'S PLAYER.RON, LIVE (THE SAME AS F1)"));
+            ui.label(dim("THE GAME'S PLAYER.RON, LIVE (F1 OPENS THIS TAB)"));
+            match inputs.feel_status {
+                (_, Some(error)) => {
+                    ui.label(RichText::new(error.to_uppercase()).color(theme::ALERT));
+                }
+                (status, None) if !status.is_empty() => {
+                    ui.label(dim(&status.to_uppercase()));
+                }
+                _ => {}
+            }
             egui::ScrollArea::vertical()
                 .id_salt("drawer_feel")
                 .max_height(ui.available_height() - 40.0)
@@ -151,7 +166,9 @@ pub(super) fn drawer(ui: &mut Ui, story: &mut Story, inputs: Inputs) -> Actions 
     actions
 }
 
-fn logic(ui: &mut Ui, story: &mut Story) {
+/// Returns OPEN AT NODE's graph and node, when clicked (`editor`: offered).
+fn logic(ui: &mut Ui, story: &mut Story, editor: bool) -> Option<(String, crate::graph::NodeId)> {
+    let mut open = None;
     let running = story.runner.running();
     if running.is_empty() {
         ui.label(dim("NO GRAPH IS RUNNING"));
@@ -163,9 +180,20 @@ fn logic(ui: &mut Ui, story: &mut Story) {
             path.trim_start_matches("graphs/").to_uppercase(),
             active.len()
         );
-        if ui.selectable_label(i == story.debug_graph, text).clicked() {
-            story.debug_graph = i;
-        }
+        ui.horizontal(|ui| {
+            if ui.selectable_label(i == story.debug_graph, text).clicked() {
+                story.debug_graph = i;
+            }
+            if editor
+                && let Some(&node) = active.first()
+                && ui
+                    .small_button("OPEN AT NODE")
+                    .on_hover_text("STOPS PLAY AND OPENS THE GRAPH AT ITS WAITING NODE")
+                    .clicked()
+            {
+                open = Some((path.clone(), node));
+            }
+        });
     }
     ui.add_space(4.0);
     let height = (ui.available_height() * 0.55).max(160.0);
@@ -200,6 +228,7 @@ fn logic(ui: &mut Ui, story: &mut Story) {
                 });
             }
         });
+    open
 }
 
 fn flags(ui: &mut Ui, story: &mut Story) {

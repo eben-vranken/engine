@@ -4,55 +4,13 @@
 
 use super::settings::PlayerSettings;
 use crate::ui::theme;
-use egui::{Align2, DragValue, RichText, Ui};
+use egui::{DragValue, RichText, Ui};
 use std::ops::RangeInclusive;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TuningAction {
     Save,
     ResetToDefaults,
-}
-
-/// Draws the panel; returns the button the user pressed, if any.
-/// `status` is a one-line message (saved, reloaded); `error` shows in the alert color.
-pub fn panel(
-    ui: &mut Ui,
-    settings: &mut PlayerSettings,
-    file_name: &str,
-    status: &str,
-    error: Option<&str>,
-) -> Option<TuningAction> {
-    let mut action = None;
-    egui::Window::new(RichText::new(format!("TUNING // {}", file_name.to_uppercase())).strong())
-        .anchor(Align2::RIGHT_TOP, [-12.0, 12.0])
-        .resizable(false)
-        .collapsible(false)
-        .default_width(330.0)
-        .show(ui.ctx(), |ui| {
-            egui::ScrollArea::vertical()
-                .max_height(ui.ctx().content_rect().height() - 120.0)
-                .show(ui, |ui| sections(ui, settings));
-
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button("SAVE").clicked() {
-                    action = Some(TuningAction::Save);
-                }
-                if ui.button("RESET TO DEFAULTS").clicked() {
-                    action = Some(TuningAction::ResetToDefaults);
-                }
-            });
-            if let Some(error) = error {
-                ui.label(
-                    RichText::new(error.to_uppercase())
-                        .small()
-                        .color(theme::ALERT),
-                );
-            } else if !status.is_empty() {
-                ui.label(RichText::new(status).small().color(theme::AMBER_DIM));
-            }
-        });
-    action
 }
 
 /// Movement, jump, body and camera rows (also shown in the editor's

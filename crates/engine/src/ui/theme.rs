@@ -13,6 +13,9 @@ pub const LINE: Color32 = Color32::from_rgb(74, 52, 24);
 pub const RAISED: Color32 = Color32::from_rgb(17, 13, 9);
 pub const BACKGROUND: Color32 = Color32::from_rgb(10, 8, 6);
 pub const ALERT: Color32 = Color32::from_rgb(255, 64, 48);
+/// The editor's bars while the game plays: tinted, so Play mode can't be
+/// mistaken for editing.
+pub const PLAYING: Color32 = Color32::from_rgb(52, 26, 6);
 
 pub fn apply(ctx: &egui::Context) {
     ctx.all_styles_mut(|style| {

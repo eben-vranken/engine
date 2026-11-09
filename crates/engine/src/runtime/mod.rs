@@ -27,7 +27,6 @@ use crate::perf;
 use crate::physics::PhysicsWorld;
 use crate::player::Player;
 use crate::player::settings::{PlayerSettings, SettingsFile};
-use crate::player::tuning;
 use crate::render::{RenderError, Renderer};
 use crate::scene::Scene;
 use crate::ui::Overlay;
@@ -135,7 +134,6 @@ struct Running {
     last_reload_check: Instant,
     fly: FlyCamera,
     mode: CameraMode,
-    tuning_open: bool,
     /// Playing as a player (`--player`): only the game, no debug tools.
     player_view: bool,
     input: Input,
@@ -231,6 +229,9 @@ struct Running {
 struct PlaySnapshot {
     scene: Scene,
     camera: Camera,
+    /// The player feel as Play started: changed during Play, Stop asks
+    /// whether to keep it.
+    settings: crate::player::settings::PlayerSettings,
 }
 
 impl ApplicationHandler for App {
@@ -439,7 +440,6 @@ impl Running {
             } else {
                 CameraMode::Player
             },
-            tuning_open: false,
             player_view: config.player && !config.editor,
             input: Input::default(),
             focused: true,
@@ -513,10 +513,19 @@ impl Running {
         self.window.set_cursor_visible(!looking);
     }
 
+    /// The test drawer is on screen (the editor's, or the game's F3 one).
+    fn drawer_open(&self) -> bool {
+        match &self.editor {
+            Some(editor) => editor.playing && editor.drawer_open,
+            None => self.story.as_ref().is_some_and(|s| s.debug_open),
+        }
+    }
+
     fn update_mouse_capture(&mut self) {
         let wanted = self.focused
             && match self.mode {
-                CameraMode::Player => !self.tuning_open && !self.mouse_released,
+                // An open test drawer needs the mouse.
+                CameraMode::Player => !self.drawer_open() && !self.mouse_released,
                 CameraMode::Fly => self.rmb_look,
             };
         self.set_looking(wanted);
@@ -657,6 +666,23 @@ impl Running {
         self.poll_files();
         self.update_model_parts();
         self.update_mouse_capture();
+        // Editor Play: paused, one step, or slower or faster. The free
+        // camera keeps flying in real time.
+        let game_dt = match self.editor.as_mut().filter(|e| e.playing) {
+            Some(editor) => {
+                let controls = &mut editor.play_controls;
+                if !controls.paused {
+                    dt * controls.speed
+                } else if std::mem::take(&mut controls.step) {
+                    dt
+                } else {
+                    0.0
+                }
+            }
+            None => dt,
+        };
+        let dt_real = dt;
+        let dt = game_dt;
         self.run_game(dt);
 
         match self.mode {
@@ -667,7 +693,7 @@ impl Running {
                 let input = if busy { &idle } else { &self.input };
                 self.player.update(input, &self.settings, &self.physics, dt);
             }
-            CameraMode::Fly => self.fly.update(&self.input, dt),
+            CameraMode::Fly => self.fly.update(&self.input, dt_real),
         }
         // Scripts after the controller: they see whether it jumped.
         let busy = self.story.as_ref().is_some_and(story::Story::busy);
@@ -823,18 +849,12 @@ impl Running {
                 air_time: self.player.time_since_grounded,
                 crouching: self.player.crouching,
             },
-            mouse_free: !self.input.looking && self.mode == CameraMode::Player && !self.tuning_open,
+            mouse_free: !self.input.looking && self.mode == CameraMode::Player,
             cursor_on: self.overlay.time().fract() < 0.5,
             zone: zone.clone(),
             active_zones: active_zones.clone(),
             drawn: self.renderer.drawn(),
         };
-        let file_name = self
-            .settings_file
-            .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
         let editor_stats = EditorStats {
             fps: hud.fps,
             frame_ms: hud.frame_ms,
@@ -847,11 +867,12 @@ impl Running {
             drawn: hud.drawn,
         };
         let blink = hud.cursor_on;
-        let tuning_open = self.tuning_open;
         let player_view = self.player_view;
+        let (status, error) = (
+            self.settings_status.as_str(),
+            self.settings_error.as_deref(),
+        );
         let settings = &mut self.settings;
-        let (status, error) = (&self.settings_status, self.settings_error.as_deref());
-        let mut tuning_action = None;
         let editor = &mut self.editor;
         let scene = &mut self.scene;
         let mut editor_output = None;
@@ -892,13 +913,12 @@ impl Running {
                                 settings,
                                 map: map.as_ref(),
                                 stats: &drawer_stats,
+                                feel_status: (status, error),
+                                editor: true,
                             };
                             drawer_actions = Some(test_drawer::drawer(&mut child, story, inputs));
                         }
                         editor_output = Some(output);
-                        if editor.playing && tuning_open {
-                            tuning_action = tuning::panel(ui, settings, &file_name, status, error);
-                        }
                     }
                     None => {
                         if game_drawer && let Some(story) = story_slot.as_mut() {
@@ -911,14 +931,13 @@ impl Running {
                                         settings,
                                         map: map.as_ref(),
                                         stats: &drawer_stats,
+                                        feel_status: (status, error),
+                                        editor: false,
                                     };
                                     drawer_actions = Some(test_drawer::drawer(ui, story, inputs));
                                 });
                         } else if !player_view {
                             draw_hud(ui, &hud, &mut actions);
-                        }
-                        if tuning_open {
-                            tuning_action = tuning::panel(ui, settings, &file_name, status, error);
                         }
                     }
                 }
@@ -949,9 +968,6 @@ impl Running {
                 }
             },
         );
-        if let Some(action) = tuning_action {
-            self.apply_tuning(action);
-        }
         if let Some(story) = &mut self.story
             && font_loaded.is_some()
         {
@@ -967,6 +983,14 @@ impl Running {
                 audio.clap(camera.position);
             }
             self.move_sound |= drawer.move_sound;
+            if let Some((graph, node)) = drawer.open_node
+                && self.editor.is_some()
+            {
+                self.stop_play();
+                if let Some(editor) = &mut self.editor {
+                    editor.open_at_node = Some((std::path::PathBuf::from(graph), node));
+                }
+            }
         }
 
         // A click in the viewport selects what's under it, unless it was on a gizmo handle.
@@ -1013,6 +1037,12 @@ impl Running {
         if let Some(output) = &editor_output {
             if output.toggle_play {
                 self.toggle_play();
+            }
+            if output.play_from_here && self.play.is_none() {
+                self.play_from_here();
+            }
+            if output.free_camera && self.play.is_some() {
+                self.toggle_free_camera();
             }
             if output.restart_play {
                 self.stop_play();

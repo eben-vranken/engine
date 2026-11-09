@@ -198,7 +198,9 @@ impl Running {
         self.play = Some(PlaySnapshot {
             scene: self.scene.clone(),
             camera: self.fly.camera.clone(),
+            settings: self.settings.clone(),
         });
+        editor.play_controls = Default::default();
         self.behaviors = Some(Behaviors::start(&self.scene));
         self.rebuild_physics();
         self.player = Player::new(spawn_point(&self.scene), &self.settings);
@@ -206,7 +208,6 @@ impl Running {
         self.player_zone.reset();
         self.mode = CameraMode::Player;
         self.mouse_released = false;
-        self.tuning_open = false;
         self.start_story(resume);
     }
 
@@ -227,12 +228,46 @@ impl Running {
         self.renderer.set_scene(&self.scene, &mut self.assets);
         self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
         self.mode = CameraMode::Fly;
-        self.tuning_open = false;
         self.zone.reset();
         self.player_zone.reset();
         if let Some(editor) = &mut self.editor {
             editor.playing = false;
+            editor.play_controls = Default::default();
+            if self.settings != snapshot.settings {
+                editor.feel_changed =
+                    Some((Box::new(snapshot.settings), Box::new(self.settings.clone())));
+            }
         }
+    }
+
+    /// PLAY FROM HERE: Play, with the player standing where the editor
+    /// camera is and facing its way.
+    pub(super) fn play_from_here(&mut self) {
+        let camera = self.fly.camera.clone();
+        self.start_play(false);
+        if self.play.is_none() {
+            return;
+        }
+        let eye = self.settings.body.height - self.settings.body.eye_offset;
+        self.player = Player::new(
+            Spawn {
+                position: camera.position - Vec3::Y * eye,
+                yaw: camera.yaw,
+            },
+            &self.settings,
+        );
+    }
+
+    /// While playing: fly freely (F2), or back to the player.
+    pub(super) fn toggle_free_camera(&mut self) {
+        self.mode = match self.mode {
+            CameraMode::Player => {
+                // Start flying from where the player is looking.
+                self.fly.camera = self.player.camera(&self.settings);
+                CameraMode::Fly
+            }
+            CameraMode::Fly => CameraMode::Player,
+        };
     }
 }
 
