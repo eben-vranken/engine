@@ -26,7 +26,7 @@ impl LogicTab {
 
 /// What to open.
 pub(super) enum LogicDoc {
-    Graph(GraphDoc),
+    Graph(Box<GraphDoc>),
     Script(ScriptDoc),
 }
 
@@ -76,7 +76,7 @@ impl Editor {
         self.logic_active = Some(self.logic_tabs.len() - 1);
         self.logic_path = path;
         match doc {
-            LogicDoc::Graph(graph) => self.graph = Some(graph),
+            LogicDoc::Graph(graph) => self.graph = Some(*graph),
             LogicDoc::Script(script) => self.script = Some(script),
         }
     }

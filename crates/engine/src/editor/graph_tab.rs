@@ -191,7 +191,7 @@ impl Editor {
             doc.selected = Some(node);
             graph_canvas::center_on(&doc.graph, &mut doc.view, node, egui::vec2(900.0, 600.0));
         }
-        self.open_logic(path, super::logic_docs::LogicDoc::Graph(doc));
+        self.open_logic(path, super::logic_docs::LogicDoc::Graph(Box::new(doc)));
     }
 
     /// The objects of the scene a graph belongs to (`None`: not a scene's
