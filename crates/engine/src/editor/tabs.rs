@@ -4,7 +4,7 @@
 //! in when their tab is picked.
 
 use super::history::History;
-use super::{Confirm, Editor, EditorOutput, SettingsTarget, dim, model_files, scene_files};
+use super::{Confirm, Editor, EditorOutput, SettingsTarget, dim, scene_files};
 use crate::camera::FlyCamera;
 use crate::player::settings::PlayerSettings;
 use crate::scene::Scene;
@@ -24,8 +24,6 @@ pub(super) struct Document {
     pub settings: Option<SettingsTarget>,
     pub search: String,
     pub probes: Vec<Vec3>,
-    /// A model tab's model.
-    pub model: Option<super::ModelDoc>,
 }
 
 /// A tab that isn't the active one.
@@ -37,8 +35,7 @@ pub(super) struct Parked {
 
 impl Parked {
     fn is_dirty(&self) -> bool {
-        self.doc.model.as_ref().is_some_and(|m| m.is_dirty())
-            || self.doc.history.state() != self.doc.saved_state
+        self.doc.history.state() != self.doc.saved_state
     }
 }
 
@@ -56,7 +53,6 @@ impl Editor {
             settings: self.settings.take(),
             search: std::mem::take(&mut self.search),
             probes: std::mem::take(&mut self.probes),
-            model: self.model.take(),
         }
     }
 
@@ -69,7 +65,6 @@ impl Editor {
         self.settings = doc.settings;
         self.search = doc.search;
         self.probes = doc.probes;
-        self.model = doc.model;
         self.pending = None;
         self.zone_pending = None;
         self.player_pending = None;
@@ -189,25 +184,17 @@ impl Editor {
             return !self.is_dirty();
         };
         let path = self.project_dir.join(&parked.doc.scene_path);
-        let saved = match &parked.doc.model {
-            Some(model) => crate::modeler::glb::save(&path, &model.mesh, &self.project_dir)
-                .map(|()| false)
-                .map_err(|e| e.to_string()),
-            None => parked
-                .scene
-                .save(&path)
-                .map_err(|e| e.to_string())
-                .and_then(|()| self.save_player(player)),
-        };
+        let saved = parked
+            .scene
+            .save(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|()| self.save_player(player));
         match saved {
             Ok(_) => {
                 log::info!("saved {}", path.display());
                 let name = parked.doc.scene_path.display().to_string();
                 if let Some(parked) = &mut self.tabs[index] {
                     parked.doc.saved_state = parked.doc.history.state();
-                    if let Some(model) = &mut parked.doc.model {
-                        model.mark_saved();
-                    }
                 }
                 self.message = Some((format!("SAVED {name}"), false));
                 true
@@ -243,17 +230,11 @@ impl Editor {
                 let closable = self.tabs.len() > 1;
                 for index in 0..self.tabs.len() {
                     let active = index == self.active_tab;
-                    // Scenes by name; models with their extension, so a
-                    // model and a scene of the same name can be told apart.
-                    let path = self.tab_path(index);
-                    let is_scene = path.extension().is_some_and(|e| e == "ron");
-                    let name = if is_scene {
-                        path.file_stem()
-                    } else {
-                        path.file_name()
-                    }
-                    .map(|s| s.to_string_lossy().to_uppercase())
-                    .unwrap_or_default();
+                    let name = self
+                        .tab_path(index)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_uppercase())
+                        .unwrap_or_default();
                     let mark = if self.tab_dirty(index) { "*" } else { " " };
                     let text = RichText::new(format!("{name}{mark}"));
                     let text = if active {
@@ -296,27 +277,9 @@ impl Editor {
                             ui.close();
                         }
                     }
-                    let models = model_files(&self.project_dir);
-                    if !models.is_empty() {
-                        ui.separator();
-                    }
-                    for path in models {
-                        let open = self.tab_of(&path);
-                        let mut text = path.display().to_string().to_uppercase();
-                        if open.is_some() {
-                            text.push_str("  (OPEN)");
-                        }
-                        if ui.button(text).clicked() {
-                            match open {
-                                Some(index) => output.switch_tab = Some(index),
-                                None => output.open_model = Some(path),
-                            }
-                            ui.close();
-                        }
-                    }
                 })
                 .response
-                .on_hover_text("OPEN A SCENE OR MODEL IN A NEW TAB");
+                .on_hover_text("OPEN A SCENE IN A NEW TAB");
             });
         });
     }

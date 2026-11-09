@@ -8,22 +8,19 @@ use egui::{Align, Layout, Rect, RichText, Ui};
 
 impl Editor {
     pub(super) fn status_bar(&self, ui: &mut Ui, stats: &EditorStats) {
-        let modeling = self.model.is_some();
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // Right to left: the stats always fit, the message gets the rest.
             if self.show_stats {
-                if !modeling {
-                    ui.label(format!("{} / {}", stats.drawn[0], stats.drawn[1]));
-                    ui.label(dim("DRAWN"));
-                    ui.add_space(12.0);
-                    let zone = stats.zone.as_deref().unwrap_or("-").to_uppercase();
-                    ui.label(zone).on_hover_text(format!(
-                        "ACTIVE: {}",
-                        crate::runtime::active_text(&stats.active_zones)
-                    ));
-                    ui.label(dim("ZONE"));
-                    ui.add_space(12.0);
-                }
+                ui.label(format!("{} / {}", stats.drawn[0], stats.drawn[1]));
+                ui.label(dim("DRAWN"));
+                ui.add_space(12.0);
+                let zone = stats.zone.as_deref().unwrap_or("-").to_uppercase();
+                ui.label(zone).on_hover_text(format!(
+                    "ACTIVE: {}",
+                    crate::runtime::active_text(&stats.active_zones)
+                ));
+                ui.label(dim("ZONE"));
+                ui.add_space(12.0);
                 ui.label(format!(
                     "{}×{} ×{}",
                     stats.internal[0], stats.internal[1], stats.factor
@@ -39,20 +36,17 @@ impl Editor {
                 ui.label(dim("FPS"));
                 ui.add_space(24.0);
             }
-            if !modeling {
-                // Only when a bake is running, missing or out of date.
-                let notes: Vec<String> =
-                    [("SOUND", &self.bake_status), ("LIGHT", &self.light_status)]
-                        .iter()
-                        .filter(|(_, status)| !status.is_empty() && status.as_str() != "BAKED")
-                        .map(|(name, status)| {
-                            format!("{name} {}", status.replace("BAKE OUTDATED", "OUTDATED"))
-                        })
-                        .collect();
-                if !notes.is_empty() {
-                    ui.label(RichText::new(notes.join("  ")).color(theme::AMBER));
-                    ui.add_space(24.0);
-                }
+            // Only when a bake is running, missing or out of date.
+            let notes: Vec<String> = [("SOUND", &self.bake_status), ("LIGHT", &self.light_status)]
+                .iter()
+                .filter(|(_, status)| !status.is_empty() && status.as_str() != "BAKED")
+                .map(|(name, status)| {
+                    format!("{name} {}", status.replace("BAKE OUTDATED", "OUTDATED"))
+                })
+                .collect();
+            if !notes.is_empty() {
+                ui.label(RichText::new(notes.join("  ")).color(theme::AMBER));
+                ui.add_space(24.0);
             }
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 if let Some((text, error)) = &self.message {
@@ -75,8 +69,6 @@ impl Editor {
         }
         let text = if self.playing {
             "F5 STOP  E USE  ESC FREE MOUSE  CLICK CAPTURE MOUSE  R RESPAWN  F1 TUNING  F2 FLY"
-        } else if self.model.is_some() {
-            "CLICK/DRAG SELECT  SHIFT ADD  1/2/3 VERTEX/EDGE/FACE  A ALL  ALT+A NONE               G/R/S MOVE/ROTATE/SCALE, THEN X/Y/Z AXIS, NUMBERS, CLICK KEEP, RMB/ESC CANCEL  E EXTRUDE               MMB ORBIT  SHIFT+MMB PAN  WHEEL ZOOM  NUMPAD 1/3/7 OR CORNER BALL VIEWS (CTRL OPPOSITE)  NUMPAD 5 ORTHO  NUMPAD . FRAME  HOME ALL"
         } else {
             "CLICK SELECT  ESC DESELECT  HOLD RMB: WASD FLY  Q/E DOWN/UP  SHIFT FAST  WHEEL SPEED"
         };

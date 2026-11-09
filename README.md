@@ -89,16 +89,7 @@ Themed as a sparse amber-on-black terminal. The 3D viewport is drawn by the game
 - **Bakes:** BAKE LIGHTING and BAKE ACOUSTICS per scene.
 - **Projects:** NEW / OPEN PROJECT, NEW SCENE, SAVE AS, PROJECT SETTINGS (name, start scene, render scale), and native file dialogs. `--launcher` opens a small window with recently edited projects.
 - **Packages:** EXPORT PACKAGE writes a whole project to one `.gamepack` file to hand to someone else; opening it unpacks it and opens it in the editor exactly as it was.
-
-### Modeler
-
-A small modeler in its own tab for very low-poly props, with Blender-style controls. Not Blender: just enough to build and shape props cleanly.
-
-- Start from a box, plane, cylinder or sphere; select vertices, edges or faces; move, rotate and scale with G/R/S, axis locks, typed amounts and snapping.
-- Extrude, inset, delete, merge, weld, subdivide, loop cut, flip normals, mirror and randomize.
-- Flat or smooth shading per face, vertex colors, one point-sampled texture with planar or box UV projection, roughness and metalness.
-- **Parts:** a model can be made of named parts (a candle's stick, wax and flame), which a scene can give their own glow, collision and light.
-- Saved as a standard `.glb` into the project's `models/`; scenes using it update live.
+- **Models** are made in Blender (or any glTF exporter) and dragged in; re-exporting over the file updates every scene using it. A glTF's named nodes become **parts** (a candle's stick, wax and flame), which a scene can give their own glow, collision and light.
 
 ## Run
 
@@ -124,7 +115,6 @@ Other flags: `--quality low` for integrated graphics, `--perf-log` to log FPS, G
 | Playing | WASD move, Space jump, Shift sprint, Ctrl/C crouch, E use, R respawn, F1 tuning panel, F2 fly camera, Esc free the mouse |
 | Anywhere | `[` `]` render scale, 0 auto scale, V vsync |
 | Editor | Click select, Shift+click add to selection, W/E/R move/rotate/scale, Ctrl snap, right mouse + WASD fly, Ctrl+D duplicate, Del delete, Ctrl+Z/Y undo/redo, Ctrl+S save, F5 play/stop, Tab/Shift+Tab panels |
-| Modeler | 1/2/3 vertex/edge/face, G/R/S move/rotate/scale, X/Y/Z axis lock, E extrude, A select all, middle mouse orbit, Shift+middle pan, wheel zoom, numpad views |
 | Audio A/B | F6 occlusion, F7 reflections, F8 HRTF, F9 air absorption, F10 baked/live reverb, Q clap, M move the looping sound to you |
 
 ## A game project
@@ -147,13 +137,13 @@ BRIEF.md            what the engine is meant to be (scope, stack, principles)
 docs/ROADMAP.md     milestones and where things stand
 docs/DECISIONS.md   why things are the way they are
 crates/engine/      the runtime library: render, lightmap, audio, scene, zones,
-                    physics, player, behaviors, editor, modeler
+                    physics, player, behaviors, editor
 crates/app/         the single binary: play mode, the editor, or the launcher
 sandbox/            the test project
 ```
 
-**Done:** renderer, first-person controller, editor, object creation, Play/Stop, behaviors, audio, zones, lighting, materials and reflections, scene tabs, project packages, the modeler, model parts, multi-select and project settings.
-**Next:** stylized reverb (in testing), then abilities and gates, saving and a map generated from zones. See the [roadmap](docs/ROADMAP.md).
+**Done:** renderer, first-person controller, editor, object creation, Play/Stop, behaviors, audio, zones, lighting, materials and reflections, scene tabs, project packages, model parts, multi-select, project settings and stylized reverb.
+**Next:** gameplay graphs: a node editor for the game's flow and branching dialogue, with flags, saving and abilities built on them. See the [roadmap](docs/ROADMAP.md).
 
 ## License
 

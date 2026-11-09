@@ -236,19 +236,6 @@ impl Assets {
 }
 
 impl Assets {
-    /// Puts a model made in memory (the modeler's) in the cache under
-    /// `key`, replacing what was there. `key` should be no file's path.
-    pub fn insert_model(&mut self, key: &str, model: ModelData) {
-        self.models.insert(
-            key.to_owned(),
-            CachedModel {
-                model: Some(Arc::new(model)),
-                loaded: None,
-                seen: None,
-            },
-        );
-    }
-
     /// Forgets a cached model, so the next use loads the file again.
     pub fn forget(&mut self, path: &str) {
         self.models.remove(path);

@@ -1,10 +1,9 @@
 //! The MODELS list under the scene panel: every model in the project, with
 //! a search. Drag one into the viewport to place it there, `+` to place it
-//! in front of the camera, double-click to open it in the modeler.
+//! in front of the camera.
 
 use super::files::all_models;
 use super::{Editor, EditorOutput, dim};
-use crate::modeler::glb;
 use egui::{Align, Layout, Pos2, Ui};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -56,7 +55,6 @@ impl Editor {
         } else if shown.is_empty() {
             ui.label(dim("NOTHING MATCHES"));
         }
-        let mut open = None;
         egui::ScrollArea::vertical()
             .id_salt("model_list")
             .auto_shrink([false, false])
@@ -76,22 +74,10 @@ impl Editor {
                                 ui.add(egui::Label::new(display(path)).truncate())
                             })
                             .inner;
-                        let item = item.on_hover_text(
-                            "DRAG INTO THE VIEW TO PLACE IT; DOUBLE-CLICK TO OPEN IN THE MODELER",
-                        );
-                        if item.double_clicked() {
-                            open = Some(path.clone());
-                        }
+                        item.on_hover_text("DRAG INTO THE VIEW TO PLACE IT");
                     });
                 }
             });
-        if let Some(path) = open {
-            if glb::is_editable(&self.project_dir.join(&path)) {
-                output.open_model = Some(path);
-            } else {
-                self.show_error("NOT MADE IN THE MODELER: IT CAN BE PLACED, NOT EDITED".into());
-            }
-        }
     }
 
     /// A model dragged from the list and let go over the scene image is

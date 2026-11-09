@@ -137,10 +137,6 @@ impl Editor {
 
     /// Removes the selected object.
     pub fn delete_selected(&mut self, scene: &mut Scene) -> Option<Change> {
-        if let Some(model) = &mut self.model {
-            model.apply(super::model_tools::Tool::Delete);
-            return None;
-        }
         if self.selected_objects().len() > 1 {
             return self.delete_all_selected(scene);
         }
@@ -154,9 +150,6 @@ impl Editor {
     /// Copies the selected object in place, right after it in the list, and
     /// selects the copy (move it with the gizmo).
     pub fn duplicate_selected(&mut self, scene: &mut Scene) -> Option<Change> {
-        if self.model.is_some() {
-            return None;
-        }
         if self.selected_objects().len() > 1 {
             return self.duplicate_all_selected(scene);
         }
@@ -316,7 +309,6 @@ mod tests {
             fov_y: 70.0,
             near: 0.1,
             far: 100.0,
-            ortho: None,
         };
         let view = View {
             camera: &camera,
@@ -346,7 +338,6 @@ mod tests {
             fov_y: 70.0,
             near: 0.1,
             far: 100.0,
-            ortho: None,
         };
         let view = View {
             camera: &camera,

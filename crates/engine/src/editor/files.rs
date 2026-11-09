@@ -1,19 +1,11 @@
 //! The project's files the editor offers to open.
 
 use super::import;
-use crate::modeler::glb;
 use std::path::{Path, PathBuf};
 
 /// Scene files in the project's `scenes/` folder, relative to the project.
 pub(super) fn scene_files(project_dir: &Path) -> Vec<PathBuf> {
     files_in(project_dir, "scenes", "ron")
-}
-
-/// Models in the project's `models/` folder that the modeler can open.
-pub(super) fn model_files(project_dir: &Path) -> Vec<PathBuf> {
-    let mut files = files_in(project_dir, "models", "glb");
-    files.retain(|p| glb::is_editable(&project_dir.join(p)));
-    files
 }
 
 /// Every model the scene can place: `.glb` and `.gltf` files anywhere in

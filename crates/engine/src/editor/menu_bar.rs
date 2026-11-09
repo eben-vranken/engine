@@ -1,10 +1,8 @@
 //! The menu bar along the top: PROJECT, EDIT, ADD, BAKE and VIEW, then the
 //! controls used all the time (Play, the gizmo modes) and the project name.
-//! Model tabs use the same bar without the scene-only parts.
 
 use super::file_dialogs::Purpose;
 use super::gizmo::View;
-use super::name_dialog::Naming;
 use super::objects::primitives;
 use super::{Editor, EditorOutput, dim};
 use crate::player::settings::PlayerSettings;
@@ -23,44 +21,33 @@ impl Editor {
         view: &View,
         output: &mut EditorOutput,
     ) {
-        let modeling = self.model.is_some();
         egui::MenuBar::new().ui(ui, |ui| {
             let cursor = if blink { "_" } else { " " };
-            let mode = if modeling { "MODELER" } else { "EDITOR" };
-            ui.label(RichText::new(format!("ENGINE // {mode}{cursor}")).strong());
+            ui.label(RichText::new(format!("ENGINE // EDITOR{cursor}")).strong());
             ui.add_space(12.0);
             // Editing waits until Stop: the scene is restored then.
             ui.add_enabled_ui(!self.playing, |ui| {
                 self.project_menu(ui, scene, player, output);
                 self.edit_menu(ui, scene, player, output);
-                if !modeling {
-                    self.add_menu(ui, scene, view, output);
-                    self.bake_menu(ui, output);
-                }
+                self.add_menu(ui, scene, view, output);
+                self.bake_menu(ui, output);
             });
             self.view_menu(ui);
 
             ui.add_space(24.0);
-            if !modeling {
-                let play = if self.playing {
-                    "[STOP F5]"
-                } else {
-                    " PLAY F5 "
-                };
-                if ui.small_button(play).clicked() {
-                    output.toggle_play = true;
-                }
-                if self.playing {
-                    ui.label(RichText::new("[PLAYING]").color(theme::AMBER));
-                }
-                ui.add_space(12.0);
-            }
-            if modeling {
-                // The modeler moves things with keys, as in Blender.
-                ui.label(dim("G MOVE  R ROTATE  S SCALE  CTRL SNAP"));
+            let play = if self.playing {
+                "[STOP F5]"
             } else {
-                self.gizmo_buttons(ui);
+                " PLAY F5 "
+            };
+            if ui.small_button(play).clicked() {
+                output.toggle_play = true;
             }
+            if self.playing {
+                ui.label(RichText::new("[PLAYING]").color(theme::AMBER));
+            }
+            ui.add_space(12.0);
+            self.gizmo_buttons(ui);
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(dim(&self.game_name.to_uppercase()))
@@ -97,8 +84,7 @@ impl Editor {
         player: &PlayerSettings,
         output: &mut EditorOutput,
     ) {
-        let modeling = self.model.is_some();
-        let mut naming = None;
+        let mut naming = false;
         let waiting = self.file_dialog_open();
         let mut ask = None;
         ui.menu_button("PROJECT", |ui| {
@@ -134,22 +120,17 @@ impl Editor {
             }
             ui.separator();
             if item(ui, "NEW SCENE…", "", true).clicked() {
-                naming = Some(Naming::New);
+                naming = true;
             }
-            let save = if modeling { "SAVE MODEL" } else { "SAVE SCENE" };
-            if item(ui, save, "CTRL+S", true).clicked() {
+            if item(ui, "SAVE SCENE", "CTRL+S", true).clicked() {
                 output.settled |= self.save(scene, player);
             }
             let hint = "A COPY OF THIS SCENE (AND ITS BAKES) IN SCENES/; THE TAB SWITCHES TO IT";
-            if item(ui, "SAVE SCENE AS…", "", !modeling && !waiting)
+            if item(ui, "SAVE SCENE AS…", "", !waiting)
                 .on_hover_text(hint)
                 .clicked()
             {
                 ask = Some(Purpose::SaveSceneAs);
-            }
-            ui.separator();
-            if item(ui, "NEW MODEL…", "", true).clicked() {
-                naming = Some(Naming::Model);
             }
             ui.separator();
             let hint = "THE GAME'S NAME, START SCENE AND RENDER SCALE";
@@ -164,8 +145,8 @@ impl Editor {
                 output.exit = true;
             }
         });
-        if let Some(purpose) = naming {
-            self.ask_name(purpose);
+        if naming {
+            self.ask_name();
         }
         if let Some(purpose) = ask {
             self.ask_file(purpose);
@@ -179,14 +160,8 @@ impl Editor {
         player: &mut PlayerSettings,
         output: &mut EditorOutput,
     ) {
-        let (can_undo, can_redo) = match &self.model {
-            Some(model) => (!model.undo.is_empty(), !model.redo.is_empty()),
-            None => (self.history.undo_len() > 0, self.history.redo_len() > 0),
-        };
-        let selected = match &self.model {
-            Some(model) => model.selection_count() > 0,
-            None => self.selected.is_some_and(|i| i < scene.objects.len()),
-        };
+        let (can_undo, can_redo) = (self.history.undo_len() > 0, self.history.redo_len() > 0);
+        let selected = self.selected.is_some_and(|i| i < scene.objects.len());
         ui.menu_button("EDIT", |ui| {
             ui.set_min_width(MENU_WIDTH);
             let mut change = None;
@@ -197,8 +172,7 @@ impl Editor {
                 change = self.redo(scene, player);
             }
             ui.separator();
-            let scene_selected = selected && self.model.is_none();
-            if item(ui, "DUPLICATE", "CTRL+D", scene_selected).clicked() {
+            if item(ui, "DUPLICATE", "CTRL+D", selected).clicked() {
                 change = self.duplicate_selected(scene);
             }
             if item(ui, "DELETE", "DEL", selected).clicked() {
@@ -275,19 +249,11 @@ impl Editor {
     }
 
     fn view_menu(&mut self, ui: &mut Ui) {
-        let modeling = self.model.is_some();
         ui.menu_button("VIEW", |ui| {
             ui.set_min_width(MENU_WIDTH);
-            let (left, right) = if modeling {
-                ("MODEL PANEL", "TOOLS PANEL")
-            } else {
-                ("SCENE PANEL", "INSPECTOR")
-            };
-            toggle(ui, left, "TAB", &mut self.show_scene);
-            toggle(ui, right, "SHIFT+TAB", &mut self.show_inspector);
-            if !modeling {
-                toggle(ui, "ZONE MARKERS", "H", &mut self.show_zones);
-            }
+            toggle(ui, "SCENE PANEL", "TAB", &mut self.show_scene);
+            toggle(ui, "INSPECTOR", "SHIFT+TAB", &mut self.show_inspector);
+            toggle(ui, "ZONE MARKERS", "H", &mut self.show_zones);
             ui.separator();
             toggle(ui, "KEY HINTS", "", &mut self.show_hints);
             toggle(ui, "STATS", "", &mut self.show_stats);

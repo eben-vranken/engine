@@ -181,6 +181,8 @@ The editor grew one feature at a time. Give it a proper menu bar, native file di
 **Acceptance:** at 1600×900 the user finds every action in the menus with its shortcut, sees messages and stats in the status bar without anything cut off, collapses and restores each panel with the mouse, creates a new project from the editor, opens another one and a package through the system file picker (on Windows and on the laptop), and notices no regressions in scene or model tabs.
 
 ## 10.4 Modeler
+Removed in 10.9: models are made in Blender.
+
 A small, simplified modeler inside the editor for very low-poly, PS1-style models. Not Blender: just enough to build and shape props and pieces cleanly, and drop them into a scene.
 
 - [x] A model tab next to the scene tabs (`+` → NEW MODEL, or open a model from the project) with its own viewport, drawn by the same renderer
@@ -233,8 +235,62 @@ Reverb that doesn't come from geometry, so an open void or an empty plain can st
 
 **Acceptance:** in a zone with no walls, the user gives the zone a long dark tail, hears footsteps and claps ring out, walks out of the zone and hears it fade, and the void sounds the way they want.
 
-## 11. Gameplay systems
-- [ ] Abilities + gates, save system, map from zone data
+## 10.9 Remove the modeler
+Models come from Blender; the built-in modeler goes.
+
+- [ ] Modeler code, model tabs, NEW MODEL, double-click to open from the MODELS list and the orthographic camera removed
+- [ ] Model parts keep working: a glTF's named nodes are its parts, set up per scene as before
+- [ ] README updated
+
+**Acceptance:** the editor opens and works as before without any modeler entry; models are still placed from the MODELS list and by dropping files, and a candle's parts can still be given their own glow and light.
+
+## 11. Gameplay graphs
+The game's flow and its dialogue as node graphs, edited in the editor (BRIEF.md: "Gameplay graphs"). Split into steps, each checked by the user before the next.
+
+### 11.1 Graph editor
+- [ ] A graph tab next to the scene tabs: NEW GRAPH / open from `+`; saved as RON in the project's `graphs/`, with unsaved marks and asking before closing like scene tabs
+- [ ] Nodes on a canvas: add from a menu, drag, connect outputs to inputs, delete; pan and zoom
+- [ ] Node fields edited in place, generated from `bevy_reflect` (node types are plain structs, like behaviors)
+- [ ] Every edit is an undo step
+- [ ] A first node set to lay out a story: Start, a note/comment, and the events and actions of 11.2 as placeholders that already save and load
+
+**Acceptance:** the user builds a small flow graph (start → enters the hall → door opens), saves it, closes the editor, and finds it again exactly as it was.
+
+### 11.2 Flags, events and actions
+- [ ] Flags (yes/no, number, text) declared in the project; a flags panel
+- [ ] Events: game start, scene loaded, enter/exit a zone or TriggerZone, a switch used, an object picked up, a dialogue ended
+- [ ] Actions: set a flag, open/close a door, show/hide an object, play a sound, load a scene, start a dialogue
+- [ ] Conditions on connections, from flags
+- [ ] The game runs the project's flow graph; several nodes can be active at once
+- [ ] During Play in the editor, active nodes are highlighted and flags shown live
+
+**Acceptance:** in the sandbox, walking into a room opens a door and plays a sound only after a switch was used, and the user watches the graph step along while playing.
+
+### 11.3 Dialogue
+- [ ] Dialogue graphs: a Line node (speaker, text, optional sound), replies (text, condition, actions), and end
+- [ ] Character behavior: talked to with E; starts its dialogue graph
+- [ ] Speaker names are state: a Rename action changes what a character is called from then on (`???` → their name)
+- [ ] Presentation set in the game project: text box or subtitles, position, colors, font, typing speed; default an amber text box
+- [ ] Lines play their sound if they have one; silent lines are fine
+
+**Acceptance:** the user talks to an NPC named `???`, picks between replies that lead to different answers and set different flags, a reply opens a door, and a later conversation shows the NPC's real name.
+
+### 11.4 Saving
+- [ ] SavePoint behavior; save and load of flags, active graph nodes, player position and per-zone object state
+- [ ] Loading restores the game exactly where it was saved
+
+**Acceptance:** the user saves mid-story, quits, loads, and the world, the flags and the next dialogue are as they left them.
+
+### 11.5 Abilities and gates
+- [ ] Abilities are flags; AbilityPickup sets one, AbilityGate blocks the way without it
+- [ ] Controller abilities read from flags (the first one a game needs, e.g. double jump)
+
+**Acceptance:** a gate the user can't pass opens after picking up the ability, and the ability survives a save and load.
+
+### 11.6 Map
+- [ ] A map generated from zone data, revealing zones as they're visited; visited zones are saved
+
+**Acceptance:** the user opens the map, sees only the zones they've been to, and it survives a save and load.
 
 ## 12. Stairs primitive
 A small step after the core milestones: stairs as an editor primitive, shaped from the inspector.

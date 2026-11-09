@@ -22,7 +22,6 @@ pub mod editor;
 pub mod input;
 pub mod launcher;
 pub mod lightmap;
-pub mod modeler;
 pub mod package;
 pub mod physics;
 pub mod player;

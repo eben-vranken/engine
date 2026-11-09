@@ -4,7 +4,7 @@ The source of truth for what this engine is. If code and brief disagree, ask bef
 
 ## Purpose
 
-A minimal 3D game engine and editor in Rust, built with Claude Code, for quiet, atmospheric, audio-first games with low-poly worlds and striking light. Games are made by building levels and composing behaviors in the editor, not by writing code.
+A minimal 3D game engine and editor in Rust, built with Claude Code, for quiet, atmospheric, audio-first games with low-poly worlds and striking light. Games are made by building levels, composing behaviors and connecting gameplay graphs in the editor, not by writing code.
 
 - **Look:** crisp HD output of very low-poly worlds, with atmospheric lighting and real volumetric fog. Moody, not photorealistic.
 - **Sound:** physically simulated acoustics (occlusion, reflections, reverb) as the engine's signature feature.
@@ -36,7 +36,8 @@ A custom engine on standard Rust crates, not built on an existing engine.
 | Assets | glTF | Models made in Blender or similar |
 | Physics | rapier3d | Colliders, kinematic character controller, rigid bodies |
 | Acoustics | AudioNimbus (Steam Audio) | Occlusion, reflections, reverb, HRTF |
-| Scripting (later) | Lua or Rhai | Only if data and behaviors stop being enough |
+| Gameplay logic | Node graphs (RON) edited in the editor | Game flow and dialogue; see Gameplay graphs |
+| Scripting (later) | Lua or Rhai | Only if graphs and behaviors stop being enough |
 
 ## Rendering
 
@@ -98,7 +99,7 @@ Load the whole world at once, but organize it into zones from day one.
 
 ## Editor
 
-A minimal in-engine 3D editor, grown feature by feature. External tools (Blender or similar) are for modelling; level layout and behavior happen in the editor.
+A minimal in-engine 3D editor, grown feature by feature. External tools (Blender or similar) are for modelling; the editor has no modeler of its own. Level layout, behavior and gameplay graphs happen in the editor.
 
 **Core features**
 
@@ -110,6 +111,7 @@ A minimal in-engine 3D editor, grown feature by feature. External tools (Blender
 - Undo/redo for every edit, built on a command system from the start.
 - Save and load scenes as RON; hot reload of glTF and data files.
 - Play/Stop in place.
+- Graph tabs next to the scene tabs, where gameplay graphs are built from nodes and connections (see Gameplay graphs).
 
 **Later, when needed**
 
@@ -143,9 +145,10 @@ Reusable components written once in Rust and attached in the editor. This librar
 | Crumbling | delay, respawn | Platforms that fall when stepped on |
 | Door | opens_with, swing or slide, speed | Doors that also act as sound portals |
 | Switch / PressurePlate | target, mode | Triggers another object |
-| TriggerZone | on_enter, on_exit | Events and zone logic |
-| AbilityGate | requires | Gating by unlocked abilities |
-| AbilityPickup | grants | Unlocks an ability |
+| TriggerZone | size | Fires enter / exit events that gameplay graphs react to |
+| Character | id, name, talk sound | Someone who can be talked to; starts a dialogue graph. The shown name is game state and can be changed by graphs |
+| AbilityGate | requires | Blocks the way unless a flag (an ability) is set |
+| AbilityPickup | grants | Sets a flag (unlocks an ability) when picked up |
 | SavePoint | | Saving and respawn |
 | SoundSource | clip, loop, volume | Bells, drips, organs, ambience |
 | LightSource | color, intensity, flicker, baked or live | Braziers, candles, lanterns |
@@ -159,10 +162,24 @@ Generic systems for 3D platformer and exploration games; the character controlle
 - **Character controller:** first-person, kinematic. Walk, sprint, crouch; acceleration and air control; jump defined by height and time-to-apex, separate fall gravity, variable jump height; coyote time and jump buffering; step climbing and slope limits. Abilities such as double jump or wall climb plug into it.
 - **Tunable from data:** every movement and camera property lives in the game project's `player.ron`, editable live in an in-game tuning panel and hot-reloaded from disk. Feel is tuned by playing, not by recompiling.
 - **Camera:** first-person mouse look with FOV, sensitivity, optional head bob, landing dip and sprint FOV kick. A third-person camera can be added later if a game needs it.
-- **Ability system:** abilities unlocked by pickups and checked by gates.
-- **Save system:** player state, unlocked abilities, and per-zone object state.
+- **Ability system:** abilities are flags, set by pickups or graphs and checked by gates and the controller.
+- **Save system:** player state, flags, active graph nodes, and per-zone object state.
 - **Map:** generated from zone data, revealing zones as they are visited.
 - **Player sound actions:** an optional hum or clap input, routed through the acoustic simulation.
+
+## Gameplay graphs
+
+The game's logic is data: graphs of nodes and connections, built in a graph tab in the editor and saved as RON in the game project's `graphs/`. They replace code for everything from the overall story to a single conversation.
+
+- **Two uses, one system.** A *flow graph* holds the game's plan (the player spawns here; once they reach the hall, this happens; then that). A *dialogue graph* holds one conversation. Both use the same nodes, connections, conditions and actions; dialogue only adds its own node types. A flow graph starts dialogues; graphs can start other graphs.
+- **Events, actions, conditions.** Events move a graph on: the game starts, a scene loads, the player enters a zone or trigger, uses a switch, picks something up, a dialogue ends. Actions change the world: open a door, show or hide an object, play a sound, load a scene, start a dialogue, set a flag, rename a character. Conditions guard connections ("only if the lantern was found").
+- **Flags** are the game's named state (yes/no, numbers, text), set and checked by graphs. Abilities, dialogue outcomes and story progress are all flags, and saving is writing out flags, active nodes and object state.
+- **Several nodes can be active at once**, so side threads run next to the main one.
+- **Dialogue:** an NPC says a line, the player picks one of several replies, the NPC answers at once. Each line has a speaker, text and an optional sound (a voice noise, a tone, or nothing). Each reply can have a condition and actions. Speaker names are state: a character can be `???` until a graph reveals or changes their name.
+- **Presentation is per game.** How dialogue is shown (a text box, subtitles, position, colors, font, typing speed) is configured in the game project. The engine's default is a text box in the amber UI style.
+- **Built to grow.** Node types are plain Rust structs with `bevy_reflect`, like behaviors, so a new node is one struct and its fields appear in the graph editor automatically. Graphs start with story beats and must be able to carry more (puzzle logic, timers, counters) later without a new format.
+- **Debugging:** during Play in the editor, the graph tab highlights the active nodes and shows the flags.
+- Not a visual programming language: no per-frame logic, math or loops in graphs. Behaviors do the moment-to-moment work; graphs decide what happens next.
 
 ## Milestones
 

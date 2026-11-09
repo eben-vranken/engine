@@ -130,8 +130,7 @@ struct Running {
     focused: bool,
     /// Player mode: Esc gave the mouse back; a click takes it again.
     mouse_released: bool,
-    /// Fly mode: the look button held (pressed outside the UI): the right
-    /// one, or the middle one in the modeler, where it orbits.
+    /// Fly mode: the right mouse button held (pressed outside the UI).
     rmb_look: bool,
     last_frame: Instant,
     fps: FpsCounter,
@@ -181,8 +180,6 @@ struct Running {
     baked_signature: Option<u64>,
     /// A light bake running in the background.
     light_job: Option<lightmap::BakeJob>,
-    /// Models opened in model tabs so far (names their cache keys).
-    models_opened: usize,
     /// The loaded light bake's signature (`None` = no bake).
     light_signature: Option<u64>,
 }
@@ -259,16 +256,8 @@ impl ApplicationHandler for App {
                     .viewport
                     .is_some_and(|v| v.contains(egui::pos2(app.cursor.x, app.cursor.y)))
                     && !app.overlay.wants_pointer();
-                // Scenes look around with the right button; the modeler
-                // orbits with the middle one, as in Blender.
-                let modeling = app.editor.as_ref().is_some_and(|e| e.model.is_some());
-                let look = if modeling {
-                    MouseButton::Middle
-                } else {
-                    MouseButton::Right
-                };
                 match button {
-                    button if button == look => {
+                    MouseButton::Right => {
                         app.rmb_look = state.is_pressed() && in_viewport;
                     }
                     MouseButton::Left if state.is_pressed() && in_viewport && !app.rmb_look => {
@@ -431,7 +420,6 @@ impl Running {
             baked_signature: None,
             light_job: None,
             light_signature: None,
-            models_opened: 0,
         })
     }
 
@@ -520,17 +508,7 @@ impl Running {
                 self.player.camera(&self.settings)
             }
             CameraMode::Fly => {
-                let image_height = self.renderer.image_rect()[3];
-                match self.editor.as_mut().and_then(|e| e.model.as_mut()) {
-                    Some(model) => {
-                        model.update_camera(&mut self.fly.camera, &self.input, image_height)
-                    }
-                    None => {
-                        // Only the modeler looks orthographically.
-                        self.fly.camera.ortho = None;
-                        self.fly.update(&self.input, dt);
-                    }
-                }
+                self.fly.update(&self.input, dt);
                 self.fly.camera.clone()
             }
         };
@@ -652,9 +630,7 @@ impl Running {
         }
 
         // A click in the viewport selects what's under it, unless it was on a gizmo handle.
-        // (Model tabs pick their own vertices, edges and faces.)
-        let on_gizmo = editor_output.as_ref().is_some_and(|o| o.gizmo_hovered)
-            || self.editor.as_ref().is_some_and(|e| e.model.is_some());
+        let on_gizmo = editor_output.as_ref().is_some_and(|o| o.gizmo_hovered);
         if let (Some(editor), Some(cursor)) = (&mut self.editor, self.pending_pick.take())
             && !on_gizmo
         {
@@ -736,21 +712,7 @@ impl Running {
             if let Some(dir) = &output.open_project {
                 self.open_project(dir);
             }
-            if let Some(path) = &output.open_model {
-                self.open_model(path.clone());
-            }
         }
-        // A model tab's mesh was edited: redraw it.
-        if let Some(model) = self.editor.as_mut().and_then(|e| e.model.as_mut())
-            && model.changed
-        {
-            model.changed = false;
-            let data = crate::modeler::model_data(&model.mesh, &mut self.assets);
-            self.assets.insert_model(&model.key, data);
-            self.renderer
-                .reload_object(&self.scene, 0, &mut self.assets);
-        }
-
         // The editor's viewport, from egui points to window pixels.
         let ppp = ui_frame.pixels_per_point();
         self.viewport = editor_output.map(|output| {

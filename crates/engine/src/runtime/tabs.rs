@@ -1,11 +1,10 @@
-//! Editor: scene and model tabs, from the runtime's side (loading files
-//! and rebuilding what is drawn and simulated).
+//! Editor: scene tabs, from the runtime's side (loading files and
+//! rebuilding what is drawn and simulated).
 
 use super::Running;
 use crate::editor::history::Change;
 use crate::physics::PhysicsWorld;
 use crate::scene::Scene;
-use glam::Vec3;
 use std::path::PathBuf;
 
 impl Running {
@@ -44,44 +43,6 @@ impl Running {
             Err(err) => {
                 log::error!("{err}");
                 editor.show_error(err.to_string());
-            }
-        }
-    }
-
-    /// Editor: opens a model from the project in a new model tab.
-    pub(super) fn open_model(&mut self, path: PathBuf) {
-        let Some(editor) = &mut self.editor else {
-            return;
-        };
-        if let Some(index) = editor.tab_of(&path) {
-            self.switch_tab(index);
-            return;
-        }
-        match crate::modeler::glb::load(&self.game_dir.join(&path)) {
-            Ok(mesh) => {
-                self.models_opened += 1;
-                // A cache key that is no file's path: the model as edited.
-                let key = format!("<modeler {}>", self.models_opened);
-                let data = crate::modeler::model_data(&mesh, &mut self.assets);
-                self.assets.insert_model(&key, data);
-                let doc = crate::editor::ModelDoc::new(mesh, key.clone());
-                let stage = crate::editor::stage(&key);
-                editor.open_model_tab(path, doc, stage, &mut self.scene, &self.fly);
-                // Look at the model from the front, a little above, far
-                // enough back to see all of it.
-                let forward = -Vec3::new(1.8, 1.6, 2.6).normalize();
-                if let Some(model) = &mut editor.model {
-                    let camera = &mut self.fly.camera;
-                    model.orbit.yaw = forward.x.atan2(-forward.z);
-                    model.orbit.pitch = forward.y.asin();
-                    model.frame(camera, false);
-                    model.orbit.apply(camera);
-                }
-                self.scene_swapped();
-            }
-            Err(err) => {
-                log::error!("{err}");
-                editor.show_error(err.to_string().to_uppercase());
             }
         }
     }

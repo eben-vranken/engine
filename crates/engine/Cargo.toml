@@ -23,7 +23,6 @@ rapier3d = "0.36.1"
 rfd = "0.17.2"
 ron = "0.12.3"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
 thiserror = "2.0.21"
 transform-gizmo = "0.11.0"
 wgpu = "30.0.1"

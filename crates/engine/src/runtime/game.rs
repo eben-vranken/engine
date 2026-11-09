@@ -147,9 +147,6 @@ impl Running {
     /// Editor: Play runs the scene from its PlayerStart; Stop puts back the
     /// scene and the editor camera as they were.
     pub(super) fn toggle_play(&mut self) {
-        if self.editor.as_ref().is_some_and(|e| e.model.is_some()) {
-            return; // nothing to play in a model tab
-        }
         if self.play.is_some() {
             self.stop_play();
         } else {

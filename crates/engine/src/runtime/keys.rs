@@ -3,7 +3,6 @@
 
 use super::hud::HudActions;
 use super::{CameraMode, Running};
-use crate::editor::SelectMode;
 use crate::physics::PhysicsWorld;
 use winit::keyboard::KeyCode;
 
@@ -48,31 +47,11 @@ impl Running {
             let shift = input.held(KeyCode::ShiftLeft) || input.held(KeyCode::ShiftRight);
             let mut settled = false;
             let mut changed = None;
-            let transforming = editor.model.as_ref().is_some_and(|m| m.transforming());
-            // Esc cancels a model transform instead (in the model tab).
-            if input.pressed(KeyCode::Escape) && !transforming {
+            if input.pressed(KeyCode::Escape) {
                 settled = editor.select(&self.scene, None);
             }
-            // The modeler's select modes: the number row only (the numpad
-            // turns the view), and not while typing a transform's amount.
-            if let Some(model) = editor.model.as_mut()
-                && !transforming
-                && !input.looking
-                && !ctrl
-            {
-                for (key, mode) in [
-                    (KeyCode::Digit1, SelectMode::Vertex),
-                    (KeyCode::Digit2, SelectMode::Edge),
-                    (KeyCode::Digit3, SelectMode::Face),
-                ] {
-                    if input.pressed(key) {
-                        model.set_mode(mode);
-                    }
-                }
-            }
-            // Gizmo modes (scenes only; the modeler has G/R/S); while
-            // flying these keys move the camera instead.
-            if !input.looking && !ctrl && editor.model.is_none() {
+            // Gizmo modes; while flying these keys move the camera instead.
+            if !input.looking && !ctrl {
                 for (key, kind) in [
                     (
                         KeyCode::KeyW,
