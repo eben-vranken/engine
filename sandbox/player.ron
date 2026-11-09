@@ -16,6 +16,8 @@
         max_fall_speed: 45.0,
         coyote_time: 0.12,
         buffer_time: 0.12,
+        air_jumps: 1,
+        air_jump_flag: "double_jump",
     ),
     body: (
         height: 1.8,

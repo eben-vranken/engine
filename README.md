@@ -89,6 +89,8 @@ Themed as a sparse amber-on-black terminal. The 3D viewport is drawn by the game
 - **Bakes:** BAKE LIGHTING and BAKE ACOUSTICS per scene.
 - **Projects:** NEW / OPEN PROJECT, NEW SCENE, SAVE AS, PROJECT SETTINGS (name, start scene, render scale), and native file dialogs. `--launcher` opens a small window with recently edited projects.
 - **Packages:** EXPORT PACKAGE writes a whole project to one `.gamepack` file to hand to someone else; opening it unpacks it and opens it in the editor exactly as it was.
+- **Gameplay graphs:** the game's logic as nodes in a graph tab (PROJECT ▸ NEW GRAPH): events (in a zone or trigger, used, picked up), waits, branches on flags, actions (doors, show/hide, sounds, load scene, save) and dialogue (lines with an optional sound, replies with conditions, renaming characters). Flags in `flags.ron`; the flow graph is set in PROJECT SETTINGS, as is how dialogue looks. F3 while playing shows the running graphs.
+- **Game systems:** characters to talk to, pickups, save points (one save per project, CONTINUE in the editor), ability gates, double jump unlocked by a flag, and a map of visited zones (Tab).
 - **Models** are made in Blender (or any glTF exporter) and dragged in; re-exporting over the file updates every scene using it. A glTF's named nodes become **parts** (a candle's stick, wax and flame), which a scene can give their own glow, collision and light.
 
 ## Run
@@ -102,9 +104,9 @@ cargo run -p app -- --game my-game.gamepack         # unpack and open a project 
 cargo run -p app -- --scene scenes/hall.ron         # play another scene of the project
 ```
 
-Other flags: `--quality low` for integrated graphics, `--perf-log` to log FPS, GPU stage times and audio timing.
+Other flags: `--quality low` for integrated graphics, `--perf-log` to log FPS, GPU stage times and audio timing, `--new-game` to ignore the saved game.
 
-`sandbox/` is a small test project in this repo and the default `--game`. Its scenes: `test_level.ron` (movement test course), `acoustics.ron` (four spaces that sound different), `behaviors.ron` and `hall.ron` (the dark hall with one window and one lantern shown above).
+`sandbox/` is a small test project in this repo and the default `--game`. Its scenes: `test_level.ron` (movement test course), `acoustics.ron` (four spaces that sound different), `behaviors.ron`, `hall.ron` (the dark hall with one window and one lantern shown above) and `story.ron` (graphs, dialogue, a gate, a pickup and a save stone, run by `graphs/main.ron` and `graphs/keeper.ron`).
 
 **Building needs** a stable Rust toolchain and LLVM/Clang 9+ with `clang` on `PATH` (AudioNimbus generates bindings with bindgen; on Windows: `winget install LLVM.LLVM`). The first build downloads Steam Audio (about 180 MB) and can look stuck while it does. Developed on Windows (RTX 3060 Ti) and tested on Linux (Arch, KDE Wayland, Intel Iris Xe). On Linux, Steam Audio's `libphonon.so` from the build folder must be on `LD_LIBRARY_PATH`.
 
@@ -112,7 +114,8 @@ Other flags: `--quality low` for integrated graphics, `--perf-log` to log FPS, G
 
 | Where | Keys |
 |---|---|
-| Playing | WASD move, Space jump, Shift sprint, Ctrl/C crouch, E use, R respawn, F1 tuning panel, F2 fly camera, Esc free the mouse |
+| Playing | WASD move, Space jump, Shift sprint, Ctrl/C crouch, E use / talk / take, Tab map, F3 running graphs, R respawn, F1 tuning panel, F2 fly camera, Esc free the mouse |
+| Dialogue | W/S or arrows choose, 1–9 pick, E / Space / Enter continue |
 | Anywhere | `[` `]` render scale, 0 auto scale, V vsync |
 | Editor | Click select, Shift+click add to selection, W/E/R move/rotate/scale, Ctrl snap, right mouse + WASD fly, Ctrl+D duplicate, Del delete, Ctrl+Z/Y undo/redo, Ctrl+S save, F5 play/stop, Tab/Shift+Tab panels |
 | Audio A/B | F6 occlusion, F7 reflections, F8 HRTF, F9 air absorption, F10 baked/live reverb, Q clap, M move the looping sound to you |
@@ -122,6 +125,8 @@ Other flags: `--quality low` for integrated graphics, `--perf-log` to log FPS, G
 ```
 game.ron      name, start scene, render scale
 player.ron    movement, camera and footstep feel
+flags.ron     the game's flags and their starting values
+graphs/       gameplay graphs (flow, dialogue)
 scenes/       RON scenes, plus their bakes (.lightmap, .reverb)
 models/       glTF models
 textures/     PNG / JPEG textures
@@ -143,7 +148,8 @@ sandbox/            the test project
 ```
 
 **Done:** renderer, first-person controller, editor, object creation, Play/Stop, behaviors, audio, zones, lighting, materials and reflections, scene tabs, project packages, model parts, multi-select, project settings and stylized reverb.
-**Next:** gameplay graphs: a node editor for the game's flow and branching dialogue, with flags, saving and abilities built on them. See the [roadmap](docs/ROADMAP.md).
+**In testing:** gameplay graphs (flow and dialogue), flags, saving, abilities and the map.
+**Next:** the stairs primitive. See the [roadmap](docs/ROADMAP.md).
 
 ## License
 

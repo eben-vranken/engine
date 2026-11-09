@@ -250,7 +250,7 @@ The game's flow and its dialogue as node graphs, edited in the editor (BRIEF.md:
 ### 11.1 Graph editor
 - [ ] A graph tab next to the scene tabs: NEW GRAPH / open from `+`; saved as RON in the project's `graphs/`, with unsaved marks and asking before closing like scene tabs
 - [ ] Nodes on a canvas: add from a menu, drag, connect outputs to inputs, delete; pan and zoom
-- [ ] Node fields edited in place, generated from `bevy_reflect` (node types are plain structs, like behaviors)
+- [ ] Node fields edited in the inspector beside the canvas, generated from `bevy_reflect` (node types are plain reflected types, like behaviors)
 - [ ] Every edit is an undo step
 - [ ] A first node set to lay out a story: Start, a note/comment, and the events and actions of 11.2 as placeholders that already save and load
 

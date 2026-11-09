@@ -1,0 +1,26 @@
+(
+    nodes: [
+        (id: 1, position: (0.0, 120.0), kind: Start),
+        (id: 2, position: (240.0, 20.0), kind: WhenUsed(object: "lever")),
+        (id: 3, position: (480.0, 20.0), kind: SetFlag(flag: "lever", value: "true")),
+        (id: 4, position: (0.0, -100.0), kind: Note(text: "Story demo (scenes/story.ron): the gate opens once the lever is pulled and the player stands at the doorstep. Then the room lights up, and entering it saves the game.")),
+        (id: 5, position: (240.0, 200.0), kind: WaitUntil(condition: (flag: "lever", test: IsTrue, value: ""))),
+        (id: 6, position: (480.0, 200.0), kind: WhenInTrigger(trigger: "doorstep")),
+        (id: 7, position: (720.0, 200.0), kind: Door(door: "gate", action: Open)),
+        (id: 8, position: (960.0, 120.0), kind: PlaySound(sound: "audio/footstep_concrete_000.wav", at: "gate", volume: 1.0)),
+        (id: 9, position: (960.0, 260.0), kind: Show(object: "room lamp", visible: true)),
+        (id: 10, position: (1200.0, 260.0), kind: WhenInZone(zone: "room")),
+        (id: 11, position: (1440.0, 260.0), kind: SaveGame),
+    ],
+    links: [
+        (from: 1, to: 2),
+        (from: 2, to: 3),
+        (from: 1, to: 5),
+        (from: 5, to: 6),
+        (from: 6, to: 7),
+        (from: 7, to: 8),
+        (from: 7, to: 9),
+        (from: 9, to: 10),
+        (from: 10, to: 11),
+    ],
+)

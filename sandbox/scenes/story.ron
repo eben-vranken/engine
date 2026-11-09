@@ -1,0 +1,156 @@
+(
+    zones: [
+        (name: "yard"),
+        (name: "room"),
+    ],
+    objects: [
+        (
+            name: "floor",
+            zone: "yard",
+            transform: (position: (0.0, -0.25, 0.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (30.0, 0.5, 30.0)), color: (0.6, 0.6, 0.6)))],
+        ),
+        (
+            name: "yard volume",
+            zone: "yard",
+            transform: (position: (0.0, 3.0, 0.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [ZoneVolume((size: (30.0, 6.0, 30.0), probe_spacing: 4.0, probe_height: 1.5))],
+        ),
+        (
+            name: "room volume",
+            zone: "room",
+            transform: (position: (0.0, 2.0, -10.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [ZoneVolume((size: (8.0, 4.0, 8.0), probe_spacing: 2.0, probe_height: 1.5))],
+        ),
+        (
+            name: "room doorway",
+            zone: "yard",
+            transform: (position: (0.0, 1.0, -6.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Portal((to: "room"))],
+        ),
+        (
+            name: "room back wall",
+            zone: "room",
+            transform: (position: (0.0, 1.5, -14.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (8.3, 3.0, 0.3)), color: (0.5, 0.5, 0.55)))],
+        ),
+        (
+            name: "room left wall",
+            zone: "room",
+            transform: (position: (-4.0, 1.5, -10.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (0.3, 3.0, 8.0)), color: (0.5, 0.5, 0.55)))],
+        ),
+        (
+            name: "room right wall",
+            zone: "room",
+            transform: (position: (4.0, 1.5, -10.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (0.3, 3.0, 8.0)), color: (0.5, 0.5, 0.55)))],
+        ),
+        (
+            name: "room front left",
+            zone: "room",
+            transform: (position: (-2.5, 1.5, -6.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (3.0, 3.0, 0.3)), color: (0.5, 0.5, 0.55)))],
+        ),
+        (
+            name: "room front right",
+            zone: "room",
+            transform: (position: (2.5, 1.5, -6.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (3.0, 3.0, 0.3)), color: (0.5, 0.5, 0.55)))],
+        ),
+        (
+            name: "room lintel",
+            zone: "room",
+            transform: (position: (0.0, 2.5, -6.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (2.0, 1.0, 0.3)), color: (0.5, 0.5, 0.55)))],
+        ),
+        (
+            name: "room roof",
+            zone: "room",
+            transform: (position: (0.0, 3.15, -10.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (8.3, 0.3, 8.3)), color: (0.4, 0.4, 0.45)))],
+        ),
+        (
+            name: "gate",
+            zone: "room",
+            transform: (position: (0.0, 1.0, -6.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [
+                Primitive((shape: Box(size: (2.0, 2.0, 0.1)), color: (0.55, 0.35, 0.2))),
+                Door((slide: (0.0, 0.0, 0.0), swing: 90.0, hinge: (-1.0, 0.0, 0.0), duration: 1.2, starts_open: false)),
+            ],
+        ),
+        (
+            name: "doorstep",
+            zone: "yard",
+            transform: (position: (0.0, 1.0, -4.5), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [TriggerZone((size: (3.0, 2.0, 2.0)))],
+        ),
+        (
+            name: "lever",
+            zone: "yard",
+            transform: (position: (3.0, 1.0, -5.7), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [
+                Primitive((shape: Box(size: (0.3, 0.4, 0.2)), color: (0.9, 0.6, 0.1))),
+                Switch((target: "", pressure_plate: false)),
+            ],
+        ),
+        (
+            name: "room lamp",
+            zone: "room",
+            transform: (position: (0.0, 2.2, -12.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [
+                Primitive((shape: Sphere(radius: 0.2, segments: 8, rings: 5), color: (1.0, 0.8, 0.6), emissive: (8.0, 3.0, 1.0), collision: false)),
+                LightSource((color: (1.0, 0.62, 0.3), intensity: 5.0, range: 10.0, flicker: 0.3, shadows: true, baked: false)),
+                StartsHidden,
+            ],
+        ),
+        (
+            name: "keeper",
+            zone: "yard",
+            transform: (position: (-4.0, 0.9, -3.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [
+                Primitive((shape: Cylinder(radius: 0.35, height: 1.8, segments: 8), color: (0.3, 0.45, 0.6))),
+                Character((id: "keeper", name: "???", dialogue: "graphs/keeper.ron")),
+            ],
+        ),
+        (
+            name: "feather",
+            zone: "yard",
+            transform: (position: (6.0, 0.4, 3.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [
+                Primitive((shape: Box(size: (0.25, 0.25, 0.25)), color: (1.0, 1.0, 1.0), emissive: (2.0, 2.0, 2.0))),
+                Pickup((flag: "double_jump", sound: "audio/footstep_concrete_002.wav")),
+            ],
+        ),
+        (
+            name: "faint wall",
+            zone: "yard",
+            transform: (position: (9.0, 1.5, -4.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [
+                Primitive((shape: Box(size: (0.2, 3.0, 4.0)), color: (0.4, 0.8, 1.0), emissive: (0.2, 0.5, 0.8))),
+                AbilityGate((requires: "double_jump")),
+            ],
+        ),
+        (
+            name: "high ledge",
+            zone: "yard",
+            transform: (position: (12.0, 1.1, -4.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (3.0, 2.2, 3.0)), color: (0.35, 0.55, 0.35)))],
+        ),
+        (
+            name: "save stone",
+            zone: "yard",
+            transform: (position: (-3.0, 0.4, 4.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [
+                Primitive((shape: Box(size: (0.8, 0.8, 0.8)), color: (0.7, 0.7, 0.75), emissive: (0.0, 0.3, 0.6))),
+                SavePoint,
+            ],
+        ),
+        (
+            name: "player start",
+            zone: "yard",
+            transform: (position: (0.0, 0.0, 6.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [PlayerStart],
+        ),
+    ],
+)

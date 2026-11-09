@@ -832,4 +832,51 @@ mod tests {
         runner.update(&World::default(), 0.1);
         assert!(runner.flags.get("n").as_number() > 100.0);
     }
+
+    #[test]
+    fn the_sandbox_story_plays() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sandbox");
+        let flags = crate::graph::flags::FlagDefs::load(&dir);
+        assert!(flags.names().contains(&"double_jump".to_string()));
+        let scene = crate::scene::Scene::load(&dir.join("scenes/story.ron")).unwrap();
+        assert!(scene.find("doorstep").is_some() && scene.find("gate").is_some());
+
+        let mut runner = GraphRunner::new(dir, flags.start());
+        assert!(runner.start("graphs/main.ron"));
+        let lever = ["lever".to_string()];
+        let doorstep = ["doorstep".to_string()];
+        let at_door = World {
+            triggers: &doorstep,
+            ..Default::default()
+        };
+        assert!(
+            runner.update(&at_door, 0.1).is_empty(),
+            "not before the lever"
+        );
+        runner.update(
+            &World {
+                used: &lever,
+                ..Default::default()
+            },
+            0.1,
+        );
+        let commands = runner.update(&at_door, 0.1);
+        assert!(commands.contains(&Command::Door {
+            door: "gate".into(),
+            action: DoorAction::Open
+        }));
+        assert!(commands.contains(&Command::Show {
+            object: "room lamp".into(),
+            visible: true
+        }));
+
+        // The keeper: unknown at first, Ada after a friendly answer.
+        assert!(runner.start("graphs/keeper.ron"));
+        runner.update(&World::default(), 0.1);
+        assert_eq!(runner.line().unwrap().text, "Who goes there?");
+        runner.answer(Some(0));
+        runner.answer(None);
+        assert_eq!(runner.names.get("keeper").map(String::as_str), Some("Ada"));
+        assert!(runner.flags.is_true("met_keeper") && runner.flags.is_true("kind"));
+    }
 }
