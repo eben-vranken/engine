@@ -2,12 +2,12 @@
 //! notes and the frame stats on the right. And the key hints over the
 //! viewport.
 
-use super::{Editor, EditorStats, dim};
+use super::{Editor, EditorOutput, EditorStats, dim};
 use crate::ui::theme;
 use egui::{Align, Layout, Rect, RichText, Ui};
 
 impl Editor {
-    pub(super) fn status_bar(&self, ui: &mut Ui, stats: &EditorStats) {
+    pub(super) fn status_bar(&self, ui: &mut Ui, stats: &EditorStats, output: &mut EditorOutput) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             // Right to left: the stats always fit, the message gets the rest.
             if self.show_stats {
@@ -21,11 +21,32 @@ impl Editor {
                 ));
                 ui.label(dim("ZONE"));
                 ui.add_space(12.0);
-                ui.label(format!(
-                    "{}×{} ×{}",
-                    stats.internal[0], stats.internal[1], stats.factor
-                ));
-                ui.label(dim("INTERNAL"));
+                let scale = format!(
+                    "{}×{} ×{}{} ▾",
+                    stats.internal[0],
+                    stats.internal[1],
+                    stats.factor,
+                    if stats.scale_override.is_none() {
+                        " AUTO"
+                    } else {
+                        ""
+                    }
+                );
+                ui.menu_button(scale, |ui| {
+                    if ui.button("AUTO").clicked() {
+                        output.render_scale = Some(None);
+                        ui.close();
+                    }
+                    for factor in 1..=crate::render::scale::MAX_FACTOR {
+                        if ui.button(format!("×{factor}")).clicked() {
+                            output.render_scale = Some(Some(factor));
+                            ui.close();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("RENDER SCALE: OUTPUT PIXELS PER INTERNAL PIXEL ([ ] 0)");
+                ui.label(dim("RENDER"));
                 ui.add_space(12.0);
                 if let Some(gpu) = stats.gpu_ms {
                     ui.label(format!("{gpu:.2} MS"));
@@ -68,9 +89,9 @@ impl Editor {
             return;
         }
         let text = if self.playing {
-            "F5 STOP  E USE / TALK  TAB MAP  F3 GRAPHS  ESC FREE MOUSE  CLICK CAPTURE MOUSE  R RESPAWN  F1 TUNING  F2 FLY"
+            "WASD MOVE · SPACE JUMP · E USE / TALK · M MAP · F3 TEST DRAWER · ESC FREE MOUSE · F2 FLY · R RESPAWN"
         } else {
-            "CLICK SELECT  ESC DESELECT  HOLD RMB: WASD FLY  Q/E DOWN/UP  SHIFT FAST  WHEEL SPEED"
+            "CLICK SELECT · SHIFT+CLICK ADD · HOLD RMB + WASD FLY · Q/E DOWN/UP · CTRL+K SEARCH · ? ALL KEYS"
         };
         egui::Area::new(egui::Id::unique("editor_hints"))
             // Anchored at the bottom, so wrapped lines grow upward.

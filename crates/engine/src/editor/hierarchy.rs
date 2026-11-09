@@ -1,5 +1,5 @@
-//! The scene panel: objects grouped by zone, search, and zone edits
-//! (add, rename, delete).
+//! The outliner: objects grouped by zone with a type tag each, filter
+//! chips, search, and zone edits (add, rename, delete).
 
 use super::history::{Change, Edit};
 use super::{Editor, EditorOutput, SettingsTarget, dialog_heading, dim, inspector};
@@ -9,11 +9,28 @@ use egui::{Align, Layout, RichText, Ui};
 
 impl Editor {
     pub(super) fn hierarchy(&mut self, ui: &mut Ui, scene: &mut Scene, output: &mut EditorOutput) {
-        ui.label(dim(&format!(
-            "{} OBJECTS IN {} ZONES  (SHIFT-CLICK: SEVERAL)",
-            scene.objects.len(),
-            scene.zones.len()
-        )));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for filter in Filter::ALL {
+                let on = self.outliner_filter == filter;
+                let text = if on {
+                    RichText::new(filter.title())
+                        .small()
+                        .color(theme::BACKGROUND)
+                } else {
+                    RichText::new(filter.title())
+                        .small()
+                        .color(theme::AMBER_DIM)
+                };
+                let mut chip = egui::Button::new(text).small();
+                if on {
+                    chip = chip.fill(theme::AMBER);
+                }
+                if ui.add(chip).clicked() {
+                    self.outliner_filter = filter;
+                }
+            }
+        });
         ui.add_space(4.0);
         // Right to left: the X first, the field fills what's left (never
         // negative: the panel can be very narrow on its first frame).
@@ -34,7 +51,8 @@ impl Editor {
             });
         });
         let query = Query::parse(&self.search);
-        let searching = !query.is_empty();
+        let filter = self.outliner_filter;
+        let searching = !query.is_empty() || filter != Filter::All;
         // MODEL > PART: every matching part, to pick in one go.
         let found = if query.part.is_some() {
             search_parts(scene, &self.model_parts, &query)
@@ -61,7 +79,8 @@ impl Editor {
         let mut zone_action = None;
         let environment = self.settings == Some(SettingsTarget::Environment);
         if ui
-            .selectable_label(environment, picked("ENVIRONMENT", environment))
+            .selectable_label(environment, picked("SCENE SETTINGS", environment))
+            .on_hover_text("SUN, SKY, FOG, GRADE, BLOOM AND BAKE QUALITY FOR THE WHOLE SCENE")
             .clicked()
         {
             zone_clicked = Some(SettingsTarget::Environment);
@@ -77,8 +96,9 @@ impl Editor {
                         .filter(|(_, o)| o.zone == zone.name)
                         .collect();
                     // A zone whose name matches shows all its objects.
-                    let zone_matches =
-                        query.part.is_none() && zone.name.to_lowercase().contains(&query.object);
+                    let zone_matches = query.part.is_none()
+                        && filter == Filter::All
+                        && zone.name.to_lowercase().contains(&query.object);
                     let total = members.len();
                     let members: Vec<(usize, &Object)> = if zone_matches {
                         members
@@ -86,7 +106,8 @@ impl Editor {
                         members
                             .into_iter()
                             .filter(|(_, o)| {
-                                query.shows(o, &zone.name, &model_parts(o, &self.model_parts))
+                                filter.shows(o)
+                                    && query.shows(o, &zone.name, &model_parts(o, &self.model_parts))
                             })
                             .collect()
                     };
@@ -129,8 +150,7 @@ impl Editor {
                                 let parts = model_parts(object, &self.model_parts);
                                 let whole = self.is_picked(index, None);
                                 if parts.len() < 2 && query.part.is_none() {
-                                    let response =
-                                        ui.selectable_label(whole, picked(&object.name, whole));
+                                    let response = object_row(ui, whole, object);
                                     if response.clicked() {
                                         clicked = Some((index, None));
                                     }
@@ -155,8 +175,7 @@ impl Editor {
                                 let parts: Vec<String> =
                                     parts.into_iter().filter(|p| query.part_matches(p)).collect();
                                 let header = state.show_header(ui, |ui| {
-                                    let response =
-                                        ui.selectable_label(whole, picked(&object.name, whole));
+                                    let response = object_row(ui, whole, object);
                                     if response.clicked() {
                                         clicked = Some((index, None));
                                     }
@@ -710,5 +729,111 @@ mod tests {
         editor.undo(&mut scene, &mut PlayerSettings::default());
         editor.undo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(scene, original);
+    }
+}
+
+/// An object's row: its name, and its type on the right.
+fn object_row(ui: &mut Ui, chosen: bool, object: &Object) -> egui::Response {
+    ui.horizontal(|ui| {
+        let response = ui.selectable_label(chosen, picked(&object.name, chosen));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(RichText::new(tag(object)).small().color(theme::AMBER_DIM));
+        });
+        response
+    })
+    .inner
+}
+
+/// What an object mainly is, for its row: CHARACTER, DOOR, LIGHT, BOX...
+pub(super) fn tag(object: &Object) -> String {
+    let order = |c: &Component| match c {
+        Component::PlayerStart => 0,
+        Component::Character(_) => 1,
+        Component::Pickup(_) => 2,
+        Component::SavePoint => 3,
+        Component::AbilityGate(_) => 4,
+        Component::Switch(_) => 5,
+        Component::Door(_) => 6,
+        Component::TriggerZone(_) => 7,
+        Component::Portal(_) => 8,
+        Component::ZoneVolume(_) => 9,
+        Component::LightSource(_) => 10,
+        Component::SoundSource(_) => 11,
+        Component::FogVolume(_) => 12,
+        Component::Model(_) => 13,
+        Component::Primitive(_) => 14,
+        _ => 20,
+    };
+    let Some(main) = object.components.iter().min_by_key(|c| order(c)) else {
+        return "EMPTY".into();
+    };
+    match main {
+        Component::PlayerStart => "START".into(),
+        Component::Character(_) => "CHARACTER".into(),
+        Component::Pickup(_) => "PICKUP".into(),
+        Component::SavePoint => "SAVE".into(),
+        Component::AbilityGate(_) => "GATE".into(),
+        Component::Switch(s) if s.pressure_plate => "PLATE".into(),
+        Component::Switch(_) => "SWITCH".into(),
+        Component::Door(_) => "DOOR".into(),
+        Component::TriggerZone(_) => "TRIGGER".into(),
+        Component::Portal(p) => format!("PORTAL › {}", p.to.0.to_uppercase()),
+        Component::ZoneVolume(_) => "VOLUME".into(),
+        Component::LightSource(_) => "LIGHT".into(),
+        Component::SoundSource(_) => "SOUND".into(),
+        Component::FogVolume(_) => "FOG".into(),
+        Component::Model(_) => "MODEL".into(),
+        Component::Primitive(p) => p.shape.kind().to_uppercase(),
+        _ => "OBJECT".into(),
+    }
+}
+
+/// The outliner's filter chips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum Filter {
+    #[default]
+    All,
+    Geometry,
+    Light,
+    Sound,
+    Gameplay,
+    World,
+}
+
+impl Filter {
+    const ALL: [Filter; 6] = [
+        Filter::All,
+        Filter::Geometry,
+        Filter::Light,
+        Filter::Sound,
+        Filter::Gameplay,
+        Filter::World,
+    ];
+
+    fn title(self) -> &'static str {
+        match self {
+            Filter::All => "ALL",
+            Filter::Geometry => "GEOMETRY",
+            Filter::Light => "LIGHT",
+            Filter::Sound => "SOUND",
+            Filter::Gameplay => "GAMEPLAY",
+            Filter::World => "WORLD",
+        }
+    }
+
+    fn shows(self, object: &Object) -> bool {
+        self == Filter::All
+            || object.components.iter().any(|c| {
+                let kind = match c {
+                    Component::Primitive(_) | Component::Model(_) | Component::Material(_) => {
+                        Filter::Geometry
+                    }
+                    Component::LightSource(_) | Component::FogVolume(_) => Filter::Light,
+                    Component::SoundSource(_) | Component::AcousticMaterial(_) => Filter::Sound,
+                    Component::ZoneVolume(_) | Component::Portal(_) => Filter::World,
+                    _ => Filter::Gameplay,
+                };
+                kind == self
+            })
     }
 }

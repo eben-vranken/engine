@@ -3,7 +3,7 @@
 //! shown, doors open) plus the zones visited. One save per project, kept in
 //! the user's config folder (never in the project).
 
-use crate::graph::run::RunnerState;
+use crate::graph::run::{RunnerState, ThreadState};
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,6 +29,8 @@ pub struct WorldState {
     pub scenes: BTreeMap<String, SceneState>,
     /// Zones visited, per scene: the map shows these.
     pub visited: BTreeMap<String, BTreeSet<String>>,
+    /// Scene graphs paused while the player is in another scene.
+    pub scene_graphs: BTreeMap<String, Vec<ThreadState>>,
 }
 
 /// One scene's changed objects, by name.

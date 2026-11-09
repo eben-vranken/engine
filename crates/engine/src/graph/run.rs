@@ -126,6 +126,8 @@ pub struct GraphRunner {
     commands: Vec<Command>,
     /// Nodes to enter: thread id and node.
     queue: Vec<(u64, NodeId)>,
+    /// What happened, for the test drawer's events (the game takes them).
+    pub log: Vec<String>,
 }
 
 impl GraphRunner {
@@ -141,6 +143,7 @@ impl GraphRunner {
             serial: 0,
             commands: Vec::new(),
             queue: Vec::new(),
+            log: Vec::new(),
         }
     }
 
@@ -262,6 +265,14 @@ impl GraphRunner {
             }
         }
         for &(thread, node) in &fired {
+            if let Some(n) = self
+                .thread_graph(thread)
+                .and_then(|g| g.node(node).cloned())
+                && !matches!(n.kind, NodeKind::RunGraph { .. })
+            {
+                self.log
+                    .push(format!("{} {}", n.kind.title(), n.kind.summary().join(" ")));
+            }
             self.leave(thread, node);
             self.pass(thread, node, 0);
         }
@@ -284,6 +295,24 @@ impl GraphRunner {
             let Some(node) = graph.node(id) else {
                 continue;
             };
+            let acts = !matches!(
+                node.kind,
+                NodeKind::Note { .. }
+                    | NodeKind::Start
+                    | NodeKind::Reply { .. }
+                    | NodeKind::Branch { .. }
+            ) && node.kind.category() == super::Category::Action
+                || matches!(
+                    node.kind,
+                    NodeKind::Rename { .. } | NodeKind::RunGraph { .. }
+                );
+            if acts {
+                self.log.push(format!(
+                    "{} {}",
+                    node.kind.title(),
+                    node.kind.summary().join(" ")
+                ));
+            }
             match &node.kind {
                 NodeKind::Note { .. } => {}
                 NodeKind::Start | NodeKind::Reply { .. } => self.pass(thread, id, 0),
@@ -426,6 +455,7 @@ impl GraphRunner {
                 node,
                 serial: self.serial,
             });
+            self.log.push(format!("LINE {speaker}"));
             if !sound.is_empty() {
                 self.commands.push(Command::LineSound { sound, speaker });
             }
@@ -505,6 +535,66 @@ impl GraphRunner {
         self.run_queue(&mut budget);
         self.end_threads();
         self.pick_line();
+    }
+
+    /// Takes a graph out of play (with the graphs it started), keeping
+    /// where it was; [`resume`](Self::resume) puts it back. A scene's graph
+    /// pauses like this while the player is elsewhere.
+    pub fn suspend(&mut self, path: &str) -> Vec<ThreadState> {
+        let mut ids: Vec<u64> = self
+            .threads
+            .iter()
+            .filter(|t| t.graph == path)
+            .map(|t| t.id)
+            .collect();
+        loop {
+            let more: Vec<u64> = self
+                .threads
+                .iter()
+                .filter(|t| !ids.contains(&t.id) && t.parent.is_some_and(|(p, _)| ids.contains(&p)))
+                .map(|t| t.id)
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            ids.extend(more);
+        }
+        if self
+            .showing
+            .as_ref()
+            .is_some_and(|s| ids.contains(&s.thread))
+        {
+            self.showing = None;
+        }
+        self.queue.retain(|(t, _)| !ids.contains(t));
+        let state = self.state();
+        self.threads.retain(|t| !ids.contains(&t.id));
+        state
+            .threads
+            .into_iter()
+            .filter(|t| ids.contains(&t.id))
+            .collect()
+    }
+
+    /// Puts suspended graphs back in play where they were.
+    pub fn resume(&mut self, threads: Vec<ThreadState>) {
+        for t in threads {
+            let Some(graph) = self.graph(&t.graph) else {
+                continue;
+            };
+            self.next_thread = self.next_thread.max(t.id + 1);
+            self.threads.push(Thread {
+                id: t.id,
+                graph: t.graph,
+                active: t
+                    .active
+                    .into_iter()
+                    .filter(|(node, _, _)| graph.node(*node).is_some())
+                    .map(|(node, time, child)| Active { node, time, child })
+                    .collect(),
+                parent: t.parent,
+            });
+        }
     }
 
     /// Everything a saved game needs to carry on from here.
@@ -811,6 +901,40 @@ mod tests {
     }
 
     #[test]
+    fn a_suspended_graph_carries_on_where_it_was() {
+        let scene = graph(
+            vec![
+                NodeKind::Start,
+                NodeKind::WhenUsed {
+                    object: ObjectRef("lever".into()),
+                },
+                NodeKind::Show {
+                    object: ObjectRef("lamp".into()),
+                    visible: true,
+                },
+            ],
+            &[(0, 0, 1), (1, 0, 2)],
+        );
+        let mut runner = runner(vec![("scene", scene)]);
+        runner.start("scene");
+        runner.update(&World::default(), 0.1);
+        let paused = runner.suspend("scene");
+        assert_eq!(paused.len(), 1);
+        assert!(runner.running().is_empty());
+        let lever = ["lever".to_string()];
+        let using = World {
+            used: &lever,
+            ..Default::default()
+        };
+        assert!(
+            runner.update(&using, 0.1).is_empty(),
+            "paused graphs don't hear"
+        );
+        runner.resume(paused);
+        assert_eq!(runner.update(&using, 0.1).len(), 1);
+    }
+
+    #[test]
     fn instant_loops_stop_instead_of_hanging() {
         let mut flow = graph(
             vec![
@@ -838,7 +962,7 @@ mod tests {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sandbox");
         let flags = crate::graph::flags::FlagDefs::load(&dir);
         assert!(flags.names().contains(&"double_jump".to_string()));
-        let scene = crate::scene::Scene::load(&dir.join("scenes/story.ron")).unwrap();
+        let scene = crate::scene::Scene::load(&dir.join("scenes/test_level.ron")).unwrap();
         assert!(scene.find("doorstep").is_some() && scene.find("gate").is_some());
 
         let mut runner = GraphRunner::new(dir, flags.start());
@@ -865,10 +989,11 @@ mod tests {
             door: "gate".into(),
             action: DoorAction::Open
         }));
-        assert!(commands.contains(&Command::Show {
-            object: "room lamp".into(),
-            visible: true
-        }));
+        assert!(
+            commands
+                .iter()
+                .any(|c| matches!(c, Command::Show { object, .. } if object == "room lamp"))
+        );
 
         // The keeper: unknown at first, Ada after a friendly answer.
         assert!(runner.start("graphs/keeper.ron"));

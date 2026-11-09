@@ -8,9 +8,13 @@ pub(super) fn scene_files(project_dir: &Path) -> Vec<PathBuf> {
     files_in(project_dir, "scenes", "ron")
 }
 
-/// Graph files in the project's `graphs/` folder, relative to the project.
+/// Graph files in the project's `graphs/` folder and its subfolders
+/// (scene graphs are in `graphs/scenes/`), relative to the project.
 pub(super) fn graph_files(project_dir: &Path) -> Vec<PathBuf> {
-    files_in(project_dir, "graphs", "ron")
+    let mut found = files_in(project_dir, "graphs", "ron");
+    found.extend(files_in(project_dir, "graphs/scenes", "ron"));
+    found.sort();
+    found
 }
 
 /// Every model the scene can place: `.glb` and `.gltf` files anywhere in
@@ -53,6 +57,31 @@ fn files_in(project_dir: &Path, folder: &str, extension: &str) -> Vec<PathBuf> {
         .collect();
     files.sort();
     files
+}
+
+/// Every PNG / JPEG under the project's `textures/`, as paths relative to
+/// the project with `/` separators, sorted.
+pub(super) fn texture_files(project_dir: &Path) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut folders = vec![project_dir.join("textures")];
+    while let Some(folder) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for path in entries.flatten().map(|e| e.path()) {
+            let image = path.extension().is_some_and(|e| {
+                let e = e.to_string_lossy().to_lowercase();
+                e == "png" || e == "jpg" || e == "jpeg"
+            });
+            if path.is_dir() {
+                folders.push(path);
+            } else if image && let Ok(relative) = path.strip_prefix(project_dir) {
+                found.push(crate::graph::key(relative));
+            }
+        }
+    }
+    found.sort();
+    found
 }
 
 /// Every `.wav` in the project, as paths relative to it with `/`

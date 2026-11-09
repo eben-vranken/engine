@@ -68,13 +68,13 @@ impl Running {
     }
 
     /// Sounds the player makes: claps (Q), footsteps by floor material, and
-    /// M to bring the looping sound to where the player stands.
+    /// (from the test drawer) the looping sound brought to the player.
     pub(super) fn game_sounds(&mut self) {
         let eye = match self.mode {
             CameraMode::Player => self.player.camera(&self.settings),
             CameraMode::Fly => self.fly.camera.clone(),
         };
-        if self.input.pressed(KeyCode::KeyM) {
+        if std::mem::take(&mut self.move_sound) {
             let ahead = eye.forward().with_y(0.0).normalize_or(Vec3::NEG_Z);
             let looping = self.scene.objects.iter().position(|o| {
                 o.components

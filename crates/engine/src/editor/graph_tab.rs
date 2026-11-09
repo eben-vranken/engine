@@ -1,9 +1,13 @@
-//! Graph tabs: a gameplay graph open next to the scenes. The canvas fills
-//! the middle, the project's flags are on the left and the selected node's
-//! settings on the right (generated from reflection, like components).
-//! Every change is an undo step of the tab's own.
+//! The LOGIC workspace: a graph open in a tab. On the left every graph,
+//! grouped by owner (the game's flow, one per scene, one per character,
+//! others), and the flags; in the middle the canvas or the CONVERSATION
+//! view; on the right the graph's owner and what uses it, then the selected
+//! node's settings (generated from reflection, like components). Every
+//! change is an undo step of the tab's own.
 
+use super::conversation::{self, TestRun};
 use super::graph_canvas::{self, CanvasView, Marks};
+use super::project_index::{Go, Owner};
 use super::widgets::{Side, collapsed_panel, panel_header};
 use super::{Editor, EditorOutput, dim, inspector, section};
 use crate::camera::FlyCamera;
@@ -12,6 +16,7 @@ use crate::graph::{Graph, NodeId};
 use crate::scene::Scene;
 use crate::ui::theme;
 use egui::{RichText, Ui};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// An open graph and its editing state.
@@ -26,6 +31,14 @@ pub struct GraphDoc {
     pub view: CanvasView,
     pub selected: Option<NodeId>,
     selected_link: Option<usize>,
+    /// The CONVERSATION view instead of the canvas.
+    conversation: bool,
+    /// FIND NODE's text.
+    find: String,
+    /// TEST CONVERSATION, while it runs.
+    test: Option<TestRun>,
+    /// PREVIEW AS: yes/no flags switched for the preview and the test.
+    preview: BTreeMap<String, bool>,
 }
 
 impl GraphDoc {
@@ -39,6 +52,10 @@ impl GraphDoc {
             view: CanvasView::default(),
             selected: None,
             selected_link: None,
+            conversation: false,
+            find: String::new(),
+            test: None,
+            preview: BTreeMap::new(),
         }
     }
 
@@ -189,24 +206,42 @@ impl Editor {
         }
     }
 
-    /// The graph tab's panels; the canvas takes what's left.
+    /// The LOGIC workspace's panels; the canvas takes what's left.
     pub(super) fn graph_ui(&mut self, ui: &mut Ui, output: &mut EditorOutput) {
         self.index.refresh(&self.project_dir, false);
         let Some(snapshot) = self.graph.as_ref().map(|d| d.graph.clone()) else {
             return;
         };
+        let path = crate::graph::key(&self.scene_path);
 
         if self.show_scene {
-            egui::Panel::left("graph_flags")
+            egui::Panel::left("graph_browser")
                 .resizable(true)
-                .default_size(260.0)
-                .min_size(220.0)
+                .default_size(280.0)
+                .min_size(240.0)
                 .show(ui, |ui| {
-                    self.show_scene = !panel_header(ui, "FLAGS", Side::Left, "TAB", |_| {});
-                    self.flags_panel(ui);
+                    self.show_scene = !panel_header(ui, "GRAPHS", Side::Left, "TAB", |ui| {
+                        if ui
+                            .small_button("+ NEW")
+                            .on_hover_text("A GRAPH STARTED BY RUN GRAPH, OR TO PICK AS THE FLOW")
+                            .clicked()
+                        {
+                            self.ask_name(super::name_dialog::Naming::Graph);
+                        }
+                    });
+                    egui::Panel::bottom("graph_flags")
+                        .resizable(true)
+                        .default_size(260.0)
+                        .min_size(140.0)
+                        .show(ui, |ui| {
+                            super::section(ui, "FLAGS");
+                            self.flags_panel(ui);
+                        });
+                    self.graph_browser(ui, &path, output);
                 });
         } else {
-            self.show_scene = collapsed_panel(ui, "graph_flags_strip", Side::Left, "FLAGS", "TAB");
+            self.show_scene =
+                collapsed_panel(ui, "graph_browser_strip", Side::Left, "GRAPHS", "TAB");
         }
         if self.show_inspector {
             egui::Panel::right("graph_inspector")
@@ -216,7 +251,12 @@ impl Editor {
                 .show(ui, |ui| {
                     self.show_inspector =
                         !panel_header(ui, "INSPECTOR", Side::Right, "SHIFT+TAB", |_| {});
-                    self.node_inspector(ui);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            self.graph_card(ui, &path, output);
+                            self.node_inspector(ui);
+                        });
                 });
         } else {
             self.show_inspector = collapsed_panel(
@@ -228,57 +268,357 @@ impl Editor {
             );
         }
         egui::Panel::top("editor_tabs").show(ui, |ui| self.tab_strip(ui, output));
+        let problems = self
+            .graph
+            .as_ref()
+            .map(|d| self.index.problems(&path, &d.graph))
+            .unwrap_or_default();
+        egui::Panel::bottom("graph_problems").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                let nodes = snapshot.nodes.len();
+                let links = snapshot.links.len();
+                if problems.is_empty() {
+                    ui.label(dim(&format!(
+                        "{nodes} NODES · {links} CONNECTIONS · NO PROBLEMS"
+                    )));
+                } else {
+                    ui.label(
+                        RichText::new(format!("{} PROBLEMS:", problems.len())).color(theme::ALERT),
+                    )
+                    .on_hover_text(problems.join("\n"));
+                    ui.label(RichText::new(&problems[0]).color(theme::ALERT));
+                }
+            });
+        });
 
-        let rect = ui.available_rect_before_wrap();
-        output.viewport = rect;
+        let index_names = self.index.character_names.clone();
+        let start_flags = self.index.flags.start();
+        let style = self.index.dialogue.clone();
+        let project_dir = self.project_dir.clone();
         let Some(doc) = &mut self.graph else {
             return;
         };
-        let marks = Marks {
-            selected: doc.selected,
-            selected_link: doc.selected_link,
-            active: &[],
+        // The view switch, zoom and FIND over the middle.
+        egui::Panel::top("graph_toolbar").show(ui, |ui| {
+            ui.horizontal(|ui| {
+                for (on, text) in [(false, " CANVAS "), (true, " CONVERSATION ")] {
+                    let chosen = doc.conversation == on;
+                    let label = if chosen {
+                        RichText::new(text).color(theme::BACKGROUND).strong()
+                    } else {
+                        RichText::new(text).color(theme::AMBER_DIM)
+                    };
+                    let mut button = egui::Button::new(label).small();
+                    if chosen {
+                        button = button.fill(theme::AMBER);
+                    }
+                    if ui.add(button).clicked() {
+                        doc.conversation = on;
+                    }
+                }
+                if !doc.conversation {
+                    ui.add_space(12.0);
+                    if ui
+                        .small_button(format!("{:.0}%", doc.view.zoom * 100.0))
+                        .on_hover_text("BACK TO 100%")
+                        .clicked()
+                    {
+                        doc.view.zoom = 1.0;
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut doc.find)
+                            .hint_text("FIND NODE")
+                            .desired_width(180.0),
+                    );
+                }
+            });
+        });
+
+        let rect = ui.available_rect_before_wrap();
+        output.viewport = rect;
+        let find = doc.find.trim().to_lowercase();
+        let found: Vec<NodeId> = if find.is_empty() {
+            Vec::new()
+        } else {
+            doc.graph
+                .nodes
+                .iter()
+                .filter(|n| {
+                    n.kind.title().to_lowercase().contains(&find)
+                        || n.kind.summary().join(" ").to_lowercase().contains(&find)
+                })
+                .map(|n| n.id)
+                .collect()
         };
-        let events = graph_canvas::show(ui, rect, &mut doc.graph, &mut doc.view, &marks, true);
-        if let Some(select) = events.select {
-            doc.selected = select;
-            doc.selected_link = None;
-        }
-        if let Some(link) = events.select_link {
-            doc.selected_link = Some(link);
-            doc.selected = None;
+        if doc.conversation {
+            let flags = conversation::preview_flags(&start_flags, &doc.preview);
+            ui.painter().rect_filled(rect, 0.0, theme::BACKGROUND);
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(12.0)));
+            child.columns(2, |cols| {
+                egui::ScrollArea::vertical()
+                    .id_salt("conversation_script")
+                    .auto_shrink([false, false])
+                    .show(&mut cols[0], |ui| {
+                        ui.label(dim(
+                            "THE SAME GRAPH, READ AS A SCRIPT · CLICK AN ENTRY TO EDIT IT",
+                        ));
+                        ui.add_space(6.0);
+                        conversation::script(ui, &doc.graph, &index_names, &mut doc.selected, None);
+                    });
+                let ui = &mut cols[1];
+                ui.label(RichText::new("PREVIEW · IN THE GAME'S STYLE").strong());
+                ui.add_space(4.0);
+                let mut ended = false;
+                match &mut doc.test {
+                    Some(run) => {
+                        ended = !conversation::test_controls(ui, run, &index_names, &style);
+                        if ui.button("STOP TEST").clicked() {
+                            ended = true;
+                        }
+                    }
+                    None => {
+                        if let Some((who, text, replies)) =
+                            conversation::preview_of(&doc.graph, doc.selected, &index_names, &flags)
+                        {
+                            conversation::draw_box(ui, &style, &who, &text, &replies, 0);
+                        } else {
+                            ui.label(dim("NO LINES YET: ADD A LINE NODE"));
+                        }
+                        if ui
+                            .button(RichText::new("TEST CONVERSATION").strong())
+                            .clicked()
+                        {
+                            doc.test = Some(TestRun::new(
+                                project_dir.clone(),
+                                &path,
+                                doc.graph.clone(),
+                                flags.clone(),
+                            ));
+                        }
+                    }
+                }
+                if ended {
+                    doc.test = None;
+                }
+                let used = conversation::condition_flags(&doc.graph);
+                if !used.is_empty() {
+                    ui.add_space(8.0);
+                    ui.label(dim("PREVIEW AS (FLAGS SWITCHED FOR THE PREVIEW ONLY)"));
+                    ui.horizontal_wrapped(|ui| {
+                        for flag in used {
+                            let on = doc
+                                .preview
+                                .get(&flag)
+                                .copied()
+                                .unwrap_or_else(|| start_flags.is_true(&flag));
+                            let text = format!("{} {flag}", if on { "[X]" } else { "[ ]" });
+                            if ui.small_button(text).clicked() {
+                                doc.preview.insert(flag, !on);
+                            }
+                        }
+                    });
+                }
+            });
+        } else {
+            let marks = Marks {
+                selected: doc.selected,
+                selected_link: doc.selected_link,
+                active: &[],
+                found: &found,
+            };
+            let events = graph_canvas::show(ui, rect, &mut doc.graph, &mut doc.view, &marks, true);
+            if let Some(select) = events.select {
+                doc.selected = select;
+                doc.selected_link = None;
+            }
+            if let Some(link) = events.select_link {
+                doc.selected_link = Some(link);
+                doc.selected = None;
+            }
+            if let Some((kind, at)) = events.add {
+                let mut added = None;
+                doc.change(|g| added = Some(g.add(kind, at)));
+                doc.selected = added;
+            }
+            if let Some(id) = events.duplicate {
+                doc.duplicate(id);
+            }
+            if let Some(id) = events.delete {
+                doc.selected = Some(id);
+                doc.delete_selected();
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Enter))
+                && !found.is_empty()
+                && ui.ctx().memory(|m| m.focused().is_some())
+            {
+                doc.selected = Some(found[0]);
+                graph_canvas::center_on(&doc.graph, &mut doc.view, found[0], rect.size());
+            }
+            if doc.graph.nodes.len() <= 1 && doc.graph.links.is_empty() {
+                let hint = "SPACE OR RIGHT-CLICK TO ADD NODES  ·  DRAG FROM A NODE'S RIGHT DOT ONTO ANOTHER TO CONNECT  ·  WHEEL ZOOM  ·  DRAG THE BACKGROUND TO PAN";
+                ui.painter().text(
+                    rect.left_bottom() + egui::vec2(10.0, -10.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    hint,
+                    egui::FontId::proportional(11.0),
+                    theme::AMBER_DIM,
+                );
+            }
         }
         // Changes made by dragging and typing this frame join the edit in
         // progress; it becomes an undo step once nothing is held.
         if doc.graph != snapshot && doc.before.is_none() {
             doc.before = Some(snapshot);
         }
-        if let Some((kind, at)) = events.add {
-            let mut added = None;
-            doc.change(|g| added = Some(g.add(kind, at)));
-            doc.selected = added;
-        }
-        if let Some(id) = events.duplicate {
-            doc.duplicate(id);
-        }
-        if let Some(id) = events.delete {
-            doc.selected = Some(id);
-            doc.delete_selected();
-        }
         let interacting =
             ui.ctx().egui_is_using_pointer() || ui.ctx().memory(|m| m.focused().is_some());
         if !interacting {
             doc.commit();
         }
-        if doc.graph.nodes.len() <= 1 && doc.graph.links.is_empty() {
-            let hint = "RIGHT-CLICK TO ADD NODES  ·  DRAG FROM A NODE'S RIGHT DOT ONTO ANOTHER TO CONNECT  ·  WHEEL ZOOM  ·  DRAG THE BACKGROUND TO PAN";
-            ui.painter().text(
-                rect.left_bottom() + egui::vec2(10.0, -10.0),
-                egui::Align2::LEFT_BOTTOM,
-                hint,
-                egui::FontId::proportional(11.0),
-                theme::AMBER_DIM,
-            );
+        // SPACE: add a node (not while typing).
+        if !interacting && ui.input(|i| i.key_pressed(egui::Key::Space)) {
+            self.open_palette(Some("NODES"));
+        }
+    }
+
+    /// Every graph in the project by owner, and each scene's slot for a
+    /// graph of its own.
+    fn graph_browser(&mut self, ui: &mut Ui, current: &str, output: &mut EditorOutput) {
+        let mut groups: BTreeMap<u8, Vec<(String, String)>> = BTreeMap::new();
+        for (path, graph) in &self.index.graphs {
+            let owner = self.index.owner(path);
+            let order = match owner {
+                Owner::Flow => 0,
+                Owner::Scene(_) => 1,
+                Owner::Character { .. } => 2,
+                Owner::Other => 3,
+            };
+            groups
+                .entry(order)
+                .or_default()
+                .push((path.clone(), format!("{} NODES", graph.nodes.len())));
+        }
+        let scenes: Vec<String> = self.index.names.scenes.clone();
+        let mut create = None;
+        egui::ScrollArea::vertical()
+            .id_salt("graph_browser_list")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (order, title, runs) in [
+                    (0, "GAME FLOW", "RUNS ALL GAME"),
+                    (1, "SCENES", "RUN WHILE LOADED"),
+                    (2, "CHARACTERS", "RUN WHEN TALKED TO"),
+                    (3, "OTHER", "STARTED BY RUN GRAPH"),
+                ] {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(format!("{title} · {runs}")).small().color(theme::AMBER_DIM));
+                    let entries = groups.get(&order).cloned().unwrap_or_default();
+                    if order == 1 {
+                        // Every scene: its graph, or a button to make one.
+                        for scene in &scenes {
+                            let graph = crate::graph::scene_graph(scene);
+                            let name = scene.trim_start_matches("scenes/").trim_end_matches(".ron");
+                            ui.horizontal(|ui| {
+                                if self.index.graphs.contains_key(&graph) {
+                                    let chosen = graph == current;
+                                    if ui.selectable_label(chosen, name.to_uppercase()).clicked() {
+                                        output.open_graph = Some(PathBuf::from(&graph));
+                                    }
+                                } else {
+                                    ui.label(dim(&name.to_uppercase()));
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        if ui
+                                            .small_button("+ ADD GRAPH")
+                                            .on_hover_text("A GRAPH OF THIS SCENE'S OWN: STARTS WHEN IT LOADS, CARRIES ON WHEN THE PLAYER RETURNS")
+                                            .clicked()
+                                        {
+                                            create = Some(graph.clone());
+                                        }
+                                    });
+                                }
+                            });
+                        }
+                        continue;
+                    }
+                    if entries.is_empty() {
+                        let hint = match order {
+                            0 => "NONE: PICK ONE IN PROJECT › STARTUP",
+                            2 => "NONE: GIVE A CHARACTER A DIALOGUE",
+                            _ => "NONE",
+                        };
+                        ui.label(dim(hint));
+                    }
+                    for (path, detail) in entries {
+                        let chosen = path == current;
+                        let name = path.trim_start_matches("graphs/").trim_end_matches(".ron").to_uppercase();
+                        ui.horizontal(|ui| {
+                            if ui.selectable_label(chosen, name).clicked() {
+                                output.open_graph = Some(PathBuf::from(&path));
+                            }
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                ui.label(RichText::new(detail).small().color(theme::AMBER_DIM));
+                            });
+                        });
+                    }
+                }
+            });
+        if let Some(graph) = create {
+            match Graph::starter().save(&self.project_dir.join(&graph)) {
+                Ok(()) => {
+                    self.index.refresh(&self.project_dir, true);
+                    output.open_graph = Some(PathBuf::from(graph));
+                }
+                Err(err) => self.show_error(err.to_string()),
+            }
+        }
+    }
+
+    /// The open graph: who owns it, when it runs, what uses it.
+    fn graph_card(&mut self, ui: &mut Ui, path: &str, output: &mut EditorOutput) {
+        let owner = self.index.owner(path);
+        section(ui, "GRAPH");
+        egui::Grid::new("graph_card")
+            .num_columns(2)
+            .spacing([10.0, 4.0])
+            .show(ui, |ui| {
+                ui.label(dim("OWNER"));
+                ui.label(owner.describe());
+                ui.end_row();
+                ui.label(dim("RUNS"));
+                ui.add(egui::Label::new(dim(owner.runs())).wrap());
+                ui.end_row();
+                ui.label(dim("FILE"));
+                ui.label(dim(path));
+                ui.end_row();
+            });
+        let uses = self.index.used_by(path);
+        section(ui, &format!("USED BY  {}", uses.len()));
+        if uses.is_empty() {
+            ui.label(dim("NOTHING USES THIS GRAPH YET:"));
+            ui.label(dim("PICK IT AS A CHARACTER'S DIALOGUE, THE FLOW"));
+            ui.label(dim("(PROJECT › STARTUP) OR IN A RUN GRAPH NODE."));
+        }
+        for u in uses {
+            ui.horizontal(|ui| {
+                ui.add(egui::Label::new(&u.text).truncate());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.small_button("OPEN").clicked() {
+                        match &u.go {
+                            Go::Scene(scene) => {
+                                let scene = PathBuf::from(scene);
+                                match self.tab_of(&scene) {
+                                    Some(index) => output.switch_tab = Some(index),
+                                    None => output.new_tab = Some(scene),
+                                }
+                            }
+                            Go::Graph(graph) => output.open_graph = Some(PathBuf::from(graph)),
+                            Go::Settings => {
+                                self.open_project_page(super::project_page::Section::Startup)
+                            }
+                        }
+                    }
+                });
+            });
         }
     }
 
@@ -296,28 +636,32 @@ impl Editor {
                     doc.delete_selected();
                 }
             } else {
-                ui.label(dim("PICK A NODE TO EDIT IT"));
-                ui.add_space(8.0);
+                section(ui, "NODE");
+                ui.label(dim("PICK A NODE TO EDIT IT; SPACE ADDS ONE."));
                 ui.label(dim("EVERY GRAPH BEGINS AT ITS START NODES."));
                 ui.label(dim("EVENTS WAIT; ACTIONS ACT AND GO ON."));
-                ui.label(dim("REPLIES CONNECTED TO A LINE ARE OFFERED"));
-                ui.label(dim("TO THE PLAYER."));
+                ui.label(dim("REPLIES CONNECTED TO A LINE ARE OFFERED."));
             }
             return;
         };
         let (mut duplicate, mut delete) = (false, false);
         if let Some(node) = doc.graph.node_mut(id) {
-            section(ui, node.kind.title());
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    inspector::fields(ui, &mut node.kind, &names);
-                    ui.add_space(10.0);
-                    ui.horizontal(|ui| {
-                        duplicate = ui.button("DUPLICATE  CTRL+D").clicked();
-                        delete = ui.button("DELETE  DEL").clicked();
-                    });
-                });
+            section(
+                ui,
+                &format!(
+                    "NODE · {}  ({})",
+                    node.kind.title(),
+                    node.kind.category().tag()
+                ),
+            );
+            ui.add(egui::Label::new(dim(node.kind.description())).wrap());
+            ui.add_space(6.0);
+            inspector::fields(ui, &mut node.kind, &names);
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                duplicate = ui.button("DUPLICATE  CTRL+D").clicked();
+                delete = ui.button("DELETE  DEL").clicked();
+            });
         }
         if duplicate {
             doc.duplicate(id);

@@ -86,17 +86,31 @@ pub fn zones(
     scene: &Scene,
     selected: Option<usize>,
     active_zones: &[String],
+    show: (bool, bool),
 ) -> (Option<usize>, bool) {
+    let (show_zones, show_triggers) = show;
     let painter = ui.painter().with_clip_rect(view.image);
     let (mut clicked, mut hovered) = (None, false);
     for (index, object) in scene.objects.iter().enumerate() {
         for component in &object.components {
+            let wanted = match component {
+                Component::TriggerZone(_) => show_triggers,
+                _ => show_zones,
+            };
+            if !wanted {
+                continue;
+            }
             let (corners, edges, label_at, text): (Vec<Vec3>, &[(usize, usize)], Vec3, String) =
                 match component {
-                    Component::ZoneVolume(_) | Component::FogVolume(_) => {
+                    Component::ZoneVolume(_)
+                    | Component::FogVolume(_)
+                    | Component::TriggerZone(_) => {
                         let (size, text) = match component {
                             Component::ZoneVolume(v) => (v.size, object.zone.to_uppercase()),
                             Component::FogVolume(v) => (v.size, "FOG".to_owned()),
+                            Component::TriggerZone(t) => {
+                                (t.size, format!("TRIGGER · {}", object.name.to_uppercase()))
+                            }
                             _ => unreachable!(),
                         };
                         let matrix = object.transform.matrix() * Mat4::from_scale(size);

@@ -1,12 +1,15 @@
-//! The editor: the running game with panels on top. The scene hierarchy is
-//! on the left (grouped by zone), the inspector on the right, and the 3D
-//! viewport takes whatever space is left in the middle.
+//! The editor: the running game with panels on top, in three workspaces.
+//! PROJECT is the start screen and the project's settings; BUILD edits a
+//! scene (outliner on the left, inspector on the right, the 3D viewport in
+//! the middle); LOGIC edits graphs. CTRL+K searches and runs everything.
 //!
 //! Every change goes through [`history::Edit`] so it can be undone. While a
 //! value is being dragged or typed, the change is applied live but held as
 //! *pending*; it becomes one undo step when the interaction ends.
 
+mod commands;
 mod confirm;
+mod conversation;
 mod file_dialogs;
 mod files;
 pub mod gizmo;
@@ -22,17 +25,20 @@ mod model_list;
 mod name_dialog;
 mod object_panel;
 mod objects;
+mod palette;
 mod player_panel;
 mod project_index;
-mod project_settings;
+mod project_page;
 mod selection;
 mod settings_panel;
 mod status_bar;
 mod tabs;
+mod viewport_tools;
 mod widgets;
 
 use crate::player::settings::PlayerSettings;
 use crate::scene::{Object, Scene};
+pub use commands::Workspace;
 use confirm::Confirm;
 use egui::{Rect, Ui};
 use files::scene_files;
@@ -70,6 +76,20 @@ pub struct Editor {
     pub show_inspector: bool,
     /// Zone volume and portal markers in the viewport (H).
     pub show_zones: bool,
+    /// Trigger zone boxes in the viewport.
+    show_triggers: bool,
+    /// Reverb probe dots in the viewport.
+    show_probes: bool,
+    /// The outliner's filter chip.
+    outliner_filter: hierarchy::Filter,
+    /// CTRL+K, while open.
+    palette: Option<palette::Palette>,
+    /// `?`: the shortcut list.
+    shortcuts_open: bool,
+    /// PLAY's test drawer (F3).
+    pub drawer_open: bool,
+    /// The PROJECT workspace, while open.
+    project_page: Option<project_page::ProjectPage>,
     /// The key hints over the viewport.
     show_hints: bool,
     /// The frame stats in the status bar.
@@ -116,10 +136,6 @@ pub struct Editor {
     /// Each model in the scene's parts and their centers, by path (kept
     /// up to date by the runtime).
     pub model_parts: ModelParts,
-    /// PROJECT SETTINGS, while open.
-    project_settings: Option<project_settings::SettingsDialog>,
-    /// PROJECT SETTINGS was picked in the menu (opens next).
-    want_project_settings: bool,
     /// The system's file dialog, while one is open.
     file_dialog: Option<file_dialogs::FileDialog>,
 }
@@ -161,6 +177,10 @@ pub struct EditorOutput {
     pub exit: bool,
     /// The Play/Stop button was clicked.
     pub toggle_play: bool,
+    /// RESTART while playing: stop, then play from the start.
+    pub restart_play: bool,
+    /// Where PLAY's test drawer goes (the runtime fills it).
+    pub drawer: Option<Rect>,
     /// CONTINUE: play from the saved game.
     pub resume_play: bool,
     /// BAKE ACOUSTICS was clicked.
@@ -198,6 +218,8 @@ impl EditorOutput {
             gizmo_hovered: false,
             exit: false,
             toggle_play: false,
+            restart_play: false,
+            drawer: None,
             resume_play: false,
             bake: false,
             bake_lighting: false,
@@ -230,6 +252,13 @@ impl Editor {
             show_scene: true,
             show_inspector: true,
             show_zones: true,
+            show_triggers: true,
+            show_probes: true,
+            outliner_filter: Default::default(),
+            palette: None,
+            shortcuts_open: false,
+            drawer_open: true,
+            project_page: None,
             show_hints: true,
             show_stats: true,
             settings: None,
@@ -250,8 +279,6 @@ impl Editor {
             naming: None,
             graph: None,
             file_dialog: None,
-            project_settings: None,
-            want_project_settings: false,
             selected_part: None,
             also: Vec::new(),
             model_parts: ModelParts::new(),
@@ -272,24 +299,43 @@ impl Editor {
         let mut output = EditorOutput::empty();
         self.poll_file_dialog(scene, player, &mut output);
         egui::Panel::top("editor_menu").show(ui, |ui| {
-            self.menu_bar(ui, scene, player, blink, view, &mut output)
+            self.top_bar(ui, scene, player, blink, view, &mut output)
         });
-        egui::Panel::bottom("editor_status").show(ui, |ui| self.status_bar(ui, stats));
-        self.project_settings_dialog(ui, stats, &mut output);
-        if self.graph.is_some() {
-            self.graph_ui(ui, &mut output);
-            self.confirm_dialog(ui, scene, player, &mut output);
-            self.name_dialog(ui, &mut output);
+        egui::Panel::bottom("editor_status").show(ui, |ui| self.status_bar(ui, stats, &mut output));
+        self.global_keys(ui, scene, player, view, &mut output);
+        self.palette_ui(ui, scene, player, view, &mut output);
+        self.shortcuts_ui(ui);
+        self.confirm_dialog(ui, scene, player, &mut output);
+        self.name_dialog(ui, &mut output);
+
+        if self.playing {
+            // The game fills the window; the test drawer sits on the right.
+            if self.drawer_open {
+                let panel = egui::Panel::right("test_drawer")
+                    .resizable(true)
+                    .default_size(430.0)
+                    .min_size(340.0)
+                    .show(ui, |ui| ui.allocate_space(ui.available_size()));
+                output.drawer = Some(panel.response.rect);
+            }
+            output.viewport = ui.available_rect_before_wrap();
+            self.hints(ui, output.viewport);
             return output;
         }
-        // H: zone markers (not while typing in a field). Tab and Shift+Tab
-        // (the side panels) are handled by the runtime, before egui.
-        if !ui.ctx().memory(|m| m.focused().is_some()) {
-            ui.input_mut(|i| {
-                if i.consume_key(egui::Modifiers::NONE, egui::Key::H) {
-                    self.show_zones = !self.show_zones;
-                }
-            });
+        match self.workspace() {
+            Workspace::Project => {
+                self.project_page_ui(ui, player, stats, &mut output);
+                output.viewport = egui::Rect::from_min_size(
+                    ui.available_rect_before_wrap().max,
+                    egui::vec2(1.0, 1.0),
+                );
+                return output;
+            }
+            Workspace::Logic => {
+                self.graph_ui(ui, &mut output);
+                return output;
+            }
+            Workspace::Build => {}
         }
         if self.show_scene {
             egui::Panel::left("editor_scene")
@@ -298,14 +344,33 @@ impl Editor {
                 .min_size(220.0)
                 .show(ui, |ui| {
                     let playing = self.playing;
-                    let mut add_zone = false;
-                    self.show_scene = !panel_header(ui, "SCENE", Side::Left, "TAB", |ui| {
-                        add_zone = ui
-                            .add_enabled(!playing, egui::Button::new("+ ZONE").small())
-                            .clicked();
+                    let mut run = None;
+                    self.show_scene = !panel_header(ui, "OUTLINER", Side::Left, "TAB", |ui| {
+                        ui.menu_button("+ ADD", |ui| {
+                            ui.set_min_width(200.0);
+                            let mut list: Vec<commands::Command> = (0..objects::primitives().len())
+                                .map(commands::Command::AddPrimitive)
+                                .collect();
+                            list.extend([
+                                commands::Command::AddPlayerStart,
+                                commands::Command::AddZone,
+                                commands::Command::AddZoneVolume,
+                                commands::Command::AddPortal,
+                            ]);
+                            for command in list {
+                                let enabled = self.can_run(&command, scene);
+                                if ui
+                                    .add_enabled(enabled, egui::Button::new(command.label()))
+                                    .clicked()
+                                {
+                                    run = Some(command);
+                                    ui.close();
+                                }
+                            }
+                        });
                     });
-                    if add_zone {
-                        output.changed.push(self.add_zone(scene));
+                    if let Some(command) = run {
+                        self.run(command, scene, player, view, &mut output);
                     }
                     // The panel's lower part: the project's models.
                     egui::Panel::bottom("editor_models")
@@ -319,7 +384,7 @@ impl Editor {
                 });
         } else {
             self.show_scene =
-                collapsed_panel(ui, "editor_scene_strip", Side::Left, "SCENE PANEL", "TAB");
+                collapsed_panel(ui, "editor_scene_strip", Side::Left, "OUTLINER", "TAB");
         }
         if self.show_inspector {
             egui::Panel::right("editor_inspector")
@@ -384,10 +449,19 @@ impl Editor {
         }
 
         if !self.playing {
-            markers::probes(ui, view, &self.probes);
+            if self.show_probes {
+                markers::probes(ui, view, &self.probes);
+            }
             let starts = markers::player_starts(ui, view, scene, self.selected);
-            let zones = if self.show_zones {
-                markers::zones(ui, view, scene, self.selected, &stats.active_zones)
+            let zones = if self.show_zones || self.show_triggers {
+                markers::zones(
+                    ui,
+                    view,
+                    scene,
+                    self.selected,
+                    &stats.active_zones,
+                    (self.show_zones, self.show_triggers),
+                )
             } else {
                 (None, false)
             };
@@ -409,12 +483,43 @@ impl Editor {
             output.settled |= self.commit_pending(scene);
         }
 
-        self.confirm_dialog(ui, scene, player, &mut output);
-        self.name_dialog(ui, &mut output);
-
         output.viewport = ui.available_rect_before_wrap();
+        self.viewport_tools(ui, output.viewport, &mut output);
         self.hints(ui, output.viewport);
         output
+    }
+
+    /// Keys egui sees first: CTRL+K, `?`, H (not while typing).
+    fn global_keys(
+        &mut self,
+        ui: &Ui,
+        scene: &mut Scene,
+        player: &mut PlayerSettings,
+        view: &View,
+        output: &mut EditorOutput,
+    ) {
+        let typing = ui.ctx().memory(|m| m.focused().is_some());
+        let (search, help) = ui.input_mut(|i| {
+            let search = i.consume_key(egui::Modifiers::COMMAND, egui::Key::K);
+            let help = i
+                .events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Text(t) if t == "?"));
+            (search, help)
+        });
+        if search && self.palette.is_none() {
+            self.run(commands::Command::Search, scene, player, view, output);
+        }
+        if help && !typing && self.palette.is_none() {
+            self.shortcuts_open = true;
+        }
+        if !typing && self.workspace() == Workspace::Build && !self.playing {
+            ui.input_mut(|i| {
+                if i.consume_key(egui::Modifiers::NONE, egui::Key::H) {
+                    self.show_zones = !self.show_zones;
+                }
+            });
+        }
     }
 
     /// Unsaved changes, including an edit still in progress.

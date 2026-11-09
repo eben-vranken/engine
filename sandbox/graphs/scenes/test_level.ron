@@ -1,0 +1,12 @@
+(
+    nodes: [
+        (id: 1, position: (0.0, 120.0), kind: Start),
+        (id: 2, position: (0.0, -40.0), kind: Note(text: "The test level's own graph: it starts when the scene loads and carries on where it was if the player comes back. The gate story lives in the flow graph (main).")),
+        (id: 3, position: (240.0, 120.0), kind: WhenPickedUp(object: "feather")),
+        (id: 4, position: (480.0, 120.0), kind: PlaySound(sound: "audio/footstep_concrete_003.wav", at: "", volume: 1.0)),
+    ],
+    links: [
+        (from: 1, to: 3),
+        (from: 3, to: 4),
+    ],
+)

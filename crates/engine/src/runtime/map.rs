@@ -76,13 +76,13 @@ pub(super) fn map_data(
     }
 }
 
+/// The map over the whole game view (M while playing).
 pub(super) fn draw_map(ui: &egui::Ui, image: Rect, data: &MapData) {
     let painter = ui.ctx().layer_painter(egui::LayerId::new(
         egui::Order::Foreground,
         egui::Id::unique("map"),
     ));
     painter.rect_filled(image, 0.0, theme::BACKGROUND.gamma_multiply(0.9));
-    let area = image.shrink(image.height() * 0.1);
     painter.text(
         image.left_top() + vec2(16.0, 14.0),
         egui::Align2::LEFT_TOP,
@@ -93,11 +93,15 @@ pub(super) fn draw_map(ui: &egui::Ui, image: Rect, data: &MapData) {
     painter.text(
         image.right_top() + vec2(-16.0, 14.0),
         egui::Align2::RIGHT_TOP,
-        "TAB CLOSE",
+        "M CLOSE",
         egui::FontId::monospace(11.0),
         theme::AMBER_DIM,
     );
+    draw_map_in(&painter, image.shrink(image.height() * 0.1), data);
+}
 
+/// The map's zones, doorways and player, fitted into `area`.
+pub(super) fn draw_map_in(painter: &egui::Painter, area: Rect, data: &MapData) {
     // Fit everything shown, north (-z) up.
     let points = data
         .zones

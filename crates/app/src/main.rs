@@ -11,7 +11,7 @@
 //! `--game <path>` picks the game project folder (default: `sandbox`), or a
 //! project package (`.gamepack`), which is unpacked next to it and opened.
 //! `--scene <path>` opens another scene than the project's start scene
-//! (relative to the project folder, e.g. `scenes/hall.ron`).
+//! (relative to the project folder, e.g. `scenes/test_level.ron`).
 //! `--quality low` uses the low preset (for integrated graphics);
 //! `--perf-log` logs FPS and GPU times every couple of seconds.
 //! `--new-game` plays from the start even if there is a saved game.

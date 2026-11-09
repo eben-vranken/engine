@@ -1,8 +1,20 @@
 (
     flags: [
-        (name: "lever", value: Bool(false)),
-        (name: "met_keeper", value: Bool(false)),
-        (name: "kind", value: Bool(false)),
-        (name: "double_jump", value: Bool(false)),
+        (
+            name: "lever",
+            value: Bool(false),
+        ),
+        (
+            name: "met_keeper",
+            value: Bool(false),
+        ),
+        (
+            name: "kind",
+            value: Bool(false),
+        ),
+        (
+            name: "double_jump",
+            value: Bool(false),
+        ),
     ],
 )

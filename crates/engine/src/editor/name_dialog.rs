@@ -176,6 +176,6 @@ mod tests {
         );
         assert!(scene_file(&sandbox, "  ").is_err());
         assert!(scene_file(&sandbox, "../escape").is_err());
-        assert!(scene_file(&sandbox, "hall").is_err(), "taken");
+        assert!(scene_file(&sandbox, "test_level").is_err(), "taken");
     }
 }

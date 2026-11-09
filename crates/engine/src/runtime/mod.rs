@@ -4,13 +4,13 @@
 
 mod bakes;
 mod game;
-mod graph_debug;
 mod hot_reload;
 mod hud;
 mod keys;
 mod map;
 mod project;
 mod story;
+mod test_drawer;
 pub(crate) use project::start_editor;
 mod tabs;
 
@@ -172,6 +172,8 @@ struct Running {
     /// A scene a graph loaded while playing (the editor's own comes back
     /// on Stop).
     play_scene: Option<PathBuf>,
+    /// The test drawer asked to bring the looping sound to the player.
+    move_sound: bool,
     /// Whether the player was on the ground last frame (landing makes a
     /// footstep).
     was_grounded: bool,
@@ -219,25 +221,25 @@ impl ApplicationHandler for App {
         let Some(app) = &mut self.running else {
             return;
         };
-        // Tab: the map while the game runs; in the editor, the scene panel
-        // (Shift+Tab the inspector). Handled before egui, which would
+        // Tab: in the editor, the left panel (Shift+Tab the inspector). Handled before egui, which would
         // otherwise move keyboard focus between buttons; left alone while
         // typing in a field.
         if let WindowEvent::KeyboardInput { event: key, .. } = &event
             && key.physical_key == PhysicalKey::Code(KeyCode::Tab)
             && !app.overlay.wants_keyboard()
         {
-            if key.state.is_pressed() && !key.repeat {
-                if let Some(story) = &mut app.story {
-                    story.map_open = !story.map_open;
-                } else if let Some(editor) = &mut app.editor {
-                    let shift =
-                        app.input.held(KeyCode::ShiftLeft) || app.input.held(KeyCode::ShiftRight);
-                    if shift {
-                        editor.show_inspector = !editor.show_inspector;
-                    } else {
-                        editor.show_scene = !editor.show_scene;
-                    }
+            // While the game runs Tab does nothing (the map is on M).
+            if key.state.is_pressed()
+                && !key.repeat
+                && app.story.is_none()
+                && let Some(editor) = &mut app.editor
+            {
+                let shift =
+                    app.input.held(KeyCode::ShiftLeft) || app.input.held(KeyCode::ShiftRight);
+                if shift {
+                    editor.show_inspector = !editor.show_inspector;
+                } else {
+                    editor.show_scene = !editor.show_scene;
                 }
             }
             return;
@@ -429,6 +431,7 @@ impl Running {
             prompt: None,
             story: None,
             play_scene: None,
+            move_sound: false,
             was_grounded: true,
             audio: Audio::new(config.game_dir.clone())
                 .inspect_err(|err| log::error!("{err}; running without sound"))
@@ -563,7 +566,7 @@ impl Running {
             )
         });
         let scene_key = self.scene_key();
-        let map = self.story.as_ref().filter(|s| s.map_open).map(|s| {
+        let map = self.story.as_ref().map(|s| {
             map::map_data(
                 &self.scene,
                 s.world.visited.get(&scene_key),
@@ -580,15 +583,54 @@ impl Running {
         let use_font = self.story.as_ref().and_then(|s| s.custom_font) == Some(true);
         let load_font = self.story.as_ref().is_some_and(|s| s.custom_font.is_none());
         let mut font_loaded = None;
-        let mut debug = self.story.as_mut().filter(|s| s.debug_open).map(|s| {
-            (
-                s.runner.running(),
-                s.runner.flags.clone(),
-                std::mem::take(&mut s.debug_view),
-                s.debug_graph,
-            )
-        });
+        let map_open = self.story.as_ref().is_some_and(|s| s.map_open);
+        let game_drawer =
+            self.editor.is_none() && self.story.as_ref().is_some_and(|s| s.debug_open);
         let game_dir = self.game_dir.clone();
+        let drawer_stats: Vec<(&'static str, String)> = vec![
+            (
+                "FPS",
+                format!("{:.0}  {:.2} MS", self.fps.fps, self.fps.frame_ms),
+            ),
+            (
+                "GPU",
+                self.renderer
+                    .gpu_times()
+                    .map_or("-".into(), |t| format!("{:.2} MS", t.iter().sum::<f32>())),
+            ),
+            (
+                "INTERNAL",
+                format!(
+                    "{}×{} ×{}",
+                    self.renderer.layout().internal[0],
+                    self.renderer.layout().internal[1],
+                    self.renderer.layout().factor
+                ),
+            ),
+            ("ZONE", zone.clone().unwrap_or("-".into()).to_uppercase()),
+            ("ACTIVE", active_text(&active_zones)),
+            (
+                "DRAWN",
+                format!(
+                    "{} / {}",
+                    self.renderer.drawn()[0],
+                    self.renderer.drawn()[1]
+                ),
+            ),
+            (
+                "SPEED",
+                format!("{:.2} M/S", self.player.horizontal_speed()),
+            ),
+            (
+                "GROUNDED",
+                if self.player.grounded {
+                    "YES".into()
+                } else {
+                    "NO".into()
+                },
+            ),
+        ];
+        let mut drawer_actions = None;
         let hud = HudInfo {
             fps: self.fps.fps,
             frame_ms: self.fps.frame_ms,
@@ -658,6 +700,8 @@ impl Running {
         let prompt = self.prompt.clone();
         let toggles = self.audio.as_ref().map(|a| a.toggles);
         let game_running = self.behaviors.is_some();
+        let story_slot = &mut self.story;
+        let mut audio_toggles = self.audio.as_mut().map(|a| &mut a.toggles);
         let ui_frame = self.overlay.run(
             &self.window,
             self.renderer.device(),
@@ -665,14 +709,42 @@ impl Running {
             |ui| {
                 match editor {
                     Some(editor) => {
-                        editor_output =
-                            Some(editor.ui(ui, scene, settings, &editor_stats, blink, &view));
+                        let output = editor.ui(ui, scene, settings, &editor_stats, blink, &view);
+                        // PLAY's test drawer, in the space the editor kept for it.
+                        if let (Some(rect), Some(story)) = (output.drawer, story_slot.as_mut()) {
+                            let mut child = ui.new_child(
+                                egui::UiBuilder::new().max_rect(rect.shrink2(egui::vec2(8.0, 4.0))),
+                            );
+                            let inputs = test_drawer::Inputs {
+                                toggles: audio_toggles.as_deref_mut(),
+                                settings,
+                                map: map.as_ref(),
+                                stats: &drawer_stats,
+                            };
+                            drawer_actions = Some(test_drawer::drawer(&mut child, story, inputs));
+                        }
+                        editor_output = Some(output);
                         if editor.playing && tuning_open {
                             tuning_action = tuning::panel(ui, settings, &file_name, status, error);
                         }
                     }
                     None => {
-                        draw_hud(ui, &hud, &mut actions);
+                        if game_drawer && let Some(story) = story_slot.as_mut() {
+                            egui::Panel::right("test_drawer")
+                                .resizable(true)
+                                .default_size(430.0)
+                                .show(ui, |ui| {
+                                    let inputs = test_drawer::Inputs {
+                                        toggles: audio_toggles.as_deref_mut(),
+                                        settings,
+                                        map: map.as_ref(),
+                                        stats: &drawer_stats,
+                                    };
+                                    drawer_actions = Some(test_drawer::drawer(ui, story, inputs));
+                                });
+                        } else {
+                            draw_hud(ui, &hud, &mut actions);
+                        }
                         if tuning_open {
                             tuning_action = tuning::panel(ui, settings, &file_name, status, error);
                         }
@@ -697,16 +769,14 @@ impl Running {
                     };
                     crate::dialogue::draw(ui, view.image, style, use_font, &shown);
                 }
-                if let Some(map) = &map {
+                if let Some(map) = map.as_ref().filter(|_| map_open) {
                     map::draw_map(ui, view.image, map);
                 }
                 if let Some(text) = &toast {
                     draw_toast(ui, view.image, text);
                 }
-                if let Some((running, flags, view_state, index)) = &mut debug {
-                    graph_debug::window(ui, running, flags, view_state, index);
-                }
-                if let Some(toggles) = toggles {
+                // The audio switches' corner readout, unless the drawer shows them.
+                if let Some(toggles) = toggles.filter(|_| drawer_actions.is_none()) {
                     draw_audio_panel(ui, view.image, &toggles, game_running);
                 }
             },
@@ -714,14 +784,21 @@ impl Running {
         if let Some(action) = tuning_action {
             self.apply_tuning(action);
         }
-        if let Some(story) = &mut self.story {
-            if font_loaded.is_some() {
-                story.custom_font = font_loaded;
+        if let Some(story) = &mut self.story
+            && font_loaded.is_some()
+        {
+            story.custom_font = font_loaded;
+        }
+        if let Some(drawer) = drawer_actions {
+            if let Some(action) = drawer.tuning {
+                self.apply_tuning(action);
             }
-            if let Some((_, _, view_state, index)) = debug {
-                story.debug_view = view_state;
-                story.debug_graph = index;
+            if drawer.clap
+                && let Some(audio) = &mut self.audio
+            {
+                audio.clap(camera.position);
             }
+            self.move_sound |= drawer.move_sound;
         }
 
         // A click in the viewport selects what's under it, unless it was on a gizmo handle.
@@ -768,6 +845,10 @@ impl Running {
         if let Some(output) = &editor_output {
             if output.toggle_play {
                 self.toggle_play();
+            }
+            if output.restart_play {
+                self.stop_play();
+                self.start_play(false);
             }
             if output.resume_play && self.play.is_none() {
                 self.start_play(true);

@@ -66,66 +66,113 @@ impl Editor {
         }
         let player_before = player.clone();
         let project_dir = self.project_dir.as_path();
+        let scene_key = crate::graph::key(&self.scene_path);
+        let character = object.components.iter().find_map(|c| match c {
+            Component::Character(ch) if !ch.id.is_empty() => Some(ch.id.clone()),
+            _ => None,
+        });
+        let mentions = self
+            .index
+            .mentions(&scene_key, &object.name, character.as_deref());
+        let mut open_graph = None;
+
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut object.name)
+                    .desired_width((ui.available_width() - 130.0).max(80.0))
+                    .font(egui::TextStyle::Heading),
+            )
+            .on_hover_text("NAME: GRAPHS AND SWITCHES REFER TO OBJECTS BY IT");
+            egui::ComboBox::from_id_salt("inspector_zone")
+                .selected_text(format!("ZONE: {}", object.zone.to_uppercase()))
+                .width(120.0)
+                .show_ui(ui, |ui| {
+                    for zone in zones {
+                        ui.selectable_value(
+                            &mut object.zone,
+                            zone.name.clone(),
+                            zone.name.to_uppercase(),
+                        );
+                    }
+                });
+        });
+        ui.add_space(4.0);
 
         egui::ScrollArea::vertical()
             .auto_shrink(false)
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    inspector::field_label(ui, "NAME");
-                    ui.text_edit_singleline(&mut object.name);
-                });
-                ui.horizontal(|ui| {
-                    inspector::field_label(ui, "ZONE");
-                    egui::ComboBox::from_id_salt("inspector_zone")
-                        .selected_text(object.zone.to_uppercase())
-                        .show_ui(ui, |ui| {
-                            for zone in zones {
-                                ui.selectable_value(
-                                    &mut object.zone,
-                                    zone.name.clone(),
-                                    zone.name.to_uppercase(),
-                                );
-                            }
-                        });
-                });
-
-                section(ui, "TRANSFORM");
-                inspector::fields(ui, &mut object.transform, &names);
+                let t = object.transform;
+                let summary = format!(
+                    "{:.1} {:.1} {:.1} · {:.0}°",
+                    t.position.x, t.position.y, t.position.z, t.rotation.y
+                );
+                card(
+                    ui,
+                    "card_transform",
+                    "TRANSFORM",
+                    &summary,
+                    false,
+                    false,
+                    |ui| {
+                        inspector::fields(ui, &mut object.transform, &names);
+                    },
+                );
 
                 let mut remove = None;
                 for (i, component) in object.components.iter_mut().enumerate() {
-                    if component_header(ui, &inspector::title(component)) {
+                    let title = inspector::title(component);
+                    let group = group_of(component);
+                    let id = format!("card_{i}_{title}");
+                    if card(ui, &id, &title, group, true, true, |ui| {
+                        if let Component::Primitive(primitive) = component {
+                            shape_kind(ui, i, &mut primitive.shape);
+                        }
+                        inspector::fields(ui, component, &names);
+                    }) {
                         remove = Some(i);
                     }
-                    if let Component::Primitive(primitive) = component {
-                        shape_kind(ui, i, &mut primitive.shape);
-                    }
-                    inspector::fields(ui, component, &names);
                 }
                 if let Some(i) = remove {
                     object.components.remove(i);
                 }
                 if object.components.contains(&Component::PlayerStart) {
-                    player_inspector(ui, player, project_dir);
+                    card(
+                        ui,
+                        "card_player",
+                        "PLAYER FEEL",
+                        "PLAYER.RON",
+                        false,
+                        false,
+                        |ui| {
+                            player_inspector(ui, player, project_dir);
+                        },
+                    );
                 }
 
-                ui.add_space(10.0);
-                ui.menu_button("ADD COMPONENT", |ui| {
-                    for (name, component) in new_components() {
-                        let kind = std::mem::discriminant(&component);
-                        let present = object
-                            .components
-                            .iter()
-                            .any(|c| std::mem::discriminant(c) == kind);
-                        if ui
-                            .add_enabled(!present, egui::Button::new(name.to_uppercase()))
-                            .clicked()
-                        {
-                            object.components.push(component);
-                        }
+                let count = format!("{} MENTIONS", mentions.len());
+                card(ui, "card_logic", "IN LOGIC", &count, true, false, |ui| {
+                    if mentions.is_empty() {
+                        ui.label(dim("NO GRAPH NAMES THIS OBJECT YET"));
+                    }
+                    for (graph, what) in &mentions {
+                        ui.horizontal(|ui| {
+                            ui.label(graph.trim_start_matches("graphs/"));
+                            ui.label(dim(what));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui.small_button("OPEN").clicked() {
+                                    open_graph = Some(std::path::PathBuf::from(graph));
+                                }
+                            });
+                        });
                     }
                 });
+
+                ui.add_space(10.0);
+                add_behavior_menu(ui, object);
             });
+        if let Some(path) = open_graph {
+            output.open_graph = Some(path);
+        }
 
         if *object != before {
             if several {
@@ -203,20 +250,140 @@ pub(super) fn new_components() -> [(&'static str, Component); 17] {
     ]
 }
 
-/// A component's title with a REMOVE button; returns true if it was clicked.
-pub(super) fn component_header(ui: &mut Ui, title: &str) -> bool {
-    ui.add_space(10.0);
-    let removed = ui
-        .horizontal(|ui| {
+/// A collapsible inspector card: title, a short note on the right and (if
+/// `removable`) REMOVE. Returns true if REMOVE was clicked.
+fn card(
+    ui: &mut Ui,
+    id: &str,
+    title: &str,
+    note: &str,
+    open: bool,
+    removable: bool,
+    body: impl FnOnce(&mut Ui),
+) -> bool {
+    let id = ui.make_persistent_id(id);
+    let mut removed = false;
+    ui.add_space(2.0);
+    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, open)
+        .show_header(ui, |ui| {
             ui.label(RichText::new(title).strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.small_button("REMOVE").clicked()
-            })
-            .inner
+                if removable {
+                    removed = ui.small_button("REMOVE").clicked();
+                }
+                ui.label(
+                    RichText::new(note)
+                        .small()
+                        .color(crate::ui::theme::AMBER_DIM),
+                );
+            });
         })
-        .inner;
+        .body(|ui| {
+            body(ui);
+            ui.add_space(4.0);
+        });
     ui.separator();
     removed
+}
+
+/// Which ADD BEHAVIOR group a component is in.
+fn group_of(component: &Component) -> &'static str {
+    match component {
+        Component::Primitive(_) | Component::Model(_) => "SHAPE",
+        Component::Material(_) | Component::LightSource(_) | Component::FogVolume(_) => "LOOK",
+        Component::Door(_) | Component::Floating(_) | Component::PhysicsBody(_) => "MOTION",
+        Component::SoundSource(_) | Component::AcousticMaterial(_) => "SOUND",
+        Component::ZoneVolume(_) | Component::Portal(_) => "WORLD",
+        _ => "GAMEPLAY",
+    }
+}
+
+/// `new_components()` by group, with a line each: (group, [(index, line)]).
+pub(super) const BEHAVIOR_GROUPS: [(&str, &[(usize, &str)]); 5] = [
+    (
+        "GAMEPLAY",
+        &[
+            (2, "E or stand on it to flip a door"),
+            (11, "a box graphs wait for"),
+            (12, "talk with E; runs a dialogue"),
+            (13, "E to take; sets a flag"),
+            (14, "E saves the game here"),
+            (15, "blocks the way until a flag"),
+            (16, "hidden until a graph shows it"),
+        ],
+    ),
+    (
+        "MOTION",
+        &[
+            (1, "swings or slides open"),
+            (0, "bobs up and down"),
+            (3, "falls, tumbles, can be pushed"),
+        ],
+    ),
+    (
+        "SOUND",
+        &[
+            (4, "plays through the acoustics"),
+            (5, "how the surface sounds"),
+        ],
+    ),
+    (
+        "LOOK",
+        &[
+            (10, "texture, roughness, metal"),
+            (8, "lantern, candle, brazier"),
+            (9, "local mist or smoke"),
+        ],
+    ),
+    (
+        "WORLD",
+        &[(6, "where a zone is"), (7, "doorway between zones")],
+    ),
+];
+
+/// The ADD BEHAVIOR menu: every component by purpose, with a line each;
+/// those the object has already are greyed (one of each per object).
+fn add_behavior_menu(ui: &mut Ui, object: &mut Object) {
+    let components = new_components();
+    ui.menu_button(RichText::new("+ ADD BEHAVIOR").strong(), |ui| {
+        ui.set_min_width(560.0);
+        egui::Grid::new("add_behavior")
+            .num_columns(2)
+            .spacing([20.0, 6.0])
+            .show(ui, |ui| {
+                for row in BEHAVIOR_GROUPS.chunks(2) {
+                    for (group, entries) in row {
+                        ui.vertical(|ui| {
+                            ui.label(
+                                RichText::new(*group)
+                                    .small()
+                                    .color(crate::ui::theme::AMBER_DIM),
+                            );
+                            for (index, line) in entries.iter() {
+                                let (name, component) = &components[*index];
+                                let kind = std::mem::discriminant(component);
+                                let present = object
+                                    .components
+                                    .iter()
+                                    .any(|c| std::mem::discriminant(c) == kind);
+                                let button =
+                                    egui::Button::new(format!("{}\n{}", name.to_uppercase(), line))
+                                        .wrap_mode(egui::TextWrapMode::Extend);
+                                if ui
+                                    .add_enabled(!present, button)
+                                    .on_disabled_hover_text("ALREADY ADDED")
+                                    .clicked()
+                                {
+                                    object.components.push(component.clone());
+                                    ui.close();
+                                }
+                            }
+                        });
+                    }
+                    ui.end_row();
+                }
+            });
+    });
 }
 
 /// The settings of one part of the object's model. Returns true if BACK TO

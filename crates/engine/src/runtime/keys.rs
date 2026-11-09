@@ -11,11 +11,20 @@ impl Running {
         if self.editor.is_some() && self.input.pressed(KeyCode::F5) {
             self.toggle_play();
         }
-        // The running graphs and flags, for testing.
-        if self.input.pressed(KeyCode::F3)
+        // The test drawer (running graphs, flags, audio, feel, map).
+        if self.input.pressed(KeyCode::F3) {
+            match (&mut self.editor, &mut self.story) {
+                (Some(editor), _) => editor.drawer_open = !editor.drawer_open,
+                (None, Some(story)) => story.debug_open = !story.debug_open,
+                _ => {}
+            }
+        }
+        // The map while the game runs.
+        if self.input.pressed(KeyCode::KeyM)
             && let Some(story) = &mut self.story
+            && story.line.is_none()
         {
-            story.debug_open = !story.debug_open;
+            story.map_open = !story.map_open;
         }
         // A/B comparison of the acoustic simulation, anywhere.
         if let Some(audio) = &mut self.audio {

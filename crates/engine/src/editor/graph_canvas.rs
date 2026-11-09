@@ -57,6 +57,17 @@ pub struct Marks<'a> {
     pub selected_link: Option<usize>,
     /// Running nodes (the debug view).
     pub active: &'a [NodeId],
+    /// Nodes matching FIND.
+    pub found: &'a [NodeId],
+}
+
+/// Moves the view so `id` sits in the middle of a canvas of `size`.
+pub fn center_on(graph: &Graph, view: &mut CanvasView, id: NodeId, size: Vec2) {
+    if let Some(node) = graph.node(id) {
+        let half = node_size(&node.kind) * 0.5;
+        let middle = vec2(node.position.x, node.position.y) + half;
+        view.pan = size * 0.5 - middle * view.zoom;
+    }
 }
 
 fn node_size(kind: &NodeKind) -> Vec2 {
@@ -159,6 +170,7 @@ pub fn show(
         let Some(r) = rect_of(node.id) else { continue };
         let selected = marks.selected == Some(node.id);
         let active = marks.active.contains(&node.id);
+        let found = marks.found.contains(&node.id);
         let note = matches!(node.kind, NodeKind::Note { .. });
         let response = ui.interact(r, id.with(node.id.0), Sense::click_and_drag());
         if response.hovered() {
@@ -196,10 +208,12 @@ pub fn show(
         };
         let stroke = if selected {
             Stroke::new(2.0, theme::AMBER)
+        } else if found {
+            Stroke::new(2.0, theme::AMBER_DIM)
         } else if active {
             Stroke::new(1.5, theme::AMBER)
         } else {
-            Stroke::new(1.0, theme::AMBER_DIM)
+            Stroke::new(1.0, theme::LINE)
         };
         painter.rect_filled(r, 0.0, fill);
         painter.rect_stroke(r, 0.0, stroke, egui::StrokeKind::Inside);
@@ -218,6 +232,15 @@ pub fn show(
             font.clone(),
             title_color,
         );
+        if !note {
+            painter.text(
+                header.right_center() - vec2(PAD * zoom, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                node.kind.category().tag(),
+                small.clone(),
+                theme::AMBER_DIM,
+            );
+        }
         for (i, line) in node.kind.summary().iter().enumerate() {
             painter.text(
                 r.min + vec2(PAD, HEADER + PAD + ROW * i as f32) * zoom,
@@ -287,6 +310,59 @@ pub fn show(
                 graph.connect(from, output, to);
             }
             view.linking = None;
+        }
+    }
+
+    // An overview in the corner: every node, and what the canvas shows.
+    if !graph.nodes.is_empty() && rect.width() > 400.0 {
+        let map = Rect::from_min_size(rect.right_bottom() - vec2(190.0, 120.0), vec2(180.0, 110.0));
+        let (mut lo, mut hi) = (glam::Vec2::splat(f32::MAX), glam::Vec2::splat(f32::MIN));
+        for node in &graph.nodes {
+            let s = node_size(&node.kind);
+            lo = lo.min(node.position);
+            hi = hi.max(node.position + glam::Vec2::new(s.x, s.y));
+        }
+        let shown_lo = to_canvas(rect.min);
+        let shown_hi = to_canvas(rect.max);
+        lo = lo.min(shown_lo);
+        hi = hi.max(shown_hi);
+        let span = (hi - lo).max(glam::Vec2::splat(1.0));
+        let inner = map.shrink(6.0);
+        let scale = (inner.width() / span.x).min(inner.height() / span.y);
+        let at = |p: glam::Vec2| inner.min + vec2((p.x - lo.x) * scale, (p.y - lo.y) * scale);
+        painter.rect_filled(map, 0.0, theme::BACKGROUND);
+        painter.rect_stroke(
+            map,
+            0.0,
+            Stroke::new(1.0, theme::LINE),
+            egui::StrokeKind::Inside,
+        );
+        for node in &graph.nodes {
+            let s = node_size(&node.kind);
+            let r = Rect::from_min_max(
+                at(node.position),
+                at(node.position + glam::Vec2::new(s.x, s.y)),
+            );
+            let color = if marks.selected == Some(node.id) || marks.active.contains(&node.id) {
+                theme::AMBER
+            } else {
+                theme::LINE
+            };
+            painter.rect_filled(r, 0.0, color);
+        }
+        painter.rect_stroke(
+            Rect::from_min_max(at(shown_lo), at(shown_hi)),
+            0.0,
+            Stroke::new(1.0, theme::AMBER_DIM),
+            egui::StrokeKind::Inside,
+        );
+        let response = ui.interact(map, id.with("overview"), Sense::click_and_drag());
+        if (response.clicked() || response.dragged())
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let target =
+                lo + glam::Vec2::new((p.x - inner.min.x) / scale, (p.y - inner.min.y) / scale);
+            view.pan = rect.size() * 0.5 - vec2(target.x, target.y) * zoom;
         }
     }
 

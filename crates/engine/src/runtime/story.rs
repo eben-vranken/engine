@@ -30,8 +30,15 @@ pub(super) struct Story {
     /// The line on screen.
     pub line: Option<LineUi>,
     pub map_open: bool,
-    /// F3: the running graphs and flags (for testing).
+    /// Play mode: the test drawer is open (F3); the editor keeps its own.
     pub debug_open: bool,
+    /// The test drawer's tab.
+    pub tab: super::test_drawer::Tab,
+    /// What happened, with the seconds since the game started.
+    pub log: Vec<(f32, String)>,
+    clock: f32,
+    /// The zone the player was in last frame (for ENTER ZONE events).
+    last_zone: Option<String>,
     pub debug_view: CanvasView,
     /// Which running graph the debug view shows.
     pub debug_graph: usize,
@@ -87,6 +94,10 @@ impl Running {
             line: None,
             map_open: false,
             debug_open: false,
+            tab: Default::default(),
+            log: Vec::new(),
+            clock: 0.0,
+            last_zone: None,
             debug_view: CanvasView::default(),
             debug_graph: 0,
             toast: None,
@@ -103,6 +114,35 @@ impl Running {
             && !story.runner.start(&key(&flow))
         {
             log::error!("the flow graph {} didn't start", flow.display());
+        }
+        self.enter_scene_graph();
+    }
+
+    /// Starts this scene's graph, or carries on with it if the player was
+    /// here before.
+    fn enter_scene_graph(&mut self) {
+        let scene = self.scene_key();
+        let graph = crate::graph::scene_graph(&scene);
+        if !self.game_dir.join(&graph).is_file() {
+            return;
+        }
+        let Some(story) = &mut self.story else { return };
+        match story.world.scene_graphs.remove(&scene) {
+            Some(paused) => story.runner.resume(paused),
+            None => {
+                story.runner.start(&graph);
+            }
+        }
+    }
+
+    /// Pauses this scene's graph while the player is elsewhere.
+    fn leave_scene_graph(&mut self) {
+        let scene = self.scene_key();
+        let graph = crate::graph::scene_graph(&scene);
+        let Some(story) = &mut self.story else { return };
+        if story.runner.is_running(&graph) || !story.world.scene_graphs.contains_key(&scene) {
+            let paused = story.runner.suspend(&graph);
+            story.world.scene_graphs.insert(scene, paused);
         }
     }
 
@@ -310,6 +350,20 @@ impl Running {
         }
         let used = std::mem::take(&mut story.used);
         let picked = std::mem::take(&mut story.picked);
+        story.clock += dt;
+        let clock = story.clock;
+        if zone != story.last_zone {
+            if let Some(zone) = &zone {
+                story.log.push((clock, format!("ENTER ZONE {zone}")));
+            }
+            story.last_zone = zone.clone();
+        }
+        for name in &used {
+            story.log.push((clock, format!("USED {name}")));
+        }
+        for name in &picked {
+            story.log.push((clock, format!("PICKED UP {name}")));
+        }
         let world = World {
             scene: &scene_key,
             zone: zone.as_deref(),
@@ -318,6 +372,11 @@ impl Running {
             picked: &picked,
         };
         let commands = story.runner.update(&world, dt);
+        for entry in std::mem::take(&mut story.runner.log) {
+            story.log.push((clock, entry));
+        }
+        let overflow = story.log.len().saturating_sub(200);
+        story.log.drain(..overflow);
         if let Some((_, left)) = &mut story.toast {
             *left -= dt;
             if *left <= 0.0 {
@@ -464,6 +523,7 @@ impl Running {
         match Scene::load(&self.game_dir.join(path)) {
             Ok(scene) => {
                 self.record_scene_state();
+                self.leave_scene_graph();
                 self.scene = scene;
                 self.play_scene = Some(PathBuf::from(path));
                 if self.editor.is_none() {
@@ -475,6 +535,7 @@ impl Running {
                 self.apply_scene_state();
                 self.load_bake();
                 self.load_lightmaps();
+                self.enter_scene_graph();
                 log::info!("graph loaded {path}");
             }
             Err(err) => {

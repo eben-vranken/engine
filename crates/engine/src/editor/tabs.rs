@@ -131,6 +131,18 @@ impl Editor {
         }
     }
 
+    /// Whether tab `index` holds a graph (LOGIC) rather than a scene.
+    pub(super) fn is_graph_tab(&self, index: usize) -> bool {
+        index < self.tabs.len() && self.tab_path(index).starts_with("graphs")
+    }
+
+    /// The last tab of a kind (graphs or scenes), to go back to.
+    pub(super) fn last_tab(&self, graphs: bool) -> Option<usize> {
+        (0..self.tabs.len())
+            .rev()
+            .find(|&i| self.is_graph_tab(i) == graphs)
+    }
+
     pub fn tab_count(&self) -> usize {
         self.tabs.len()
     }
@@ -243,8 +255,13 @@ impl Editor {
         ui.horizontal(|ui| {
             // Swapping scenes mid-play would lose the play snapshot.
             ui.add_enabled_ui(!self.playing, |ui| {
+                let graphs = self.graph.is_some();
                 let closable = self.tabs.len() > 1;
                 for index in 0..self.tabs.len() {
+                    // Each workspace shows its own kind of tab.
+                    if self.is_graph_tab(index) != graphs {
+                        continue;
+                    }
                     let active = index == self.active_tab;
                     // Graphs with their folder, so a graph and a scene of
                     // the same name can be told apart.
@@ -284,9 +301,19 @@ impl Editor {
                     }
                     ui.add_space(6.0);
                 }
-                ui.menu_button("+", |ui| {
+                let label = if graphs {
+                    "+ OPEN GRAPH"
+                } else {
+                    "+ OPEN SCENE"
+                };
+                ui.menu_button(label, |ui| {
                     ui.label(dim("OPEN IN A NEW TAB"));
-                    for path in scene_files(&self.project_dir) {
+                    let files = if graphs {
+                        graph_files(&self.project_dir)
+                    } else {
+                        scene_files(&self.project_dir)
+                    };
+                    for path in files {
                         let open = self.tab_of(&path);
                         let mut text = path.display().to_string().to_uppercase();
                         if open.is_some() {
@@ -295,32 +322,15 @@ impl Editor {
                         if ui.button(text).clicked() {
                             match open {
                                 Some(index) => output.switch_tab = Some(index),
+                                None if graphs => output.open_graph = Some(path),
                                 None => output.new_tab = Some(path),
-                            }
-                            ui.close();
-                        }
-                    }
-                    let graphs = graph_files(&self.project_dir);
-                    if !graphs.is_empty() {
-                        ui.separator();
-                    }
-                    for path in graphs {
-                        let open = self.tab_of(&path);
-                        let mut text = path.display().to_string().to_uppercase();
-                        if open.is_some() {
-                            text.push_str("  (OPEN)");
-                        }
-                        if ui.button(text).clicked() {
-                            match open {
-                                Some(index) => output.switch_tab = Some(index),
-                                None => output.open_graph = Some(path),
                             }
                             ui.close();
                         }
                     }
                 })
                 .response
-                .on_hover_text("OPEN A SCENE OR GRAPH IN A NEW TAB");
+                .on_hover_text("OPEN ANOTHER IN A NEW TAB");
             });
         });
     }

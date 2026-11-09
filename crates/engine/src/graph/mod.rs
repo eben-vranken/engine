@@ -145,6 +145,16 @@ impl Category {
         Category::Dialogue,
     ];
 
+    /// One node's category, for its header.
+    pub fn tag(self) -> &'static str {
+        match self {
+            Category::Story => "EVENT",
+            Category::Logic => "LOGIC",
+            Category::Action => "ACTION",
+            Category::Dialogue => "DIALOGUE",
+        }
+    }
+
     pub fn title(self) -> &'static str {
         match self {
             Category::Story => "EVENTS",
@@ -277,6 +287,37 @@ impl NodeKind {
         }
     }
 
+    /// What it does, in a line (the inspector shows it).
+    pub fn description(&self) -> &'static str {
+        use NodeKind::*;
+        match self {
+            Start => "Where the graph begins: everything connected runs at once.",
+            Note { .. } => "A comment on the canvas. Does nothing.",
+            WhenInScene { .. } => "Waits until this scene is the one loaded.",
+            WhenInZone { .. } => "Waits until the player is in this zone (also if already there).",
+            WhenInTrigger { .. } => "Waits until the player is inside this trigger zone.",
+            WhenOutOfTrigger { .. } => "Waits until the player is outside this trigger zone.",
+            WhenUsed { .. } => "Waits until the player presses E at this switch.",
+            WhenPickedUp { .. } => "Waits until the player takes this pickup.",
+            WaitUntil { .. } => "Waits until the condition holds.",
+            Wait { .. } => "Waits this many seconds.",
+            Branch { .. } => "Goes on through YES or NO, by the condition.",
+            SetFlag { .. } => "Sets a flag, then goes on at once.",
+            AddToFlag { .. } => "Adds to a number flag, then goes on at once.",
+            Door { .. } => "Opens, closes or toggles a door, then goes on at once.",
+            Show { .. } => "Shows or hides an object (hidden: not drawn, no collision).",
+            PlaySound { .. } => "Plays a sound once from an object, or at the player.",
+            LoadScene { .. } => "Loads another scene; the player starts at its Player Start.",
+            RunGraph { .. } => "Runs another graph and goes on once it has ended.",
+            Rename { .. } => "Changes what a character is called from now on.",
+            SaveGame => "Saves the game here.",
+            Line { .. } => {
+                "A line of dialogue. Replies connected to it are offered; anything else connected runs when it's left."
+            }
+            Reply { .. } => "A reply the player can pick, connected from a line.",
+        }
+    }
+
     /// Whether connections can lead into it.
     pub fn has_input(&self) -> bool {
         !matches!(self, NodeKind::Start | NodeKind::Note { .. })
@@ -289,6 +330,62 @@ impl NodeKind {
             NodeKind::Branch { .. } => &["YES", "NO"],
             _ => &["NEXT"],
         }
+    }
+
+    /// The objects it names (by name).
+    pub fn objects(&self) -> Vec<&str> {
+        use NodeKind::*;
+        match self {
+            WhenInTrigger { trigger: o } | WhenOutOfTrigger { trigger: o } => vec![o.0.as_str()],
+            WhenUsed { object: o } | WhenPickedUp { object: o } | Show { object: o, .. } => {
+                vec![o.0.as_str()]
+            }
+            Door { door, .. } => vec![door.0.as_str()],
+            PlaySound { at, .. } => vec![at.0.as_str()],
+            _ => Vec::new(),
+        }
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect()
+    }
+
+    /// The character it names (a speaker, a rename).
+    pub fn character(&self) -> Option<&str> {
+        match self {
+            NodeKind::Line { speaker: c, .. } | NodeKind::Rename { character: c, .. } => {
+                Some(c.0.as_str()).filter(|s| !s.is_empty())
+            }
+            _ => None,
+        }
+    }
+
+    /// The flags it reads or sets.
+    pub fn flags(&self) -> Vec<&str> {
+        use NodeKind::*;
+        match self {
+            WaitUntil { condition } | Branch { condition } | Reply { condition, .. } => {
+                vec![condition.flag.0.as_str()]
+            }
+            SetFlag { flag, .. } | AddToFlag { flag, .. } => vec![flag.0.as_str()],
+            _ => Vec::new(),
+        }
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect()
+    }
+
+    /// Project files it names: (what, path).
+    pub fn files(&self) -> Vec<(&'static str, &str)> {
+        use NodeKind::*;
+        match self {
+            WhenInScene { scene } | LoadScene { scene } => vec![("SCENE", scene.0.as_str())],
+            RunGraph { graph } => vec![("GRAPH", graph.0.as_str())],
+            PlaySound { sound, .. } | Line { sound, .. } => vec![("SOUND", sound.0.as_str())],
+            _ => Vec::new(),
+        }
+        .into_iter()
+        .filter(|(_, s)| !s.is_empty())
+        .collect()
     }
 
     /// A few short lines describing its settings, for the canvas.
@@ -489,6 +586,23 @@ impl Graph {
             .filter(|n| n.kind == NodeKind::Start)
             .map(|n| n.id)
     }
+}
+
+/// Where a scene's own graph lives: `graphs/scenes/<scene name>.ron`. It
+/// starts when the scene loads, pauses when the player leaves and carries
+/// on when they return.
+pub fn scene_graph(scene: &str) -> String {
+    let stem = Path::new(scene)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    format!("graphs/scenes/{stem}.ron")
+}
+
+/// The scene a scene graph belongs to, if `graph` is one.
+pub fn scene_of_graph(graph: &str) -> Option<String> {
+    let stem = graph.strip_prefix("graphs/scenes/")?.strip_suffix(".ron")?;
+    Some(format!("scenes/{stem}.ron"))
 }
 
 /// A project path as graphs and saves write it: relative, with `/`.

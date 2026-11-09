@@ -1,6 +1,6 @@
-//! The MODELS list under the scene panel: every model in the project, with
-//! a search. Drag one into the viewport to place it there, `+` to place it
-//! in front of the camera.
+//! The assets drawer under the outliner: MODELS (drag one into the
+//! viewport to place it there, `+` to place it in front of the camera),
+//! TEXTURES and SOUNDS (click to copy the path for a field).
 
 use super::files::all_models;
 use super::{Editor, EditorOutput, dim};
@@ -17,7 +17,11 @@ const RESCAN: Duration = Duration::from_secs(2);
 pub(super) struct ModelList {
     pub search: String,
     files: Vec<PathBuf>,
+    textures: Vec<String>,
+    sounds: Vec<String>,
     scanned: Option<Instant>,
+    /// 0 models, 1 textures, 2 sounds.
+    tab: usize,
 }
 
 impl Editor {
@@ -25,9 +29,57 @@ impl Editor {
         let list = &mut self.models;
         if list.scanned.is_none_or(|t| t.elapsed() > RESCAN) {
             list.files = all_models(&self.project_dir);
+            list.textures = super::files::texture_files(&self.project_dir);
+            list.sounds = super::files::sound_files(&self.project_dir);
             list.scanned = Some(Instant::now());
         }
-        super::section(ui, "MODELS");
+        ui.horizontal(|ui| {
+            for (i, name) in ["MODELS", "TEXTURES", "SOUNDS"].iter().enumerate() {
+                let text = if list.tab == i {
+                    egui::RichText::new(*name).strong()
+                } else {
+                    dim(name)
+                };
+                if ui.selectable_label(list.tab == i, text).clicked() {
+                    list.tab = i;
+                }
+            }
+        });
+        ui.separator();
+        if list.tab > 0 {
+            let files = if list.tab == 1 {
+                &list.textures
+            } else {
+                &list.sounds
+            };
+            let mut copied = None;
+            egui::ScrollArea::vertical()
+                .id_salt("asset_files")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if files.is_empty() {
+                        ui.label(dim(if list.tab == 1 {
+                            "NO TEXTURES YET: DROP PNG / JPEG FILES IN TEXTURES/"
+                        } else {
+                            "NO SOUNDS YET: DROP .WAV FILES ON THE WINDOW"
+                        }));
+                    }
+                    for file in files {
+                        if ui
+                            .selectable_label(false, file.as_str())
+                            .on_hover_text("CLICK TO COPY THE PATH, FOR A TEXTURE OR SOUND FIELD")
+                            .clicked()
+                        {
+                            ui.ctx().copy_text(file.clone());
+                            copied = Some(file.clone());
+                        }
+                    }
+                });
+            if let Some(file) = copied {
+                self.show_message(format!("COPIED {file}"));
+            }
+            return;
+        }
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui

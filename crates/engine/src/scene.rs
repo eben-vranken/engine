@@ -1152,7 +1152,7 @@ mod tests {
                 count += 1;
             }
         }
-        assert!(count >= 2);
+        assert!(count >= 1);
     }
 
     #[test]

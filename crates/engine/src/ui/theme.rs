@@ -1,11 +1,16 @@
 //! The amber terminal look (BRIEF.md → UI style): one amber accent on
-//! near-black, a dimmer amber for secondary text and lines, one monospace
-//! face, 1 px square frames, no shadows.
+//! near-black, a dimmer amber for secondary text, a dark amber for lines,
+//! one monospace face, 1 px square frames, no shadows.
 
 use egui::{Color32, CornerRadius, FontFamily, FontId, Shadow, Stroke, TextStyle};
 
 pub const AMBER: Color32 = Color32::from_rgb(255, 158, 44);
-pub const AMBER_DIM: Color32 = Color32::from_rgb(150, 88, 24);
+/// Secondary text: dimmer, still readable on the background (6.3:1).
+pub const AMBER_DIM: Color32 = Color32::from_rgb(192, 132, 64);
+/// Lines and frames (not for text: too dark to read).
+pub const LINE: Color32 = Color32::from_rgb(74, 52, 24);
+/// A raised surface: panel headers, group rows.
+pub const RAISED: Color32 = Color32::from_rgb(17, 13, 9);
 pub const BACKGROUND: Color32 = Color32::from_rgb(10, 8, 6);
 pub const ALERT: Color32 = Color32::from_rgb(255, 64, 48);
 
@@ -31,22 +36,22 @@ pub fn apply(ctx: &egui::Context) {
         v.error_fg_color = ALERT;
         v.panel_fill = BACKGROUND;
         v.window_fill = BACKGROUND;
-        v.window_stroke = Stroke::new(1.0, AMBER_DIM);
+        v.window_stroke = Stroke::new(1.0, LINE);
         v.window_corner_radius = CornerRadius::ZERO;
         v.menu_corner_radius = CornerRadius::ZERO;
         v.window_shadow = Shadow::NONE;
         v.popup_shadow = Shadow::NONE;
         v.extreme_bg_color = BACKGROUND;
         v.faint_bg_color = BACKGROUND;
-        v.selection.bg_fill = AMBER_DIM;
+        v.selection.bg_fill = Color32::from_rgb(90, 56, 18);
         v.selection.stroke = Stroke::new(1.0, AMBER);
 
         let w = &mut v.widgets;
         for (state, fill, stroke) in [
-            (&mut w.noninteractive, BACKGROUND, AMBER_DIM),
-            (&mut w.inactive, BACKGROUND, AMBER_DIM),
+            (&mut w.noninteractive, BACKGROUND, LINE),
+            (&mut w.inactive, BACKGROUND, LINE),
             (&mut w.hovered, BACKGROUND, AMBER),
-            (&mut w.active, AMBER_DIM, AMBER),
+            (&mut w.active, Color32::from_rgb(90, 56, 18), AMBER),
             (&mut w.open, BACKGROUND, AMBER),
         ] {
             state.bg_fill = fill;
