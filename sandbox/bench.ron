@@ -1,0 +1,27 @@
+// The sandbox's measuring route: `cargo run -p app -- --bench sandbox/bench.ron --perf-log`.
+// Stops are walked to in straight lines (x, z), so the route goes through doorways.
+(stops: [
+    // Spawn, in the plaza next to the script-moved watcher.
+    (name: "spawn", to: (0.0, 6.0), wait: 10.0),
+    // Through the doorway into the yard, take the feather (shows the high ledge).
+    (name: "yard doorway", to: (0.0, 16.0)),
+    (name: "feather", to: (9.3, 19.3), look: Some((10.0, 0.4, 20.0)), use: true, wait: 6.0),
+    // Pull the lever (opens the gate).
+    (name: "lever", to: (3.0, 30.0), look: Some((3.0, 1.0, 31.5)), use: true, wait: 6.0),
+    // Push through the crates.
+    (name: "before crates", to: (-12.0, 30.0)),
+    (name: "crates", to: (-12.0, 37.0), wait: 6.0),
+    // Round to the pressure plate (holds the sliding door open while stood on).
+    (name: "below crates", to: (-12.0, 26.0)),
+    (name: "pressure plate", to: (-23.0, 27.5), wait: 4.0),
+    // Press the swing door's switch.
+    (name: "back from sliding door", to: (-23.0, 26.0)),
+    (name: "east of swing door", to: (-12.0, 26.0)),
+    (name: "south of swing door", to: (-12.0, 20.0)),
+    (name: "door switch", to: (-16.5, 20.4), look: Some((-16.5, 1.2, 21.7)), use: true, wait: 6.0),
+    // Back to the plaza, then far from the watcher, in the course.
+    (name: "yard doorway back", to: (0.0, 16.0)),
+    (name: "plaza", to: (3.0, 1.0), wait: 6.0),
+    (name: "course doorway", to: (0.0, -14.0)),
+    (name: "course", to: (0.0, -24.0), wait: 10.0),
+])

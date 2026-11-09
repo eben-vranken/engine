@@ -38,53 +38,84 @@ pub struct AcousticGeometry {
     instances: Vec<(usize, InstancedMeshHandle, Mat4)>,
 }
 
+/// What the acoustic geometry is made of: every solid object's mesh,
+/// resolved through `Assets` on the main thread so the build itself can run
+/// on another one.
+pub struct GeometrySource {
+    parts: Vec<Part>,
+}
+
+struct Part {
+    object: usize,
+    mesh: MeshData,
+    transform: Mat4,
+    preset: usize,
+    moves: bool,
+}
+
+impl GeometrySource {
+    pub fn gather(scene: &Scene, assets: &mut Assets) -> Self {
+        let mut parts = Vec::new();
+        for (object, geometry, transform, solid) in scene.colliders() {
+            if !blocks_sound(scene, object, solid) {
+                continue;
+            }
+            let mesh = match assets.resolve(geometry) {
+                Resolved::Shape(shape) => MeshData::from_shape(shape),
+                Resolved::Model(model) if model.parts.is_empty() => continue,
+                Resolved::Model(model) => model.mesh.clone(),
+            };
+            parts.push(Part {
+                object,
+                mesh,
+                transform: transform.matrix(),
+                preset: preset_of(scene, object) as usize,
+                moves: moves(scene, object),
+            });
+        }
+        Self { parts }
+    }
+}
+
 impl AcousticGeometry {
     pub fn build(
         context: &Context,
         scene: &Scene,
         assets: &mut Assets,
     ) -> Result<Self, AudioError> {
+        Self::from_source(context, &GeometrySource::gather(scene, assets))
+    }
+
+    /// Static objects merged into one mesh, moving ones as instances.
+    pub fn from_source(context: &Context, source: &GeometrySource) -> Result<Self, AudioError> {
         let mut acoustic = audionimbus::Scene::try_new(context).map_err(steam)?;
         let materials: Vec<Material> = PRESETS.iter().map(|&p| material(p)).collect();
         let mut world = MeshBuilder::default();
         let mut instances = Vec::new();
-        for (object, geometry, transform, solid) in scene.colliders() {
-            if !blocks_sound(scene, object, solid) {
-                continue;
-            }
-            let resolved = assets.resolve(geometry);
-            if matches!(&resolved, Resolved::Model(model) if model.parts.is_empty()) {
-                continue;
-            }
-            let shape_mesh;
-            let mesh = match &resolved {
-                Resolved::Shape(shape) => {
-                    shape_mesh = MeshData::from_shape(*shape);
-                    &shape_mesh
-                }
-                Resolved::Model(model) => &model.mesh,
-            };
-            let preset = preset_of(scene, object) as usize;
-            if moves(scene, object) {
+        for part in &source.parts {
+            if part.moves {
                 let mut local = MeshBuilder::default();
-                local.add(mesh, Mat4::IDENTITY, preset);
+                local.add(&part.mesh, Mat4::IDENTITY, part.preset);
                 let mut sub = audionimbus::Scene::try_new(context).map_err(steam)?;
                 if let Some(static_mesh) = local.build(&sub, &materials)? {
                     sub.add_static_mesh(static_mesh);
                 }
                 sub.commit();
-                let placed = transform.matrix();
                 let instance = InstancedMesh::try_new(
                     &acoustic,
                     &InstancedMeshSettings {
                         sub_scene: sub,
-                        transform: matrix(placed),
+                        transform: matrix(part.transform),
                     },
                 )
                 .map_err(steam)?;
-                instances.push((object, acoustic.add_instanced_mesh(instance), placed));
+                instances.push((
+                    part.object,
+                    acoustic.add_instanced_mesh(instance),
+                    part.transform,
+                ));
             } else {
-                world.add(mesh, transform.matrix(), preset);
+                world.add(&part.mesh, part.transform, part.preset);
             }
         }
         if let Some(static_mesh) = world.build(&acoustic, &materials)? {
@@ -152,12 +183,7 @@ fn blocks_sound(scene: &Scene, object: usize, solid: bool) -> bool {
 
 /// Objects whose geometry moves while the game runs.
 fn moves(scene: &Scene, object: usize) -> bool {
-    scene.objects[object].components.iter().any(|c| {
-        matches!(
-            c,
-            Component::Door(_) | Component::Floating(_) | Component::PhysicsBody(_)
-        )
-    })
+    scene.objects[object].is_dynamic()
 }
 
 fn preset_of(scene: &Scene, object: usize) -> AcousticPreset {
@@ -266,6 +292,26 @@ mod tests {
     use crate::render::mesh::Shape;
     use crate::scene::{AcousticMaterial, test_scene};
     use glam::Vec3;
+
+    /// A solid object a script moves is an instance that follows it, so
+    /// moving it doesn't look like an edit (which would rebuild the scenes).
+    #[test]
+    fn scripted_objects_move_without_a_rebuild() {
+        let box_shape = Shape::Box { size: Vec3::ONE };
+        let mut scene = test_scene(vec![(box_shape, Vec3::ZERO)]);
+        let before = signature(&scene);
+        scene.objects[0].transform.position.y += 0.1;
+        assert_ne!(signature(&scene), before, "a static object moved");
+
+        scene.objects[0]
+            .components
+            .push(Component::Script(crate::scene::Script {
+                script: crate::scene::ScriptRef("scripts/a.rhai".into()),
+            }));
+        let before = signature(&scene);
+        scene.objects[0].transform.position.y += 0.1;
+        assert_eq!(signature(&scene), before);
+    }
 
     /// Steam Audio's occlusion of a source 5 m ahead of a listener, with a
     /// wall halfway between them; 1 = clear, 0 = blocked.

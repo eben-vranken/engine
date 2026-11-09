@@ -93,12 +93,7 @@ pub fn draw_keys(scene: &Scene) -> Vec<DrawKey> {
 
 /// Objects that move while the game runs aren't baked: they get probes.
 pub fn moves(object: &Object) -> bool {
-    object.components.iter().any(|c| {
-        matches!(
-            c,
-            Component::Door(_) | Component::Floating(_) | Component::PhysicsBody(_)
-        )
-    })
+    object.is_dynamic()
 }
 
 /// Light arriving from six directions (+X, -X, +Y, -Y, +Z, -Z).

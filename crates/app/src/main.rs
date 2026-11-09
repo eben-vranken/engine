@@ -18,6 +18,9 @@
 //! `--new-game` plays from the start even if there is a saved game.
 //! `--player` plays the game as a player gets it: no tuning panel, test
 //! drawer, debug readout or debug keys (the editor's Shift+F5 opens this).
+//! `--bench <route.ron>` walks the player along a route on its own, then
+//! quits (always a new game); with `--perf-log`, for before/after numbers.
+//! `sandbox/bench.ron` is the sandbox's route.
 //! Game projects are content-only folders; they never contain engine code.
 //!
 //! Release builds on Windows are window-only apps (no console window);
@@ -43,6 +46,7 @@ struct Args {
     perf_log: bool,
     new_game: bool,
     player: bool,
+    bench: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
@@ -53,6 +57,7 @@ fn parse_args() -> Args {
     let mut perf_log = false;
     let mut new_game = false;
     let mut player = false;
+    let mut bench = None;
     let mut args = std::env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -73,6 +78,7 @@ fn parse_args() -> Args {
             "--perf-log" => perf_log = true,
             "--new-game" => new_game = true,
             "--player" => player = true,
+            "--bench" => bench = args.next().map(PathBuf::from),
             other => eprintln!("ignoring unknown argument: {other}"),
         }
     }
@@ -85,6 +91,7 @@ fn parse_args() -> Args {
         perf_log,
         new_game,
         player,
+        bench,
     }
 }
 
@@ -133,6 +140,10 @@ fn main() -> anyhow::Result<()> {
     );
 
     let editor = args.mode == Mode::Editor;
+    let bench = match &args.bench {
+        Some(path) if !editor => Some(engine::bench::Route::load(path)?),
+        _ => None,
+    };
     let player = args.player && !editor;
     if editor {
         // For the launcher's list.
@@ -158,8 +169,10 @@ fn main() -> anyhow::Result<()> {
         quality: args.quality,
         render_scale: project.settings.render_scale,
         perf_log: args.perf_log,
-        new_game: args.new_game,
+        // A bench always starts from the beginning.
+        new_game: args.new_game || bench.is_some(),
         player,
+        bench,
     })?;
     Ok(())
 }

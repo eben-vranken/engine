@@ -17,6 +17,7 @@
 pub mod assets;
 pub mod audio;
 pub mod behaviors;
+pub mod bench;
 pub mod camera;
 mod cursor;
 pub mod dialogue;

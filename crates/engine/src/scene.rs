@@ -184,6 +184,24 @@ pub struct Object {
     pub hidden: bool,
 }
 
+impl Object {
+    /// Whether the object can move while the game runs: a door, a floating
+    /// or physics body, or a script (scripts may set the transform). Such
+    /// objects are never merged into static geometry (acoustic scene,
+    /// light bakes); they follow the object instead.
+    pub fn is_dynamic(&self) -> bool {
+        self.components.iter().any(|c| {
+            matches!(
+                c,
+                Component::Door(_)
+                    | Component::Floating(_)
+                    | Component::PhysicsBody(_)
+                    | Component::Script(_)
+            )
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Reflect)]
 #[serde(default)]
 pub struct Transform {

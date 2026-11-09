@@ -80,6 +80,8 @@ pub struct RunConfig {
     /// Play mode as a player gets it: no tuning panel, test drawer, debug
     /// readout or debug keys.
     pub player: bool,
+    /// Play mode: walk this route instead of reading the keyboard, then quit.
+    pub bench: Option<crate::bench::Route>,
 }
 
 pub fn run(config: RunConfig) -> Result<(), RunError> {
@@ -146,6 +148,8 @@ struct Running {
     rmb_look: bool,
     last_frame: Instant,
     fps: FpsCounter,
+    /// `--bench`: the route being walked.
+    bench: Option<crate::bench::Bench>,
     /// `--perf-log`: log the numbers below every `perf::INTERVAL`.
     perf_log: bool,
     /// Frame times, summarised every `perf::INTERVAL` (`perf_rolled`).
@@ -429,6 +433,11 @@ impl Running {
             rmb_look: false,
             last_frame: Instant::now(),
             fps: FpsCounter::default(),
+            bench: config
+                .bench
+                .clone()
+                .filter(|_| !config.editor)
+                .map(crate::bench::Bench::new),
             perf_log: config.perf_log,
             frame_times: perf::FrameTimes::default(),
             perf_rolled: Instant::now(),
@@ -573,6 +582,17 @@ impl Running {
         if self.perf_rolled.elapsed().as_secs_f32() >= perf::INTERVAL {
             self.perf_rolled = Instant::now();
             self.roll_perf();
+        }
+
+        if let Some(bench) = &mut self.bench {
+            let eye = self.player.camera(&self.settings).position.y - self.player.feet.y;
+            match bench.drive(&mut self.player, eye, dt) {
+                Some(input) => self.input = input,
+                None => {
+                    self.bench = None;
+                    self.exit_requested = true;
+                }
+            }
         }
 
         let mut actions = HudActions::default();

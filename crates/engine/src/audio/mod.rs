@@ -22,6 +22,7 @@ mod timing;
 
 use crate::assets::Assets;
 use crate::camera::Camera;
+use crate::perf;
 use crate::player::settings::{Footsteps, RandomOrder};
 use crate::scene::{AcousticPreset, Component, Scene, SoundSource};
 use crate::zones::Active;
@@ -47,7 +48,7 @@ use mixer::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 pub use timing::Report as TimingReport;
@@ -56,9 +57,9 @@ use timing::Timing;
 /// Samples per channel processed at a time (about 11 ms at 48 kHz): small,
 /// so sounds start soon after what triggers them.
 const FRAME_SIZE: u32 = 512;
-/// How often edits to static geometry are picked up (rebuilding is cheap,
-/// but not every frame of a drag).
-const GEOMETRY_CHECK: Duration = Duration::from_millis(100);
+/// How often edits to static geometry are picked up (rebuilds run on a
+/// worker thread, but not for every frame of a drag).
+const GEOMETRY_CHECK: Duration = Duration::from_millis(250);
 /// Rays per source for volumetric occlusion: more = smoother fades.
 const OCCLUSION_SAMPLES: u32 = 32;
 /// Seconds for occlusion changes to settle, so a door opening fades the
@@ -135,6 +136,8 @@ pub struct Audio {
     /// Fingerprint the geometry was built from, and when it was last checked.
     geometry_signature: u64,
     geometry_checked: Instant,
+    /// A rebuild running on a worker thread.
+    geometry_job: Option<Receiver<Result<Rebuilt, AudioError>>>,
     last_update: Instant,
     voices: Vec<Entry>,
     next_id: u32,
@@ -304,6 +307,7 @@ impl Audio {
             listener_reverb,
             geometry_signature: geometry::signature(&Scene::default()),
             geometry_checked: Instant::now(),
+            geometry_job: None,
             last_update: Instant::now(),
             voices: Vec::new(),
             next_id: 0,
@@ -799,35 +803,49 @@ impl Audio {
     /// Rebuilds both acoustic scenes when static objects were edited, and
     /// moves the moving ones every frame: the direct scene at once, the
     /// reflection scene on its thread between passes.
+    ///
+    /// A rebuild runs on a worker thread: building takes milliseconds, and
+    /// handing the reflection simulator a new scene waits for its current
+    /// pass (up to hundreds of milliseconds while sources move).
     fn update_geometry(&mut self, scene: &Scene, assets: &mut Assets) {
-        if self.geometry_checked.elapsed() >= GEOMETRY_CHECK {
+        if let Some(job) = &self.geometry_job {
+            match job.try_recv() {
+                Ok(Ok(rebuilt)) => {
+                    perf::time("ACOUSTIC SET SCENE", || {
+                        self.direct_geometry = rebuilt.direct;
+                        self.direct.set_scene(&self.direct_geometry.scene);
+                        self.direct.commit();
+                    });
+                    // Already set on the worker; the thread commits it.
+                    self.reflection_geometry = rebuilt.reflection;
+                    self.simulation.request_simulator_commit();
+                    self.geometry_signature = rebuilt.signature;
+                    self.geometry_job = None;
+                }
+                Ok(Err(err)) => {
+                    log::error!("acoustic geometry: {err}");
+                    self.geometry_job = None;
+                }
+                Err(TryRecvError::Disconnected) => self.geometry_job = None,
+                Err(TryRecvError::Empty) => {}
+            }
+        } else if self.geometry_checked.elapsed() >= GEOMETRY_CHECK {
             self.geometry_checked = Instant::now();
             let signature = geometry::signature(scene);
             if signature != self.geometry_signature {
-                let built = crate::perf::time("ACOUSTIC BUILD", || {
-                    AcousticGeometry::build(&self.context, scene, assets).and_then(|d| {
-                        Ok((d, AcousticGeometry::build(&self.context, scene, assets)?))
-                    })
+                let source = perf::time("ACOUSTIC GATHER", || {
+                    geometry::GeometrySource::gather(scene, assets)
                 });
-                match built {
-                    Ok((direct, reflection)) => {
-                        crate::perf::time("ACOUSTIC SET SCENE", || {
-                            self.direct_geometry = direct;
-                            self.direct.set_scene(&self.direct_geometry.scene);
-                            self.reflection_geometry = reflection;
-                            self.reflection.set_scene(&self.reflection_geometry.scene);
-                        });
-                        crate::perf::time("ACOUSTIC COMMIT", || self.direct.commit());
-                        self.simulation.request_simulator_commit();
-                        self.geometry_signature = signature;
-                    }
-                    Err(err) => log::error!("acoustic geometry: {err}"),
-                }
-                return;
+                self.geometry_job = Some(rebuild(
+                    self.context.clone(),
+                    self.reflection.clone(),
+                    source,
+                    signature,
+                ));
             }
         }
         if self.direct_geometry.follow(scene) {
-            crate::perf::time("ACOUSTIC MOVE COMMIT", || {
+            perf::time("ACOUSTIC MOVE COMMIT", || {
                 self.direct_geometry.scene.commit()
             });
         }
@@ -980,4 +998,42 @@ fn vector(v: Vec3) -> Vector3 {
 
 fn steam(e: audionimbus::SteamAudioError) -> AudioError {
     AudioError::SteamAudio(e.to_string())
+}
+
+/// Acoustic scenes built on a worker thread, the reflection one already
+/// handed to its simulator.
+struct Rebuilt {
+    direct: AcousticGeometry,
+    reflection: AcousticGeometry,
+    signature: u64,
+}
+
+fn rebuild(
+    context: Context,
+    mut reflection: ReflectionSimulator,
+    source: geometry::GeometrySource,
+    signature: u64,
+) -> Receiver<Result<Rebuilt, AudioError>> {
+    let (send, receive) = channel();
+    std::thread::spawn(move || {
+        let built = perf::time("ACOUSTIC BUILD", || {
+            Ok::<_, AudioError>((
+                AcousticGeometry::from_source(&context, &source)?,
+                AcousticGeometry::from_source(&context, &source)?,
+            ))
+        });
+        let result = built.map(|(direct, reflection_geometry)| {
+            // Waits for the reflection pass in progress: off the main thread.
+            perf::time("ACOUSTIC WAIT FOR REFLECTIONS", || {
+                reflection.set_scene(&reflection_geometry.scene)
+            });
+            Rebuilt {
+                direct,
+                reflection: reflection_geometry,
+                signature,
+            }
+        });
+        let _ = send.send(result);
+    });
+    receive
 }
