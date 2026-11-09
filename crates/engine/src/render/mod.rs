@@ -224,8 +224,16 @@ struct SceneLight {
 }
 
 fn scene_lights(scene: &Scene, assets: &mut Assets) -> Vec<SceneLight> {
-    scene
-        .lights(|path, part| assets.model(path)?.part_center(part))
+    to_scene_lights(scene.lights(|path, part| assets.model(path)?.part_center(part)))
+}
+
+/// One object's lights (see `Scene::lights_of`).
+fn object_lights(scene: &Scene, index: usize, assets: &mut Assets) -> Vec<SceneLight> {
+    to_scene_lights(scene.lights_of(index, |path, part| assets.model(path)?.part_center(part)))
+}
+
+fn to_scene_lights(lights: Vec<(usize, &LightSource, Vec3)>) -> Vec<SceneLight> {
+    lights
         .into_iter()
         .map(|(object, light, position)| SceneLight {
             object,
@@ -243,6 +251,8 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     adapter_name: String,
+    /// Counts full `set_scene` uploads (a new or reloaded scene).
+    uploads: u64,
     /// Which light (object) had each shadow slot last frame.
     shadow_owners: Vec<Option<usize>>,
     /// What the surface supports, to tell which mode `Auto*` picked.
@@ -895,6 +905,7 @@ impl Renderer {
             light_buffer,
             shadows,
             shadow_owners,
+            uploads: 0,
             present_modes: caps.present_modes.clone(),
             fog,
             post,
@@ -1059,6 +1070,13 @@ impl Renderer {
     /// zones' color grades.
     pub fn set_scene(&mut self, scene: &Scene, assets: &mut Assets) {
         crate::perf::time("SET SCENE", || self.upload_scene(scene, assets));
+        self.uploads += 1;
+    }
+
+    /// How many full `set_scene` uploads there have been: a change means
+    /// the scene may have been replaced.
+    pub fn uploads(&self) -> u64 {
+        self.uploads
     }
 
     fn upload_scene(&mut self, scene: &Scene, assets: &mut Assets) {
@@ -1140,14 +1158,16 @@ impl Renderer {
     /// its transform, color, visibility and lights, and its mesh if the
     /// geometry changed.
     pub fn update_object(&mut self, scene: &Scene, index: usize, assets: &mut Assets) {
+        crate::perf::time("UPDATE OBJECT", || {
+            self.reupload_object(scene, index, assets)
+        });
+    }
+
+    fn reupload_object(&mut self, scene: &Scene, index: usize, assets: &mut Assets) {
         let object = &scene.objects[index];
         // The object's lights (its own and its parts'), as they are now.
         self.lights.retain(|l| l.object != index);
-        self.lights.extend(
-            scene_lights(scene, assets)
-                .into_iter()
-                .filter(|l| l.object == index),
-        );
+        self.lights.extend(object_lights(scene, index, assets));
 
         if object
             .components
@@ -1159,10 +1179,7 @@ impl Renderer {
                 &fog::regions(scene, |zone| self.zone_light(zone)),
             );
         }
-        let renderables: Vec<_> = scene
-            .renderables_with_hidden()
-            .filter(|r| r.object == index)
-            .collect();
+        let renderables: Vec<_> = scene.renderables_of(index).collect();
         let slots: Vec<usize> = (0..self.draws.len())
             .filter(|&i| self.draws[i].object == index)
             .collect();

@@ -16,7 +16,6 @@ use crate::player::{Player, Spawn};
 use crate::project::Project;
 use crate::save::{self, SaveGame, SceneState, WorldState};
 use crate::scene::{Component, Scene};
-use crate::zones::ZoneMap;
 use glam::Vec3;
 use std::path::PathBuf;
 use winit::keyboard::KeyCode;
@@ -337,7 +336,8 @@ impl Running {
         self.dialogue_keys();
         let scene_key = self.scene_key();
         let body = self.body();
-        let zone = ZoneMap::new(&self.scene)
+        let zone = self
+            .zone_map
             .zone_at(body)
             .map(|z| self.scene.zones[z].name.clone());
         let triggers: Vec<String> = self

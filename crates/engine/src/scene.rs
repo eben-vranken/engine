@@ -949,35 +949,39 @@ impl Scene {
     /// `renderables`, hidden objects too (the renderer keeps them, to show
     /// them again without a rebuild).
     pub fn renderables_with_hidden(&self) -> impl Iterator<Item = Renderable<'_>> {
-        self.objects.iter().enumerate().flat_map(|(index, object)| {
-            let material = object.components.iter().find_map(|c| match c {
-                Component::Material(m) => Some(m),
-                _ => None,
-            });
-            object.components.iter().flat_map(move |c| {
-                let groups: Vec<(Geometry, Vec3, Vec3)> = match c {
-                    Component::Primitive(p) => {
-                        vec![(Geometry::Shape(p.shape), p.color, p.emissive)]
-                    }
-                    Component::Model(m) => m
-                        .groups()
-                        .map(|(parts, color, emissive, _)| {
-                            (Geometry::Model(&m.path, parts), color, emissive)
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                groups
-                    .into_iter()
-                    .map(move |(geometry, color, emissive)| Renderable {
-                        object: index,
-                        geometry,
-                        color,
-                        emissive,
-                        transform: &object.transform,
-                        material,
+        (0..self.objects.len()).flat_map(|index| self.renderables_of(index))
+    }
+
+    /// One object's renderables, hidden or not.
+    pub fn renderables_of(&self, index: usize) -> impl Iterator<Item = Renderable<'_>> {
+        let object = &self.objects[index];
+        let material = object.components.iter().find_map(|c| match c {
+            Component::Material(m) => Some(m),
+            _ => None,
+        });
+        object.components.iter().flat_map(move |c| {
+            let groups: Vec<(Geometry, Vec3, Vec3)> = match c {
+                Component::Primitive(p) => {
+                    vec![(Geometry::Shape(p.shape), p.color, p.emissive)]
+                }
+                Component::Model(m) => m
+                    .groups()
+                    .map(|(parts, color, emissive, _)| {
+                        (Geometry::Model(&m.path, parts), color, emissive)
                     })
-            })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            groups
+                .into_iter()
+                .map(move |(geometry, color, emissive)| Renderable {
+                    object: index,
+                    geometry,
+                    color,
+                    emissive,
+                    transform: &object.transform,
+                    material,
+                })
         })
     }
 
@@ -989,29 +993,52 @@ impl Scene {
         mut center: impl FnMut(&str, &str) -> Option<Vec3>,
     ) -> Vec<(usize, &LightSource, Vec3)> {
         let mut lights = Vec::new();
-        for (index, object) in self.shown() {
-            for component in &object.components {
-                match component {
-                    Component::LightSource(light) => {
-                        lights.push((index, light, object.transform.position));
-                    }
-                    Component::Model(model) => {
-                        for part in &model.parts {
-                            let Some(light) = &part.light else {
-                                continue;
-                            };
-                            let position = match center(&model.path, &part.name) {
-                                Some(c) => object.transform.matrix().transform_point3(c),
-                                None => object.transform.position,
-                            };
-                            lights.push((index, light, position));
-                        }
-                    }
-                    _ => {}
-                }
-            }
+        for (index, _) in self.shown() {
+            self.push_lights(index, &mut center, &mut lights);
         }
         lights
+    }
+
+    /// `lights` of one object (none while it is hidden).
+    pub fn lights_of(
+        &self,
+        index: usize,
+        mut center: impl FnMut(&str, &str) -> Option<Vec3>,
+    ) -> Vec<(usize, &LightSource, Vec3)> {
+        let mut lights = Vec::new();
+        if self.objects.get(index).is_some_and(|o| !o.hidden) {
+            self.push_lights(index, &mut center, &mut lights);
+        }
+        lights
+    }
+
+    fn push_lights<'a>(
+        &'a self,
+        index: usize,
+        center: &mut impl FnMut(&str, &str) -> Option<Vec3>,
+        lights: &mut Vec<(usize, &'a LightSource, Vec3)>,
+    ) {
+        let object = &self.objects[index];
+        for component in &object.components {
+            match component {
+                Component::LightSource(light) => {
+                    lights.push((index, light, object.transform.position));
+                }
+                Component::Model(model) => {
+                    for part in &model.parts {
+                        let Some(light) = &part.light else {
+                            continue;
+                        };
+                        let position = match center(&model.path, &part.name) {
+                            Some(c) => object.transform.matrix().transform_point3(c),
+                            None => object.transform.position,
+                        };
+                        lights.push((index, light, position));
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Everything with a collider: object index, geometry, transform, and

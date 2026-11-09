@@ -36,7 +36,10 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
+
+/// How often a script file is checked for changes while it runs.
+const FILE_CHECK: Duration = Duration::from_millis(250);
 use winit::keyboard::KeyCode;
 
 /// Steps one call may take before it's stopped (an endless loop would
@@ -94,8 +97,11 @@ struct Shared {
 }
 
 struct Compiled {
-    ast: Option<AST>,
+    /// Shared, so running it doesn't copy the script each frame.
+    ast: Option<Rc<AST>>,
     modified: Option<SystemTime>,
+    /// When the file's time was last read (at most every `FILE_CHECK`).
+    checked: Option<Instant>,
     /// Goes up on every reload, so running copies start over.
     generation: u64,
 }
@@ -265,15 +271,22 @@ impl Scripts {
     /// A script's compiled form and generation, read again when it's new
     /// or its file changed (its running copies then start over); `None`
     /// while it has an error.
-    fn load(&mut self, path: &str) -> Option<(AST, u64)> {
+    fn load(&mut self, path: &str) -> Option<(Rc<AST>, u64)> {
+        if let Some(compiled) = self.compiled.get(path)
+            && compiled.checked.is_some_and(|t| t.elapsed() < FILE_CHECK)
+        {
+            return Some((compiled.ast.clone()?, compiled.generation));
+        }
         let file = self.dir.join(path);
         let modified = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
         let compiled = self.compiled.entry(path.to_owned()).or_insert(Compiled {
             ast: None,
             // Never a file's time: compiled on first use.
             modified: Some(SystemTime::UNIX_EPOCH),
+            checked: None,
             generation: 0,
         });
+        compiled.checked = Some(Instant::now());
         if compiled.modified != modified {
             compiled.modified = modified;
             compiled.generation += 1;
@@ -283,7 +296,7 @@ impl Scripts {
             match result {
                 Ok(ast) => {
                     log::info!("script loaded {path}");
-                    compiled.ast = Some(ast);
+                    compiled.ast = Some(Rc::new(ast));
                 }
                 Err(err) => {
                     compiled.ast = None;

@@ -1,6 +1,6 @@
 //! Zones in space: which zone a point is in (from `ZoneVolume` boxes) and
-//! which zones are neighbours (from `Portal`s). Rebuilt from the scene when
-//! needed; it's a pass over the objects, cheap at our object counts.
+//! which zones are neighbours (from `Portal`s). Built in one pass over the
+//! objects; the runtime keeps one and rebuilds it now and then.
 
 use crate::scene::{Component, Scene};
 use glam::{Mat4, Vec3};
@@ -10,6 +10,8 @@ pub struct ZoneMap {
     /// Per zone (index into `Scene::zones`): the zones it has portals to or
     /// from.
     neighbours: Vec<Vec<usize>>,
+    /// Per object: its zone's index (`None`: a zone that doesn't exist).
+    object_zones: Vec<Option<usize>>,
 }
 
 /// One `ZoneVolume`, as a transform into a unit cube.
@@ -26,8 +28,10 @@ impl ZoneMap {
         let zone_index = |name: &str| scene.zones.iter().position(|z| z.name == name);
         let mut volumes = Vec::new();
         let mut neighbours = vec![Vec::new(); scene.zones.len()];
-        for object in &scene.objects {
-            let Some(zone) = zone_index(&object.zone) else {
+        let object_zones: Vec<Option<usize>> =
+            scene.objects.iter().map(|o| zone_index(&o.zone)).collect();
+        for (object, zone) in scene.objects.iter().zip(&object_zones) {
+            let Some(zone) = *zone else {
                 continue;
             };
             for component in &object.components {
@@ -62,6 +66,7 @@ impl ZoneMap {
         Self {
             volumes,
             neighbours,
+            object_zones,
         }
     }
 
@@ -108,12 +113,14 @@ impl Active {
         let objects = scene
             .objects
             .iter()
-            .map(|o| {
-                scene
-                    .zones
-                    .iter()
-                    .position(|z| z.name == o.zone)
-                    .is_none_or(|z| zones[z])
+            .enumerate()
+            .map(|(i, o)| {
+                let zone = match map.object_zones.get(i) {
+                    Some(&zone) => zone,
+                    // Added since the map was built.
+                    None => scene.zones.iter().position(|z| z.name == o.zone),
+                };
+                zone.is_none_or(|z| zones.get(z).copied().unwrap_or(true))
             })
             .collect();
         Self {

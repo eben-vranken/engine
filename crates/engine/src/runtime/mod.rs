@@ -149,6 +149,11 @@ struct Running {
     rmb_look: bool,
     last_frame: Instant,
     fps: FpsCounter,
+    /// Zones in space, rebuilt by `refresh_zone_map`: when it was built,
+    /// and the object count, zone count and renderer upload it was built for.
+    zone_map: ZoneMap,
+    zone_map_built: Instant,
+    zone_map_key: (usize, usize, u64),
     /// `--bench`: the route being walked.
     bench: Option<crate::bench::Bench>,
     /// `--perf-log`: log the numbers below every `perf::INTERVAL`.
@@ -440,6 +445,9 @@ impl Running {
             rmb_look: false,
             last_frame: Instant::now(),
             fps: FpsCounter::default(),
+            zone_map: ZoneMap::new(&config.scene),
+            zone_map_built: Instant::now(),
+            zone_map_key: (0, 0, u64::MAX),
             bench: config
                 .bench
                 .clone()
@@ -518,6 +526,22 @@ impl Running {
             .current_monitor()
             .and_then(|m| m.refresh_rate_millihertz())
             .map_or(1000.0 / 60.0, |mhz| 1_000_000.0 / mhz as f32)
+    }
+
+    /// Rebuilds the zone map when the scene was replaced or objects or
+    /// zones were added or removed, and every 0.25 s otherwise (a volume
+    /// moved or renamed in the editor).
+    fn refresh_zone_map(&mut self) {
+        let key = (
+            self.scene.objects.len(),
+            self.scene.zones.len(),
+            self.renderer.uploads(),
+        );
+        if key != self.zone_map_key || self.zone_map_built.elapsed().as_secs_f32() >= 0.25 {
+            self.zone_map = perf::time("ZONE MAP", || ZoneMap::new(&self.scene));
+            self.zone_map_built = Instant::now();
+            self.zone_map_key = key;
+        }
     }
 
     /// Ends a `perf::INTERVAL`: summarises it for STATS and `--perf-log`.
@@ -624,6 +648,7 @@ impl Running {
             }
         }
 
+        self.refresh_zone_map();
         let mut actions = HudActions::default();
         self.handle_keys(&mut actions);
         self.poll_files();
@@ -648,14 +673,18 @@ impl Running {
         } else {
             self.input.clone()
         };
-        self.run_scripts(&input, dt);
+        perf::time("SCRIPTS", || self.run_scripts(&input, dt));
         let camera = match self.mode {
             CameraMode::Player => self.player.camera(&self.settings),
             CameraMode::Fly => self.fly.camera.clone(),
         };
-        let zones = ZoneMap::new(&self.scene);
-        let current = self.zone.update(&self.scene, &zones, camera.position);
-        self.active = Active::new(&self.scene, &zones, current);
+        let current = perf::time("ZONES", || {
+            let current = self
+                .zone
+                .update(&self.scene, &self.zone_map, camera.position);
+            self.active = Active::new(&self.scene, &self.zone_map, current);
+            current
+        });
         self.renderer.set_zone(current);
         let zone = current.map(|z| self.scene.zones[z].name.clone());
         let active_zones = self.active.zone_names(&self.scene);
