@@ -2,45 +2,10 @@
 //! prompts.
 
 use super::CameraMode;
-use crate::audio::Toggles;
 use crate::render::scale;
 use crate::ui::theme;
 use egui::{Align2, RichText};
 use glam::Vec3;
-
-/// The acoustic simulation's switches, top right of the view.
-pub(super) fn draw_audio_panel(
-    ui: &egui::Ui,
-    image: egui::Rect,
-    toggles: &Toggles,
-    game_running: bool,
-) {
-    let state = |on: bool| if on { "[ON] " } else { "[OFF]" };
-    let mut lines = vec![
-        format!("F6 OCCLUSION   {}", state(toggles.occlusion)),
-        format!("F7 REFLECTIONS {}", state(toggles.reflections)),
-        format!("F8 HRTF        {}", state(toggles.hrtf)),
-        format!("F9 AIR         {}", state(toggles.air_absorption)),
-        format!("F10 BAKED      {}", state(toggles.baked)),
-    ];
-    if game_running {
-        lines.push("Q CLAP   M MOVE SOUND HERE".into());
-    }
-    egui::Area::new(egui::Id::unique("audio_panel"))
-        .pivot(egui::Align2::RIGHT_TOP)
-        .fixed_pos(image.right_top() + egui::vec2(-10.0, 10.0))
-        .interactable(false)
-        .show(ui.ctx(), |ui| {
-            for line in lines {
-                let color = if line.contains("[OFF]") {
-                    crate::ui::theme::ALERT
-                } else {
-                    crate::ui::theme::AMBER_DIM
-                };
-                ui.label(egui::RichText::new(line).small().color(color));
-            }
-        });
-}
 
 /// A quiet text prompt just below the middle of the view.
 pub(super) fn draw_prompt(ui: &egui::Ui, image: egui::Rect, text: &str) {

@@ -23,8 +23,19 @@ pub enum Workspace {
     Logic,
 }
 
+/// The transform gizmo's tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GizmoTool {
+    Move,
+    Rotate,
+    Scale,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Command {
+    SaveAll,
+    Deselect,
+    Gizmo(GizmoTool),
     NewProject,
     OpenProject,
     OpenPackage,
@@ -82,6 +93,11 @@ impl Command {
             NewGraph => "NEW GRAPH…".into(),
             NewScript => "NEW SCRIPT…".into(),
             Save => "SAVE".into(),
+            SaveAll => "SAVE ALL".into(),
+            Deselect => "DESELECT".into(),
+            Gizmo(GizmoTool::Move) => "MOVE TOOL".into(),
+            Gizmo(GizmoTool::Rotate) => "ROTATE TOOL".into(),
+            Gizmo(GizmoTool::Scale) => "SCALE TOOL".into(),
             SaveSceneAs => "SAVE SCENE AS…".into(),
             Settings(section) => format!("SETTINGS › {}", section.title()),
             Quit => "QUIT".into(),
@@ -134,22 +150,13 @@ impl Command {
         }
     }
 
+    /// Its keys, from the binding table.
     pub fn shortcut(&self) -> &'static str {
-        use Command::*;
         match self {
-            Save => "CTRL+S",
-            Undo => "CTRL+Z",
-            Redo => "CTRL+Y",
-            Duplicate => "CTRL+D",
-            Delete => "DEL",
-            Search => "CTRL+K",
-            Play => "F5",
-            PlayInWindow => "SHIFT+F5",
-            ToggleLeft => "TAB",
-            ToggleRight => "SHIFT+TAB",
-            ToggleZones => "H",
-            Shortcuts => "?",
-            _ => "",
+            Command::Play => "F5",
+            Command::PlayInWindow => "SHIFT+F5",
+            Command::Shortcuts => "?",
+            _ => super::keys::keys_of(self),
         }
     }
 
@@ -159,6 +166,7 @@ impl Command {
         let mut list = vec![
             Search,
             Save,
+            SaveAll,
             Undo,
             Redo,
             Duplicate,
@@ -230,6 +238,7 @@ impl Editor {
                 build && !scene.zones.is_empty()
             }
             AddZone | ToggleZones | ToggleTriggers | ToggleProbes => build,
+            Deselect | Gizmo(_) => build,
             AddBehavior(_) => build && self.selected.is_some(),
             AddNode(_) => self.graph.is_some(),
             _ => true,
@@ -260,6 +269,20 @@ impl Editor {
             NewGraph => self.ask_name(Naming::Graph),
             NewScript => self.ask_name(Naming::Script),
             Save => output.settled |= self.save(scene, player),
+            SaveAll => {
+                let mut settled = false;
+                self.save_all(scene, player, &mut settled);
+                output.settled |= settled;
+            }
+            Deselect => output.settled |= self.select(scene, None),
+            Gizmo(tool) => {
+                use transform_gizmo::config::GizmoModeKind;
+                self.gizmo.kind = match tool {
+                    GizmoTool::Move => GizmoModeKind::Translate,
+                    GizmoTool::Rotate => GizmoModeKind::Rotate,
+                    GizmoTool::Scale => GizmoModeKind::Scale,
+                };
+            }
             Settings(section) => self.open_project_page(section),
             Quit => {
                 if self.request_close() {

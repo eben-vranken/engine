@@ -78,15 +78,15 @@ pub(super) fn drawer(ui: &mut Ui, story: &mut Story, inputs: Inputs) -> Actions 
         Tab::Audio => {
             match inputs.toggles {
                 Some(toggles) => {
-                    for (key, name, value) in [
-                        ("F6", "OCCLUSION", &mut toggles.occlusion),
-                        ("F7", "REFLECTIONS", &mut toggles.reflections),
-                        ("F8", "HRTF", &mut toggles.hrtf),
-                        ("F9", "AIR ABSORPTION", &mut toggles.air_absorption),
-                        ("F10", "BAKED REVERB", &mut toggles.baked),
+                    for (name, value) in [
+                        ("OCCLUSION", &mut toggles.occlusion),
+                        ("REFLECTIONS", &mut toggles.reflections),
+                        ("HRTF", &mut toggles.hrtf),
+                        ("AIR ABSORPTION", &mut toggles.air_absorption),
+                        ("BAKED REVERB", &mut toggles.baked),
                     ] {
                         let mark = if *value { "[ON] " } else { "[OFF]" };
-                        if ui.button(format!("{mark} {name}   {key}")).clicked() {
+                        if ui.button(format!("{mark} {name}")).clicked() {
                             *value = !*value;
                         }
                     }

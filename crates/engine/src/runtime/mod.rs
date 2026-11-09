@@ -35,10 +35,7 @@ use crate::zones::{Active, ZoneMap, ZoneTracker};
 use game::spawn_point;
 use glam::Vec2;
 pub(crate) use hud::active_text;
-use hud::{
-    FpsCounter, HudActions, HudInfo, PlayerReadout, draw_audio_panel, draw_hud, draw_prompt,
-    draw_toast,
-};
+use hud::{FpsCounter, HudActions, HudInfo, PlayerReadout, draw_hud, draw_prompt, draw_toast};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
@@ -855,8 +852,6 @@ impl Running {
         let settings = &mut self.settings;
         let (status, error) = (&self.settings_status, self.settings_error.as_deref());
         let mut tuning_action = None;
-        // Only over the 3D view: not over LOGIC's canvas or the PROJECT page.
-        let view_shown = self.editor.as_ref().is_none_or(Editor::shows_view);
         let editor = &mut self.editor;
         let scene = &mut self.scene;
         let mut editor_output = None;
@@ -877,8 +872,6 @@ impl Running {
             },
         };
         let prompt = self.prompt.clone();
-        let toggles = self.audio.as_ref().map(|a| a.toggles);
-        let game_running = self.behaviors.is_some();
         let story_slot = &mut self.story;
         let mut audio_toggles = self.audio.as_mut().map(|a| &mut a.toggles);
         let ui_frame = self.overlay.run(
@@ -953,12 +946,6 @@ impl Running {
                 }
                 if let Some(text) = &toast {
                     draw_toast(ui, view.image, text);
-                }
-                // The audio switches' corner readout, unless the drawer shows them.
-                if let Some(toggles) =
-                    toggles.filter(|_| drawer_actions.is_none() && view_shown && !player_view)
-                {
-                    draw_audio_panel(ui, view.image, &toggles, game_running);
                 }
             },
         );

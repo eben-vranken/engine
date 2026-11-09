@@ -19,6 +19,7 @@ mod hierarchy;
 pub mod history;
 pub mod import;
 pub mod inspector;
+mod keys;
 pub mod markers;
 mod menu_bar;
 mod model_list;
@@ -55,6 +56,8 @@ use std::path::PathBuf;
 use widgets::{Side, collapsed_panel, dialog_heading, dim, panel_header, section};
 
 pub struct Editor {
+    /// Commands from keys pressed this frame, run at the start of `ui`.
+    queued: Vec<commands::Command>,
     /// Index into `Scene::objects`.
     pub selected: Option<usize>,
     /// Open the selection's zone and scroll to it in the hierarchy (set when
@@ -273,6 +276,7 @@ impl Editor {
             zone_pending: None,
             player_pending: None,
             gizmo: TransformGizmo::default(),
+            queued: Vec::new(),
             playing: false,
             renaming: None,
             zone_delete: None,
@@ -307,6 +311,10 @@ impl Editor {
     ) -> EditorOutput {
         let mut output = EditorOutput::empty();
         self.poll_file_dialog(scene, player, &mut output);
+        // Keys pressed this frame (`press_keys`), run like menu items.
+        for command in std::mem::take(&mut self.queued) {
+            self.run(command, scene, player, view, &mut output);
+        }
         egui::Panel::top("editor_menu").show(ui, |ui| {
             self.top_bar(ui, scene, player, blink, view, &mut output)
         });
@@ -514,27 +522,17 @@ impl Editor {
         output: &mut EditorOutput,
     ) {
         let typing = ui.ctx().memory(|m| m.focused().is_some());
-        let (search, help) = ui.input_mut(|i| {
-            let search = i.consume_key(egui::Modifiers::COMMAND, egui::Key::K);
-            let help = i
-                .events
+        // `?` is read as text, so it works on any keyboard layout; the
+        // other keys come from the binding table (`keys`).
+        let help = ui.input(|i| {
+            i.events
                 .iter()
-                .any(|e| matches!(e, egui::Event::Text(t) if t == "?"));
-            (search, help)
+                .any(|e| matches!(e, egui::Event::Text(t) if t == "?"))
         });
-        if search && self.palette.is_none() {
-            self.run(commands::Command::Search, scene, player, view, output);
-        }
         if help && !typing && self.palette.is_none() {
             self.shortcuts_open = true;
         }
-        if !typing && self.workspace() == Workspace::Build && !self.playing {
-            ui.input_mut(|i| {
-                if i.consume_key(egui::Modifiers::NONE, egui::Key::H) {
-                    self.show_zones = !self.show_zones;
-                }
-            });
-        }
+        let _ = (scene, player, view, output);
     }
 
     /// Unsaved changes, including an edit still in progress.

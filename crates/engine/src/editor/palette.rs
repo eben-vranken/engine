@@ -249,15 +249,25 @@ impl Editor {
                 .num_columns(2)
                 .spacing([24.0, 4.0])
                 .show(ui, |ui| {
-                    for (keys, what) in SHORTCUTS {
-                        if keys.is_empty() {
-                            ui.label("");
-                            ui.label(RichText::new(*what).small().color(theme::AMBER_DIM));
-                        } else {
-                            ui.label(*keys);
-                            ui.label(dim(what));
-                        }
+                    // Made from the binding table, the same one the keys use.
+                    let table = super::keys::bindings();
+                    for context in super::keys::Context::ALL {
+                        ui.label("");
+                        ui.label(
+                            RichText::new(context.title())
+                                .small()
+                                .color(theme::AMBER_DIM),
+                        );
                         ui.end_row();
+                        for binding in table.iter().filter(|b| b.context == context) {
+                            let what = match &binding.action {
+                                super::keys::Action::Run(command) => command.label(),
+                                super::keys::Action::Note(what) => (*what).to_owned(),
+                            };
+                            ui.label(binding.keys);
+                            ui.label(dim(&what));
+                            ui.end_row();
+                        }
                     }
                 });
             ui.add_space(8.0);
@@ -270,34 +280,3 @@ impl Editor {
         }
     }
 }
-
-const SHORTCUTS: &[(&str, &str)] = &[
-    ("", "EVERYWHERE"),
-    ("CTRL+K", "SEARCH OR RUN ANYTHING"),
-    ("CTRL+S", "SAVE"),
-    ("CTRL+Z / CTRL+Y", "UNDO / REDO"),
-    ("F5", "PLAY / STOP"),
-    ("SHIFT+F5", "PLAY IN A WINDOW, AS A PLAYER"),
-    ("TAB / SHIFT+TAB", "LEFT PANEL / INSPECTOR"),
-    ("?", "THIS LIST"),
-    ("[ ] 0 / V", "RENDER SCALE / AUTO / VSYNC"),
-    ("", "BUILD"),
-    ("CLICK / SHIFT+CLICK", "SELECT / ADD TO THE SELECTION"),
-    ("W E R", "MOVE / ROTATE / SCALE (CTRL SNAPS)"),
-    ("HOLD RMB + WASD, Q/E", "FLY; SHIFT FAST, WHEEL SPEED"),
-    ("CTRL+D / DEL", "DUPLICATE / DELETE"),
-    ("H", "ZONE MARKERS"),
-    ("ESC", "DESELECT"),
-    ("", "LOGIC"),
-    ("SPACE", "ADD A NODE"),
-    ("DRAG A RIGHT DOT", "CONNECT TO ANOTHER NODE"),
-    ("WHEEL / DRAG BACKGROUND", "ZOOM / PAN"),
-    ("", "PLAYING"),
-    ("WASD SPACE SHIFT CTRL", "MOVE, JUMP, SPRINT, CROUCH"),
-    ("E", "USE, TALK, TAKE"),
-    ("M", "MAP"),
-    ("F3", "TEST DRAWER (LOGIC, FLAGS, AUDIO, FEEL, MAP, STATS)"),
-    ("F6–F10 / Q", "AUDIO SWITCHES / CLAP"),
-    ("F1 / F2 / R", "TUNING / FLY CAMERA / RESPAWN"),
-    ("W/S, 1–9, E", "DIALOGUE: CHOOSE, PICK, GO ON"),
-];

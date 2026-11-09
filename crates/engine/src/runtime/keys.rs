@@ -3,7 +3,6 @@
 
 use super::hud::HudActions;
 use super::{CameraMode, Running};
-use crate::physics::PhysicsWorld;
 use winit::keyboard::KeyCode;
 
 impl Running {
@@ -45,21 +44,6 @@ impl Running {
         {
             story.map_open = !story.map_open;
         }
-        // A/B comparison of the acoustic simulation, anywhere.
-        if let Some(audio) = &mut self.audio {
-            let toggles = &mut audio.toggles;
-            for (key, flag) in [
-                (KeyCode::F6, &mut toggles.occlusion),
-                (KeyCode::F7, &mut toggles.reflections),
-                (KeyCode::F8, &mut toggles.hrtf),
-                (KeyCode::F9, &mut toggles.air_absorption),
-                (KeyCode::F10, &mut toggles.baked),
-            ] {
-                if self.input.pressed(key) {
-                    *flag = !*flag;
-                }
-            }
-        }
         // While playing in the editor, the game's keys apply (below).
         let playing = self.play.is_some();
         let input = &self.input;
@@ -77,74 +61,8 @@ impl Running {
             actions.vsync = Some(!self.renderer.vsync());
         }
         if !playing && let Some(editor) = &mut self.editor {
-            // These keys act on what's on screen: the scene in BUILD, the
-            // graph in a graph tab. The PROJECT page and script tabs handle
-            // their own keys (a hidden scene must never be edited).
-            let workspace = editor.workspace();
-            let on_screen = workspace == crate::editor::Workspace::Build
-                || (workspace == crate::editor::Workspace::Logic && editor.graph.is_some());
-            if !on_screen {
-                if workspace == crate::editor::Workspace::Logic {
-                    let ctrl =
-                        input.held(KeyCode::ControlLeft) || input.held(KeyCode::ControlRight);
-                    if ctrl && input.pressed(KeyCode::KeyS) {
-                        editor.save(&self.scene, &self.settings);
-                    }
-                }
-                return;
-            }
-            let ctrl = input.held(KeyCode::ControlLeft) || input.held(KeyCode::ControlRight);
-            let shift = input.held(KeyCode::ShiftLeft) || input.held(KeyCode::ShiftRight);
-            let mut settled = false;
-            let mut changed = None;
-            if input.pressed(KeyCode::Escape) {
-                settled = editor.select(&self.scene, None);
-            }
-            // Gizmo modes; while flying these keys move the camera instead.
-            if !input.looking && !ctrl {
-                for (key, kind) in [
-                    (
-                        KeyCode::KeyW,
-                        transform_gizmo::config::GizmoModeKind::Translate,
-                    ),
-                    (
-                        KeyCode::KeyE,
-                        transform_gizmo::config::GizmoModeKind::Rotate,
-                    ),
-                    (KeyCode::KeyR, transform_gizmo::config::GizmoModeKind::Scale),
-                ] {
-                    if input.pressed(key) {
-                        editor.gizmo.kind = kind;
-                    }
-                }
-            }
-            if ctrl && input.pressed(KeyCode::KeyZ) {
-                changed = if shift {
-                    editor.redo(&mut self.scene, &mut self.settings)
-                } else {
-                    editor.undo(&mut self.scene, &mut self.settings)
-                };
-            }
-            if ctrl && input.pressed(KeyCode::KeyY) {
-                changed = editor.redo(&mut self.scene, &mut self.settings);
-            }
-            if ctrl && input.pressed(KeyCode::KeyS) {
-                settled |= editor.save(&self.scene, &self.settings);
-            }
-            if input.pressed(KeyCode::Delete) {
-                changed = editor.delete_selected(&mut self.scene);
-            }
-            // Not while flying, where D strafes.
-            if ctrl && !input.looking && input.pressed(KeyCode::KeyD) {
-                changed = editor.duplicate_selected(&mut self.scene);
-            }
-            if let Some(change) = changed {
-                self.show_change(change);
-                settled = true;
-            }
-            if settled {
-                self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
-            }
+            // Editor keys go through the binding table and the commands.
+            editor.press_keys(input, input.looking);
             return;
         }
         if input.pressed(KeyCode::Escape) {
