@@ -248,71 +248,71 @@ Models come from Blender; the built-in modeler goes.
 The game's flow and its dialogue as node graphs, edited in the editor (BRIEF.md: "Gameplay graphs"). Split into steps, each checked by the user before the next.
 
 ### 11.1 Graph editor
-- [ ] A graph tab next to the scene tabs: NEW GRAPH / open from `+`; saved as RON in the project's `graphs/`, with unsaved marks and asking before closing like scene tabs
-- [ ] Nodes on a canvas: add from a menu, drag, connect outputs to inputs, delete; pan and zoom
-- [ ] Node fields edited in the inspector beside the canvas, generated from `bevy_reflect` (node types are plain reflected types, like behaviors)
-- [ ] Every edit is an undo step
-- [ ] A first node set to lay out a story: Start, a note/comment, and the events and actions of 11.2 as placeholders that already save and load
+- [x] A graph tab next to the scene tabs: NEW GRAPH / open from `+`; saved as RON in the project's `graphs/`, with unsaved marks and asking before closing like scene tabs
+- [x] Nodes on a canvas: add from a menu, drag, connect outputs to inputs, delete; pan and zoom
+- [x] Node fields edited in the inspector beside the canvas, generated from `bevy_reflect` (node types are plain reflected types, like behaviors)
+- [x] Every edit is an undo step
+- [x] A first node set to lay out a story: Start, a note/comment, and the events and actions of 11.2 as placeholders that already save and load
 
 **Acceptance:** the user builds a small flow graph (start → enters the hall → door opens), saves it, closes the editor, and finds it again exactly as it was.
 
 ### 11.2 Flags, events and actions
-- [ ] Flags (yes/no, number, text) declared in the project; a flags panel
-- [ ] Events: game start, scene loaded, enter/exit a zone or TriggerZone, a switch used, an object picked up, a dialogue ended
-- [ ] Actions: set a flag, open/close a door, show/hide an object, play a sound, load a scene, start a dialogue
-- [ ] Conditions on connections, from flags
-- [ ] The game runs the project's flow graph; several nodes can be active at once
-- [ ] During Play in the editor, active nodes are highlighted and flags shown live
+- [x] Flags (yes/no, number, text) declared in the project; a flags panel
+- [x] Events: game start, scene loaded, enter/exit a zone or TriggerZone, a switch used, an object picked up, a dialogue ended
+- [x] Actions: set a flag, open/close a door, show/hide an object, play a sound, load a scene, start a dialogue
+- [x] Conditions on connections, from flags
+- [x] The game runs the project's flow graph; several nodes can be active at once
+- [x] During Play in the editor, active nodes are highlighted and flags shown live
 
 **Acceptance:** in the sandbox, walking into a room opens a door and plays a sound only after a switch was used, and the user watches the graph step along while playing.
 
 ### 11.3 Dialogue
-- [ ] Dialogue graphs: a Line node (speaker, text, optional sound), replies (text, condition, actions), and end
-- [ ] Character behavior: talked to with E; starts its dialogue graph
-- [ ] Speaker names are state: a Rename action changes what a character is called from then on (`???` → their name)
-- [ ] Presentation set in the game project: text box or subtitles, position, colors, font, typing speed; default an amber text box
-- [ ] Lines play their sound if they have one; silent lines are fine
+- [x] Dialogue graphs: a Line node (speaker, text, optional sound), replies (text, condition, actions), and end
+- [x] Character behavior: talked to with E; starts its dialogue graph
+- [x] Speaker names are state: a Rename action changes what a character is called from then on (`???` → their name)
+- [x] Presentation set in the game project: text box or subtitles, position, colors, font, typing speed; default an amber text box
+- [x] Lines play their sound if they have one; silent lines are fine
 
 **Acceptance:** the user talks to an NPC named `???`, picks between replies that lead to different answers and set different flags, a reply opens a door, and a later conversation shows the NPC's real name.
 
 ### 11.4 Saving
-- [ ] SavePoint behavior; save and load of flags, active graph nodes, player position and per-zone object state
-- [ ] Loading restores the game exactly where it was saved
+- [x] SavePoint behavior; save and load of flags, active graph nodes, player position and per-zone object state
+- [x] Loading restores the game exactly where it was saved
 
 **Acceptance:** the user saves mid-story, quits, loads, and the world, the flags and the next dialogue are as they left them.
 
 ### 11.5 Abilities and gates
-- [ ] Abilities are flags; AbilityPickup sets one, AbilityGate blocks the way without it
-- [ ] Controller abilities read from flags (the first one a game needs, e.g. double jump)
+- [x] Abilities are flags; AbilityPickup sets one, AbilityGate blocks the way without it
+- [x] Controller abilities read from flags (the first one a game needs, e.g. double jump)
 
 **Acceptance:** a gate the user can't pass opens after picking up the ability, and the ability survives a save and load.
 
 ### 11.6 Map
-- [ ] A map generated from zone data, revealing zones as they're visited; visited zones are saved
+- [x] A map generated from zone data, revealing zones as they're visited; visited zones are saved
 
 **Acceptance:** the user opens the map, sees only the zones they've been to, and it survives a save and load.
 
 ## 11.7 Graph owners and scene graphs
-- [ ] Every graph shows its owner (the game's flow, a scene, a character, or none) and what uses it, with links there
-- [ ] Each scene can have a graph of its own (`graphs/scenes/<scene>.ron`): it starts when the scene loads, pauses when the player leaves and carries on where it was when they return; saved with the game
-- [ ] The inspector lists the graphs that mention the selected object; references that point at nothing are flagged under the canvas
+- [x] Every graph shows its owner (the game's flow, a scene, a character, or none) and what uses it, with links there
+- [x] Each scene can have a graph of its own (`graphs/scenes/<scene>.ron`): it starts when the scene loads, pauses when the player leaves and carries on where it was when they return; saved with the game
+- [x] The inspector lists the graphs that mention the selected object; references that point at nothing are flagged under the canvas
 
 **Acceptance:** the user adds a graph to a scene from LOGIC, sees who owns each graph and what uses it, and a scene graph picks up where it was after leaving and coming back.
 
 ## 11.8 Editor redesign
 The editor reorganised for ease of use; same look, same features (design: the "Editor UX Redesign" canvas).
 
-- [ ] Workspaces PROJECT / BUILD / LOGIC in the top bar with a breadcrumb; menus FILE, EDIT, ADD, VIEW; CTRL+K command palette; `?` shortcut list
-- [ ] PROJECT page: start screen (recent, new, open, packages) and every project-wide setting (name, startup, rendering, player feel, dialogue look with live preview, flags, saves)
-- [ ] BUILD: outliner with type tags and filters, assets drawer (models, textures, sounds), floating viewport tools with SHOW and bake state, trigger boxes in the viewport, inspector cards, grouped ADD BEHAVIOR
-- [ ] LOGIC: graphs grouped by owner with flags, canvas with category tags, FIND and an overview, CONVERSATION view with preview and TEST CONVERSATION
-- [ ] PLAY: playing bar with STOP and RESTART, test drawer (logic and events, flags, audio, feel, map, stats), map on M
-- [ ] Secondary text readable (6.3:1); lines in their own darker color
+- [x] Workspaces PROJECT / BUILD / LOGIC in the top bar with a breadcrumb; menus FILE, EDIT, ADD, VIEW; CTRL+K command palette; `?` shortcut list
+- [x] PROJECT page: start screen (recent, new, open, packages) and every project-wide setting (name, startup, rendering, player feel, dialogue look with live preview, flags, saves)
+- [x] BUILD: outliner with type tags and filters, assets drawer (models, textures, sounds), floating viewport tools with SHOW and bake state, trigger boxes in the viewport, inspector cards, grouped ADD BEHAVIOR
+- [x] LOGIC: graphs grouped by owner with flags, canvas with category tags, FIND and an overview, CONVERSATION view with preview and TEST CONVERSATION
+- [x] PLAY: playing bar with STOP and RESTART, test drawer (logic and events, flags, audio, feel, map, stats), map on M
+- [x] Secondary text readable (6.3:1); lines in their own darker color
 
 **Acceptance:** the user finds every former feature in its new place, works a session in each workspace, and prefers it to the old layout.
 
 ## 11.9 One test level
-- [ ] One `test_level.ron` with every feature once, around a plaza: course (north), acoustics wing (east), dark hall (west), yard with story, abilities, saving and behaviors (south), void with stylized reverb (south-east)
+- [x] One `test_level.ron` with every feature once, around a plaza: course (north), acoustics wing (east), dark hall (west), yard with story, abilities, saving and behaviors (south), void with stylized reverb (south-east)
 
 **Acceptance:** after baking once, the user tests every feature in one scene without duplicates.
 

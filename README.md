@@ -143,7 +143,7 @@ sandbox/            the test project
 ```
 
 **Done:** renderer, first-person controller, editor, object creation, Play/Stop, behaviors, audio, zones, lighting, materials and reflections, scene tabs, project packages, model parts, multi-select, project settings and stylized reverb.
-**In testing:** gameplay graphs (flow, scene and dialogue graphs), flags, saving, abilities, the map, and the editor redesign.
+**Done also:** gameplay graphs (flow, scene and dialogue graphs), flags, saving, abilities, the map, the editor redesign and the one test level.
 **Next:** the stairs primitive. See the [roadmap](docs/ROADMAP.md).
 
 ## License
