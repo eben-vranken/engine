@@ -316,6 +316,15 @@ The editor reorganised for ease of use; same look, same features (design: the "E
 
 **Acceptance:** after baking once, the user tests every feature in one scene without duplicates.
 
+## 11.10 Scene graphs only, and scripts
+- [ ] No game-wide flow graph: each scene's own graph holds its logic; only the loaded scene's graph (and what it started) stays in memory. Flags stay global
+- [ ] LOGIC opens the open scene's graph first
+- [ ] Scripts (Rhai) in the project's `scripts/`: `start()` once and `update(player, dt)` every frame while on; player state, velocity, jump, keys, flags; reload on save; errors shown, never crash
+- [ ] ABILITY node turns a script on or off; abilities that are on are saved with the game
+- [ ] The controller's built-in double jump is gone; the sandbox's is `scripts/double_jump.rhai`, turned on by the feather
+
+**Acceptance:** the user plays the test level, can't double jump until picking up the feather, then can (and still can after a save and load); changes the script while playing and feels the change; and the gate story still works from the scene graph alone.
+
 ## 12. Stairs primitive
 A small step after the core milestones: stairs as an editor primitive, shaped from the inspector.
 

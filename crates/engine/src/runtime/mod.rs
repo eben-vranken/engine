@@ -524,7 +524,6 @@ impl Running {
         self.update_mouse_capture();
         self.run_game(dt);
 
-        self.update_abilities();
         let camera = match self.mode {
             CameraMode::Player => {
                 // In dialogue or on the map the player stands still.
@@ -532,6 +531,8 @@ impl Running {
                 let idle = Input::default();
                 let input = if busy { &idle } else { &self.input };
                 self.player.update(input, &self.settings, &self.physics, dt);
+                let input = input.clone();
+                self.run_scripts(&input, dt);
                 self.player.camera(&self.settings)
             }
             CameraMode::Fly => {

@@ -1,6 +1,6 @@
 //! The LOGIC workspace: a graph open in a tab. On the left every graph,
-//! grouped by owner (the game's flow, one per scene, one per character,
-//! others), and the flags; in the middle the canvas or the CONVERSATION
+//! grouped by owner (one per scene, one per character, others), and the
+//! flags (global: every scene's graph reads and sets the same ones); in the middle the canvas or the CONVERSATION
 //! view; on the right the graph's owner and what uses it, then the selected
 //! node's settings (generated from reflection, like components). Every
 //! change is an undo step of the tab's own.
@@ -223,7 +223,7 @@ impl Editor {
                     self.show_scene = !panel_header(ui, "GRAPHS", Side::Left, "TAB", |ui| {
                         if ui
                             .small_button("+ NEW")
-                            .on_hover_text("A GRAPH STARTED BY RUN GRAPH, OR TO PICK AS THE FLOW")
+                            .on_hover_text("A GRAPH STARTED BY RUN GRAPH (A SCENE'S OWN GRAPH: + GRAPH BESIDE THE SCENE)")
                             .clicked()
                         {
                             self.ask_name(super::name_dialog::Naming::Graph);
@@ -488,7 +488,6 @@ impl Editor {
         for (path, graph) in &self.index.graphs {
             let owner = self.index.owner(path);
             let order = match owner {
-                Owner::Flow => 0,
                 Owner::Scene(_) => 1,
                 Owner::Character { .. } => 2,
                 Owner::Other => 3,
@@ -505,7 +504,6 @@ impl Editor {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (order, title, runs) in [
-                    (0, "GAME FLOW", "RUNS ALL GAME"),
                     (1, "SCENES", "RUN WHILE LOADED"),
                     (2, "CHARACTERS", "RUN WHEN TALKED TO"),
                     (3, "OTHER", "STARTED BY RUN GRAPH"),
@@ -542,7 +540,6 @@ impl Editor {
                     }
                     if entries.is_empty() {
                         let hint = match order {
-                            0 => "NONE: PICK ONE IN PROJECT › STARTUP",
                             2 => "NONE: GIVE A CHARACTER A DIALOGUE",
                             _ => "NONE",
                         };
@@ -595,8 +592,8 @@ impl Editor {
         section(ui, &format!("USED BY  {}", uses.len()));
         if uses.is_empty() {
             ui.label(dim("NOTHING USES THIS GRAPH YET:"));
-            ui.label(dim("PICK IT AS A CHARACTER'S DIALOGUE, THE FLOW"));
-            ui.label(dim("(PROJECT › STARTUP) OR IN A RUN GRAPH NODE."));
+            ui.label(dim("PICK IT AS A CHARACTER'S DIALOGUE"));
+            ui.label(dim("OR IN A RUN GRAPH NODE."));
         }
         for u in uses {
             ui.horizontal(|ui| {
@@ -612,9 +609,6 @@ impl Editor {
                                 }
                             }
                             Go::Graph(graph) => output.open_graph = Some(PathBuf::from(graph)),
-                            Go::Settings => {
-                                self.open_project_page(super::project_page::Section::Startup)
-                            }
                         }
                     }
                 });

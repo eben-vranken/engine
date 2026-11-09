@@ -146,8 +146,8 @@ impl Running {
         }
     }
 
-    /// Play from the PlayerStart with the game's flow graph from its start,
-    /// or (`resume`) from the saved game.
+    /// Play from the PlayerStart with the scene's graph from its start, or
+    /// (`resume`) from the saved game.
     pub(super) fn start_play(&mut self, resume: bool) {
         let Some(editor) = &mut self.editor else {
             return;

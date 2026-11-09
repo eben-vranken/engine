@@ -23,6 +23,8 @@ use winit::keyboard::KeyCode;
 
 pub(super) struct Story {
     pub runner: GraphRunner,
+    /// The abilities' scripts that are on.
+    pub scripts: crate::script::Scripts,
     pub world: WorldState,
     pub style: DialogueStyle,
     /// Whether the style's font loaded (`None`: not tried yet).
@@ -85,6 +87,7 @@ impl Running {
         let flags = FlagDefs::load(&self.game_dir).start();
         self.story = Some(Story {
             runner: GraphRunner::new(self.game_dir.clone(), flags),
+            scripts: crate::script::Scripts::new(self.game_dir.clone()),
             world: WorldState::default(),
             style: settings
                 .as_ref()
@@ -108,12 +111,6 @@ impl Running {
         if resume && let Some(saved) = save::load(&self.game_dir) {
             self.load_game(saved);
             return;
-        }
-        if let Some(flow) = settings.and_then(|s| s.flow)
-            && let Some(story) = &mut self.story
-            && !story.runner.start(&key(&flow))
-        {
-            log::error!("the flow graph {} didn't start", flow.display());
         }
         self.enter_scene_graph();
     }
@@ -144,6 +141,8 @@ impl Running {
             let paused = story.runner.suspend(&graph);
             story.world.scene_graphs.insert(scene, paused);
         }
+        // The scene's logic leaves memory with it; it is read again on return.
+        story.runner.unload_unused();
     }
 
     /// The loaded scene as graphs and saves name it.
@@ -536,7 +535,7 @@ impl Running {
                 self.load_bake();
                 self.load_lightmaps();
                 self.enter_scene_graph();
-                log::info!("graph loaded {path}");
+                log::info!("scene loaded {path}");
             }
             Err(err) => {
                 log::error!("{err}");
@@ -591,16 +590,24 @@ impl Running {
         self.mode = CameraMode::Player;
     }
 
-    /// The air jumps the controller may use now: none until the ability's
-    /// flag (if it needs one) is true.
-    pub(super) fn update_abilities(&mut self) {
-        let jump = &self.settings.jump;
-        let unlocked = jump.air_jump_flag.is_empty()
-            || self
-                .story
-                .as_ref()
-                .is_some_and(|s| s.runner.flags.is_true(&jump.air_jump_flag));
-        self.player.air_jumps = if unlocked { jump.air_jumps } else { 0 };
+    /// Runs the abilities the graphs turned on (scripts) for this frame,
+    /// after the controller moved; what they change goes back to it.
+    pub(super) fn run_scripts(&mut self, input: &crate::input::Input, dt: f32) {
+        let Some(story) = &mut self.story else { return };
+        story.scripts.sync(&story.runner.abilities);
+        let mut view = self.player.script_view(input, &self.settings);
+        story.scripts.update(&mut view, &mut story.runner.flags, dt);
+        self.player.apply_script(&view, &self.settings);
+        let errors = std::mem::take(&mut story.scripts.errors);
+        for error in errors {
+            story
+                .log
+                .push((story.clock, format!("SCRIPT ERROR {error}")));
+            story.toast("SCRIPT ERROR: SEE THE LOG");
+            if let Some(editor) = &mut self.editor {
+                editor.show_error(error);
+            }
+        }
     }
 
     /// The speaker's name as shown now: renamed by a graph, else the

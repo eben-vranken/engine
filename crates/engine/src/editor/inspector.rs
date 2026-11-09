@@ -3,7 +3,9 @@
 //! drag fields, vectors three fields in a row, booleans toggles, text a text
 //! box; nested structs and enum fields are indented underneath.
 
-use crate::scene::{CharacterRef, FlagRef, GraphRef, ObjectRef, SceneRef, SoundRef, ZoneRef};
+use crate::scene::{
+    CharacterRef, FlagRef, GraphRef, ObjectRef, SceneRef, ScriptRef, SoundRef, ZoneRef,
+};
 use crate::ui::theme;
 use bevy_reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo};
 use bevy_reflect::{PartialReflect, ReflectMut, ReflectRef, TypeInfo};
@@ -22,6 +24,7 @@ pub struct Names {
     pub graphs: Vec<String>,
     pub scenes: Vec<String>,
     pub sounds: Vec<String>,
+    pub scripts: Vec<String>,
     pub characters: Vec<String>,
 }
 
@@ -262,6 +265,7 @@ fn reference<'a>(
     pick!(GraphRef, graphs);
     pick!(SceneRef, scenes);
     pick!(SoundRef, sounds);
+    pick!(ScriptRef, scripts);
     pick!(CharacterRef, characters);
     None
 }

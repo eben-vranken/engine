@@ -11,7 +11,8 @@
 //! - `scene`     entities, reflected components, RON load/save
 //! - `zones`     zone graph, culling, simulation radius
 //! - `behaviors` Floating, Door, Switch, PhysicsBody, Singer, ...
-//! - `player`    character controller, camera, abilities
+//! - `player`    character controller, camera
+//! - `script`    Rhai scripts: abilities turned on by graphs
 
 pub mod assets;
 pub mod audio;
@@ -33,6 +34,7 @@ pub mod render;
 pub mod runtime;
 pub mod save;
 pub mod scene;
+pub mod script;
 pub mod ui;
 pub mod zones;
 

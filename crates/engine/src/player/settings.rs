@@ -69,10 +69,6 @@ pub struct Jump {
     pub coyote_time: f32,
     /// s: a jump pressed this long before landing still happens.
     pub buffer_time: f32,
-    /// Extra jumps in mid-air (1 = double jump).
-    pub air_jumps: u32,
-    /// The flag that unlocks the air jumps (an ability); empty = always.
-    pub air_jump_flag: String,
 }
 
 impl Default for Jump {
@@ -85,8 +81,6 @@ impl Default for Jump {
             max_fall_speed: 45.0,
             coyote_time: 0.12,
             buffer_time: 0.12,
-            air_jumps: 0,
-            air_jump_flag: String::new(),
         }
     }
 }

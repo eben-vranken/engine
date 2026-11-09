@@ -4,7 +4,7 @@ The source of truth for what this engine is. If code and brief disagree, ask bef
 
 ## Purpose
 
-A minimal 3D game engine and editor in Rust, built with Claude Code, for quiet, atmospheric, audio-first games with low-poly worlds and striking light. Games are made by building levels, composing behaviors and connecting gameplay graphs in the editor, not by writing code.
+A minimal 3D game engine and editor in Rust, built with Claude Code, for quiet, atmospheric, audio-first games with low-poly worlds and striking light. Games are made by building levels, composing behaviors and connecting gameplay graphs in the editor; small scripts add what those don't cover, such as the player's abilities.
 
 - **Look:** crisp HD output of very low-poly worlds, with atmospheric lighting and real volumetric fog. Moody, not photorealistic.
 - **Sound:** physically simulated acoustics (occlusion, reflections, reverb) as the engine's signature feature.
@@ -37,7 +37,7 @@ A custom engine on standard Rust crates, not built on an existing engine.
 | Physics | rapier3d | Colliders, kinematic character controller, rigid bodies |
 | Acoustics | AudioNimbus (Steam Audio) | Occlusion, reflections, reverb, HRTF |
 | Gameplay logic | Node graphs (RON) edited in the editor | Game flow and dialogue; see Gameplay graphs |
-| Scripting (later) | Lua or Rhai | Only if graphs and behaviors stop being enough |
+| Scripting | Rhai | Abilities and game-specific moves, turned on by graphs; see Scripts |
 
 ## Rendering
 
@@ -159,11 +159,11 @@ Reusable components written once in Rust and attached in the editor. This librar
 
 Generic systems for 3D platformer and exploration games; the character controller deserves the most polish.
 
-- **Character controller:** first-person, kinematic. Walk, sprint, crouch; acceleration and air control; jump defined by height and time-to-apex, separate fall gravity, variable jump height; coyote time and jump buffering; step climbing and slope limits. Abilities such as double jump or wall climb plug into it.
+- **Character controller:** first-person, kinematic. Walk, sprint, crouch; acceleration and air control; jump defined by height and time-to-apex, separate fall gravity, variable jump height; coyote time and jump buffering; step climbing and slope limits. Abilities such as double jump or wall climb are scripts that plug into it; the controller has none built in.
 - **Tunable from data:** every movement and camera property lives in the game project's `player.ron`, editable live in an in-game tuning panel and hot-reloaded from disk. Feel is tuned by playing, not by recompiling.
 - **Camera:** first-person mouse look with FOV, sensitivity, optional head bob, landing dip and sprint FOV kick. A third-person camera can be added later if a game needs it.
-- **Ability system:** abilities are flags, set by pickups or graphs and checked by gates and the controller.
-- **Save system:** player state, flags, active graph nodes, and per-zone object state.
+- **Ability system:** an ability is a script, turned on or off by a graph's ABILITY node and saved with the game. Gates and pickups work with flags, which scripts and graphs share.
+- **Save system:** player state, flags, abilities that are on, active graph nodes, and per-zone object state.
 - **Map:** generated from zone data, revealing zones as they are visited.
 - **Player sound actions:** an optional hum or clap input, routed through the acoustic simulation.
 
@@ -171,7 +171,7 @@ Generic systems for 3D platformer and exploration games; the character controlle
 
 The game's logic is data: graphs of nodes and connections, built in a graph tab in the editor and saved as RON in the game project's `graphs/`. They replace code for everything from the overall story to a single conversation.
 
-- **Two uses, one system.** A *flow graph* holds the game's plan (the player spawns here; once they reach the hall, this happens; then that). A *dialogue graph* holds one conversation. Both use the same nodes, connections, conditions and actions; dialogue only adds its own node types. A flow graph starts dialogues; graphs can start other graphs.
+- **Two uses, one system.** A *scene graph* holds one scene's logic (once the player reaches the hall, this happens; then that). Each scene has at most one, and only the loaded scene's graph is in memory; it pauses when the player leaves and carries on when they return. A *dialogue graph* holds one conversation. Both use the same nodes, connections, conditions and actions; dialogue only adds its own node types. Scene graphs start dialogues; graphs can start other graphs. There is no game-wide graph: flags are global, so one scene's graph sets what another's checks.
 - **Events, actions, conditions.** Events move a graph on: the game starts, a scene loads, the player enters a zone or trigger, uses a switch, picks something up, a dialogue ends. Actions change the world: open a door, show or hide an object, play a sound, load a scene, start a dialogue, set a flag, rename a character. Conditions guard connections ("only if the lantern was found").
 - **Flags** are the game's named state (yes/no, numbers, text), set and checked by graphs. Abilities, dialogue outcomes and story progress are all flags, and saving is writing out flags, active nodes and object state.
 - **Several nodes can be active at once**, so side threads run next to the main one.
@@ -180,6 +180,15 @@ The game's logic is data: graphs of nodes and connections, built in a graph tab 
 - **Built to grow.** Node types are plain Rust structs with `bevy_reflect`, like behaviors, so a new node is one struct and its fields appear in the graph editor automatically. Graphs start with story beats and must be able to carry more (puzzle logic, timers, counters) later without a new format.
 - **Debugging:** during Play in the editor, the graph tab highlights the active nodes and shows the flags.
 - Not a visual programming language: no per-frame logic, math or loops in graphs. Behaviors do the moment-to-moment work; graphs decide what happens next.
+
+## Scripts
+
+Small Rhai scripts in the game project's `scripts/` for what graphs and behaviors don't cover, first of all the player's abilities.
+
+- A graph's ABILITY node turns a script on or off; while it's on the engine calls its `update(player, dt)` every frame after the controller moved (and `start()` once when it's turned on).
+- Scripts read the controller's state and keys, change the player's velocity or make it jump, and read and set flags, so graphs and scripts talk through flags.
+- Scripts reload when saved. An error stops the script (shown in the editor and the test drawer), never the game; a step limit stops endless loops.
+- The API grows with what games need, like node types and behaviors.
 
 ## Milestones
 
@@ -190,7 +199,6 @@ See `docs/ROADMAP.md` for the checklist and acceptance criteria.
 - Portal culling (zone data makes this straightforward later).
 - World streaming.
 - LOD.
-- Scripting language (Lua or Rhai).
 - Hardware ray tracing paths.
 - Heavy denoising.
 - A music system (shared key/scale/tempo, beat-quantized motifs, instrument layers per zone) and singing characters; games play their own recorded music through SoundSource.

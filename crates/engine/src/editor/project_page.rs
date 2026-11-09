@@ -1,12 +1,12 @@
 //! The PROJECT workspace: the start screen (recent projects, new, open,
-//! packages) and every project-wide setting on one page: name, start scene
-//! and flow graph, render scale, player feel (`player.ron`), dialogue look
+//! packages) and every project-wide setting on one page: name, start scene,
+//! render scale, player feel (`player.ron`), dialogue look
 //! (with a live preview), flags and the saved game. `game.ron` settings are
 //! written with SAVE GAME.RON (REVERT puts them back); the render scale
 //! previews live. Player feel edits are undo steps saved with the scene,
 //! as in the inspector.
 
-use super::files::{graph_files, scene_files};
+use super::files::scene_files;
 use super::history::Change;
 use super::player_panel::player_inspector;
 use super::{Editor, EditorOutput, EditorStats, dim, inspector};
@@ -62,7 +62,7 @@ impl Section {
             Section::Start => "open another game",
             Section::Packages => "one-file copies",
             Section::General => "name",
-            Section::Startup => "scene, flow graph",
+            Section::Startup => "start scene",
             Section::Rendering => "render scale",
             Section::PlayerFeel => "player.ron",
             Section::Dialogue => "look",
@@ -89,7 +89,6 @@ impl ProjectPage {
         [
             a.name != b.name,
             a.start_scene != b.start_scene,
-            a.flow != b.flow,
             a.render_scale != b.render_scale,
             a.dialogue != b.dialogue,
         ]
@@ -345,7 +344,6 @@ impl Editor {
         output: &mut EditorOutput,
     ) {
         let scenes = scene_files(&self.project_dir);
-        let graphs = graph_files(&self.project_dir);
         let Some(page) = &mut self.project_page else {
             return;
         };
@@ -371,21 +369,6 @@ impl Editor {
                             }
                         });
                     ui.end_row();
-                    ui.label(dim("FLOW GRAPH"))
-                        .on_hover_text("RUNS FROM ITS START WHEN THE GAME BEGINS, IN EVERY SCENE");
-                    let flow = settings
-                        .flow
-                        .as_ref()
-                        .map_or("NONE".into(), |p| p.display().to_string().to_uppercase());
-                    egui::ComboBox::from_id_salt("flow_graph")
-                        .selected_text(flow)
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut settings.flow, None, "NONE");
-                            for path in graphs.iter().filter(|p| !p.starts_with("graphs/scenes")) {
-                                let text = path.display().to_string().to_uppercase();
-                                ui.selectable_value(&mut settings.flow, Some(path.clone()), text);
-                            }
-                        });
                     ui.end_row();
                 }
                 Section::Rendering => {

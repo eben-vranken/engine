@@ -4,7 +4,7 @@
 //! logic panels use them to show who owns a graph, what uses it, what
 //! mentions an object, and references that point at nothing.
 
-use super::files::{graph_files, scene_files, sound_files};
+use super::files::{graph_files, scene_files, script_files, sound_files};
 use super::inspector::Names;
 use crate::graph::flags::FlagDefs;
 use crate::graph::{Graph, NodeKind, key, scene_graph, scene_of_graph};
@@ -18,8 +18,6 @@ const RESCAN: Duration = Duration::from_secs(3);
 /// Who a graph belongs to, which says when it runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Owner {
-    /// The game's flow (PROJECT SETTINGS): runs all game.
-    Flow,
     /// A scene's own graph: runs while that scene is loaded.
     Scene(String),
     /// A character's dialogue: runs when the player talks to them.
@@ -31,7 +29,6 @@ pub enum Owner {
 impl Owner {
     pub fn group(&self) -> &'static str {
         match self {
-            Owner::Flow => "GAME FLOW",
             Owner::Scene(_) => "SCENES",
             Owner::Character { .. } => "CHARACTERS",
             Owner::Other => "OTHER",
@@ -40,7 +37,6 @@ impl Owner {
 
     pub fn describe(&self) -> String {
         match self {
-            Owner::Flow => "THE GAME (FLOW GRAPH)".into(),
             Owner::Scene(scene) => format!("SCENE {scene}"),
             Owner::Character { id, scene } => format!("CHARACTER {id} IN {scene}"),
             Owner::Other => "NONE: STARTED BY RUN GRAPH".into(),
@@ -49,7 +45,6 @@ impl Owner {
 
     pub fn runs(&self) -> &'static str {
         match self {
-            Owner::Flow => "FROM THE GAME'S START, IN EVERY SCENE",
             Owner::Scene(_) => {
                 "WHILE THE SCENE IS LOADED; CARRIES ON WHERE IT WAS WHEN THE PLAYER COMES BACK"
             }
@@ -71,7 +66,6 @@ pub struct Use {
 pub enum Go {
     Scene(String),
     Graph(String),
-    Settings,
 }
 
 #[derive(Default)]
@@ -87,8 +81,6 @@ pub(super) struct ProjectIndex {
     pub scene_objects: BTreeMap<String, Vec<String>>,
     /// Characters: (scene, object name, id, dialogue graph).
     pub characters: Vec<(String, String, String, String)>,
-    /// The game's flow graph (`game.ron`).
-    pub flow: Option<String>,
     /// Each character id's name before any RENAME.
     pub character_names: std::collections::HashMap<String, String>,
     /// How dialogue looks (`game.ron`).
@@ -106,10 +98,6 @@ impl ProjectIndex {
             self.flags = FlagDefs::load(dir);
         }
         let settings = crate::project::Project::open(dir).ok().map(|p| p.settings);
-        self.flow = settings
-            .as_ref()
-            .and_then(|s| s.flow.as_ref())
-            .map(|f| key(f));
         self.dialogue = settings.map(|s| s.dialogue).unwrap_or_default();
         self.character_names.clear();
         let scenes = scene_files(dir);
@@ -123,6 +111,7 @@ impl ProjectIndex {
             graphs: graph_paths.iter().map(|p| key(p)).collect(),
             scenes: scenes.iter().map(|p| key(p)).collect(),
             sounds: sound_files(dir),
+            scripts: script_files(dir).iter().map(|p| key(p)).collect(),
             ..Default::default()
         };
         self.scene_objects.clear();
@@ -181,9 +170,6 @@ impl ProjectIndex {
     }
 
     pub fn owner(&self, graph: &str) -> Owner {
-        if self.flow.as_deref() == Some(graph) {
-            return Owner::Flow;
-        }
         if let Some(scene) = scene_of_graph(graph) {
             return Owner::Scene(scene);
         }
@@ -199,12 +185,6 @@ impl ProjectIndex {
     /// Everything that uses `graph`.
     pub fn used_by(&self, graph: &str) -> Vec<Use> {
         let mut uses = Vec::new();
-        if self.flow.as_deref() == Some(graph) {
-            uses.push(Use {
-                text: "FLOW GRAPH · PROJECT SETTINGS".into(),
-                go: Go::Settings,
-            });
-        }
         if let Some(scene) = scene_of_graph(graph)
             && self.scene_objects.contains_key(&scene)
         {
@@ -302,6 +282,7 @@ impl ProjectIndex {
                 let list = match what {
                     "SCENE" => &self.names.scenes,
                     "GRAPH" => &self.names.graphs,
+                    "SCRIPT" => &self.names.scripts,
                     _ => &self.names.sounds,
                 };
                 if !list.iter().any(|f| f == file) {
@@ -323,8 +304,10 @@ mod tests {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../sandbox");
         let mut index = ProjectIndex::default();
         index.refresh(&dir, true);
-        let flow = index.flow.clone().expect("the sandbox has a flow graph");
-        assert_eq!(index.owner(&flow), Owner::Flow);
+        assert_eq!(
+            index.owner("graphs/scenes/test_level.ron"),
+            Owner::Scene("scenes/test_level.ron".into())
+        );
         assert!(matches!(
             index.owner("graphs/keeper.ron"),
             Owner::Character { .. }

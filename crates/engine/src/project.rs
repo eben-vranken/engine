@@ -16,9 +16,6 @@ pub struct GameSettings {
     /// (internal height about 720 lines or less).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub render_scale: Option<u32>,
-    /// The graph that runs the game from the start (`graphs/main.ron`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub flow: Option<PathBuf>,
     /// How dialogue looks.
     #[serde(default, skip_serializing_if = "DialogueStyle::is_default")]
     pub dialogue: DialogueStyle,
@@ -105,7 +102,6 @@ pub fn create(dir: &Path) -> Result<GameSettings, ProjectError> {
         name: name.trim().to_owned(),
         start_scene: PathBuf::from("scenes/main.ron"),
         render_scale: None,
-        flow: None,
         dialogue: DialogueStyle::default(),
     };
     Scene::starter().save(&dir.join(&settings.start_scene))?;

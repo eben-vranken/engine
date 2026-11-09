@@ -80,11 +80,11 @@ Every value lives in the game's `player.ron` (meters, seconds, degrees). Tune it
 
 Themed as a sparse amber-on-black terminal, in three workspaces chosen in the top bar. **CTRL+K** searches and runs everything (actions, objects, scenes, graphs, flags, settings); **?** lists every shortcut.
 
-- **PROJECT:** the start screen (recent projects, new, open, packages) and every project-wide setting on one page: name, start scene, flow graph, render scale, player feel, dialogue look with a live preview, flags and the saved game.
+- **PROJECT:** the start screen (recent projects, new, open, packages) and every project-wide setting on one page: name, start scene, render scale, player feel, dialogue look with a live preview, flags and the saved game.
 - **BUILD:** scenes in tabs, each with its own undo history, selection, camera and unsaved state. The outliner groups objects by zone with a type tag each, filter chips and search (`candle > flame` finds parts); the assets drawer lists models (drag them in), textures and sounds. The viewport has floating move/rotate/scale tools, a SHOW menu (zone volumes, trigger boxes, probes) and the bakes' state with BAKE. The inspector shows collapsible cards generated from the components via `bevy_reflect`, an IN LOGIC card (the graphs that mention the object) and a grouped ADD BEHAVIOR. Multi-select edits apply to every selected object as one undo step.
-- **LOGIC:** gameplay graphs grouped by owner: the game's flow (runs all game), one per scene (`graphs/scenes/<scene>.ron`: runs while the scene is loaded and carries on where it was when the player returns), one per character (their dialogue), and others started by RUN GRAPH. Each graph shows its owner, what uses it and references that point at nothing. Nodes: events (in a zone or trigger, used, picked up), waits, branches on flags, actions (doors, show/hide, sounds, load scene, save) and dialogue (lines with an optional sound, replies with conditions, renaming characters). The CONVERSATION view reads a dialogue as a script with a live preview and TEST CONVERSATION. Flags (`flags.ron`) are edited beside the graphs.
+- **LOGIC:** gameplay graphs grouped by owner: one per scene (`graphs/scenes/<scene>.ron`: loaded and run only while the scene is, and carries on where it was when the player returns; flags are global, so one scene's graph can change what another's sees), one per character (their dialogue), and others started by RUN GRAPH. Each graph shows its owner, what uses it and references that point at nothing. Nodes: events (in a zone or trigger, used, picked up), waits, branches on flags, actions (doors, show/hide, sounds, load scene, save, turn an ability on or off) and dialogue (lines with an optional sound, replies with conditions, renaming characters). The CONVERSATION view reads a dialogue as a script with a live preview and TEST CONVERSATION. Flags (`flags.ron`) are edited beside the graphs.
 - **PLAY** (F5, or PLAY FROM SAVE) runs the scene in place; STOP restores it. The test drawer (F3) shows the running graphs and an events log, flips flags, holds the audio switches, the player feel, the map and frame stats.
-- **Game systems:** characters to talk to, pickups, save points (one save per project), ability gates, double jump unlocked by a flag, and a map of visited zones (M).
+- **Game systems:** characters to talk to, pickups, save points (one save per project), ability gates, abilities written as Rhai scripts (`scripts/`) and turned on by the ABILITY node, and a map of visited zones (M).
 - **Bakes:** BAKE LIGHTING and BAKE ACOUSTICS per scene. **Packages:** a whole project in one `.gamepack` file to hand to someone else.
 - **Models** are made in Blender (or any glTF exporter) and dragged in; re-exporting over the file updates every scene using it. A glTF's named nodes become **parts** (a candle's stick, wax and flame), which a scene can give their own glow, collision and light.
 
@@ -101,7 +101,7 @@ cargo run -p app -- --scene scenes/hall.ron         # play another scene of the 
 
 Other flags: `--quality low` for integrated graphics, `--perf-log` to log FPS, GPU stage times and audio timing, `--new-game` to ignore the saved game.
 
-`sandbox/` is a small test project in this repo and the default `--game`. It has one scene, `test_level.ron`, with every feature once around a central plaza: the movement course to the north (ramps, stairs, gaps, heights, beam, tunnel, tower, a corner), the acoustics wing to the east (wood room, stone corridor, marble hall with the looping guitar), the dark hall to the west (window shaft, flickering lantern, mist, polished floor, a metal sphere, the arch model), the yard to the south (the keeper, lever, doorstep and gate, the feather and its walled ledge, the save stone, doors, switches, a pressure plate, physics crates, a floating platform, a walk-through curtain) and the void to the south-east (open, with a long stylized reverb). Run by `graphs/main.ron`, `graphs/keeper.ron` and the scene's own `graphs/scenes/test_level.ron`.
+`sandbox/` is a small test project in this repo and the default `--game`. It has one scene, `test_level.ron`, with every feature once around a central plaza: the movement course to the north (ramps, stairs, gaps, heights, beam, tunnel, tower, a corner), the acoustics wing to the east (wood room, stone corridor, marble hall with the looping guitar), the dark hall to the west (window shaft, flickering lantern, mist, polished floor, a metal sphere, the arch model), the yard to the south (the keeper, lever, doorstep and gate, the feather and its walled ledge, the save stone, doors, switches, a pressure plate, physics crates, a floating platform, a walk-through curtain) and the void to the south-east (open, with a long stylized reverb). Run by the scene's own `graphs/scenes/test_level.ron` and the keeper's `graphs/keeper.ron`; the feather turns on `scripts/double_jump.rhai`.
 
 **Building needs** a stable Rust toolchain and LLVM/Clang 9+ with `clang` on `PATH` (AudioNimbus generates bindings with bindgen; on Windows: `winget install LLVM.LLVM`). The first build downloads Steam Audio (about 180 MB) and can look stuck while it does. Developed on Windows (RTX 3060 Ti) and tested on Linux (Arch, KDE Wayland, Intel Iris Xe). On Linux, Steam Audio's `libphonon.so` from the build folder must be on `LD_LIBRARY_PATH`.
 
@@ -121,7 +121,8 @@ Other flags: `--quality low` for integrated graphics, `--perf-log` to log FPS, G
 game.ron      name, start scene, render scale
 player.ron    movement, camera and footstep feel
 flags.ron     the game's flags and their starting values
-graphs/       gameplay graphs (flow, dialogue)
+graphs/       gameplay graphs: scenes/<scene>.ron per scene, dialogue
+scripts/      Rhai scripts: abilities the graphs turn on
 scenes/       RON scenes, plus their bakes (.lightmap, .reverb)
 models/       glTF models
 textures/     PNG / JPEG textures
@@ -129,6 +130,32 @@ audio/        WAV clips
 ```
 
 The engine stays generic: anything specific to a game is data in its project folder, never engine code.
+
+## Scripts
+
+Abilities are small [Rhai](https://rhai.rs) scripts in the project's `scripts/`. A graph's ABILITY node turns one on or off (saved with the game); while it's on, the engine calls its functions every frame, after the controller has moved. A script reloads when its file is saved; one with an error stops until it's fixed, and the error shows in the editor and the test drawer.
+
+```rust
+// scripts/double_jump.rhai
+fn start() { this.used = 0; }            // once, when turned on; `this` is the script's memory
+
+fn update(player, dt) {                  // every frame while on
+    if player.grounded { this.used = 0; }
+    if player.pressed("space") && !player.grounded && !player.jumped && this.used < 1 {
+        player.jump();
+        this.used += 1;
+    }
+}
+```
+
+| | |
+| --- | --- |
+| `player.grounded`, `.jumped`, `.crouching`, `.sprinting` | the controller's state (`jumped`: its own jump this frame) |
+| `player.position`, `player.velocity` | feet position (read only) and velocity, as `vec3` with `.x .y .z`; `player.velocity.y = 6` sets it |
+| `player.jump()`, `player.jump_speed` | a full jump from wherever the player is (held for variable height); its upward speed |
+| `player.pressed("e")`, `player.held("shift")` | keys: letters, digits, `space`, `shift`, `ctrl`, `alt`, `tab`, `enter`, `up`/`down`/`left`/`right` |
+| `flag("name")`, `set_flag("name", value)` | the game's flags, shared with every graph |
+| `print(...)` | writes to the log |
 
 ## Repo
 
@@ -143,7 +170,7 @@ sandbox/            the test project
 ```
 
 **Done:** renderer, first-person controller, editor, object creation, Play/Stop, behaviors, audio, zones, lighting, materials and reflections, scene tabs, project packages, model parts, multi-select, project settings and stylized reverb.
-**Done also:** gameplay graphs (flow, scene and dialogue graphs), flags, saving, abilities, the map, the editor redesign and the one test level.
+**Done also:** gameplay graphs (scene and dialogue graphs), flags, saving, abilities, the map, the editor redesign and the one test level.
 **Next:** the stairs primitive. See the [roadmap](docs/ROADMAP.md).
 
 ## License

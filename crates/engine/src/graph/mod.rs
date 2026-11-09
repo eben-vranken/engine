@@ -1,7 +1,10 @@
 //! Gameplay graphs: the game's logic as nodes and connections, stored as
-//! RON in the project's `graphs/` folder. One system for the game's flow
-//! (the player arrives, reaches the hall, a door opens) and for dialogue
-//! (a line, the player's replies, the answer).
+//! RON in the project's `graphs/` folder. One system for each scene's
+//! logic (the player reaches the hall, a door opens) and for dialogue (a
+//! line, the player's replies, the answer). Every scene has at most one
+//! graph of its own (`graphs/scenes/<scene>.ron`), loaded only while the
+//! scene is; flags are global, so one scene's graph can set what
+//! another's checks.
 //!
 //! A node becomes *active* when a connection leads into it. Actions do
 //! their thing and pass straight on; events and waits stay active until
@@ -12,7 +15,9 @@
 pub mod flags;
 pub mod run;
 
-use crate::scene::{CharacterRef, FlagRef, GraphRef, ObjectRef, SceneRef, SoundRef, ZoneRef};
+use crate::scene::{
+    CharacterRef, FlagRef, GraphRef, ObjectRef, SceneRef, ScriptRef, SoundRef, ZoneRef,
+};
 use bevy_reflect::Reflect;
 use flags::Condition;
 use glam::Vec2;
@@ -108,6 +113,9 @@ pub enum NodeKind {
     },
     /// Saves the game here.
     SaveGame,
+    /// Turns an ability on or off: a script in `scripts/` that runs every
+    /// frame while it's on (saved with the game).
+    Ability { script: ScriptRef, enabled: bool },
     /// A line of dialogue. Replies connected to its output are offered to
     /// the player; anything else connected runs when the line is left.
     Line {
@@ -231,6 +239,10 @@ impl NodeKind {
                 name: String::new(),
             },
             SaveGame,
+            Ability {
+                script: ScriptRef::default(),
+                enabled: true,
+            },
             Line {
                 speaker: CharacterRef::default(),
                 text: String::new(),
@@ -282,6 +294,7 @@ impl NodeKind {
             RunGraph { .. } => "RUN GRAPH",
             Rename { .. } => "RENAME",
             SaveGame => "SAVE GAME",
+            Ability { .. } => "ABILITY",
             Line { .. } => "LINE",
             Reply { .. } => "REPLY",
         }
@@ -311,6 +324,9 @@ impl NodeKind {
             RunGraph { .. } => "Runs another graph and goes on once it has ended.",
             Rename { .. } => "Changes what a character is called from now on.",
             SaveGame => "Saves the game here.",
+            Ability { .. } => {
+                "Turns an ability on or off: a script that runs every frame while it's on."
+            }
             Line { .. } => {
                 "A line of dialogue. Replies connected to it are offered; anything else connected runs when it's left."
             }
@@ -380,6 +396,7 @@ impl NodeKind {
         match self {
             WhenInScene { scene } | LoadScene { scene } => vec![("SCENE", scene.0.as_str())],
             RunGraph { graph } => vec![("GRAPH", graph.0.as_str())],
+            Ability { script, .. } => vec![("SCRIPT", script.0.as_str())],
             PlaySound { sound, .. } | Line { sound, .. } => vec![("SOUND", sound.0.as_str())],
             _ => Vec::new(),
         }
@@ -430,6 +447,10 @@ impl NodeKind {
                 vec![or_none(&sound.0), format!("AT {at}")]
             }
             RunGraph { graph } => vec![or_none(&graph.0)],
+            Ability { script, enabled } => {
+                let what = if *enabled { "ON" } else { "OFF" };
+                vec![format!("{what} {}", or_none(&script_name(&script.0)))]
+            }
             Rename { character, name } => vec![format!("{} → {}", or_none(&character.0), name)],
             Line {
                 speaker,
@@ -445,6 +466,14 @@ impl NodeKind {
             }
         }
     }
+}
+
+/// A script's short name: `scripts/double_jump.rhai` → `double_jump`.
+pub fn script_name(path: &str) -> String {
+    Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Breaks `text` into lines of at most `width` characters (at spaces), at

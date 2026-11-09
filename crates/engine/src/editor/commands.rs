@@ -356,10 +356,10 @@ impl Editor {
                     output.switch_tab = Some(index);
                 } else if graphs {
                     self.index.refresh(&self.project_dir, false);
-                    let first = self
-                        .index
-                        .flow
-                        .clone()
+                    // The open scene's own graph first.
+                    let scene = crate::graph::scene_graph(&crate::graph::key(&self.scene_path));
+                    let first = Some(scene.clone())
+                        .filter(|g| self.index.graphs.contains_key(g))
                         .or_else(|| self.index.graphs.keys().next().cloned());
                     match first {
                         Some(path) => output.open_graph = Some(PathBuf::from(path)),

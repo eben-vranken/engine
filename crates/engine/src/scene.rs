@@ -430,6 +430,12 @@ pub struct SceneRef(pub String);
 #[serde(transparent)]
 pub struct SoundRef(pub String);
 
+/// A script in the project (`scripts/double_jump.rhai`). The inspector
+/// shows a picker.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
+#[serde(transparent)]
+pub struct ScriptRef(pub String);
+
 /// A character, by their `Character` id. The inspector shows a picker.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
 #[serde(transparent)]

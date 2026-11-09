@@ -4,7 +4,7 @@ use glam::Vec2;
 use std::collections::HashSet;
 use winit::keyboard::KeyCode;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Input {
     held: HashSet<KeyCode>,
     pressed: HashSet<KeyCode>,

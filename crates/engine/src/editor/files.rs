@@ -17,6 +17,11 @@ pub(super) fn graph_files(project_dir: &Path) -> Vec<PathBuf> {
     found
 }
 
+/// Scripts in the project's `scripts/` folder, relative to the project.
+pub(super) fn script_files(project_dir: &Path) -> Vec<PathBuf> {
+    files_in(project_dir, "scripts", "rhai")
+}
+
 /// Every model the scene can place: `.glb` and `.gltf` files anywhere in
 /// the project's `models/` folder, relative to the project, sorted.
 pub(super) fn all_models(project_dir: &Path) -> Vec<PathBuf> {

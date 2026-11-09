@@ -8,7 +8,7 @@
 use super::flags::Flags;
 use super::{DoorAction, Graph, NodeId, NodeKind};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -95,6 +95,8 @@ pub struct RunnerState {
     pub flags: Flags,
     /// Characters renamed by graphs: id → name.
     pub names: BTreeMap<String, String>,
+    /// Abilities turned on (script paths).
+    pub abilities: BTreeSet<String>,
     pub threads: Vec<ThreadState>,
 }
 
@@ -121,6 +123,8 @@ pub struct GraphRunner {
     pub flags: Flags,
     /// Characters renamed by graphs: id → name.
     pub names: BTreeMap<String, String>,
+    /// Abilities turned on by graphs: their scripts' paths.
+    pub abilities: BTreeSet<String>,
     showing: Option<Showing>,
     serial: u64,
     commands: Vec<Command>,
@@ -139,6 +143,7 @@ impl GraphRunner {
             next_thread: 1,
             flags,
             names: BTreeMap::new(),
+            abilities: BTreeSet::new(),
             showing: None,
             serial: 0,
             commands: Vec::new(),
@@ -192,6 +197,14 @@ impl GraphRunner {
             self.queue.push((id, start));
         }
         Some(id)
+    }
+
+    /// Drops loaded graphs that no running graph uses, so only the
+    /// current scene's logic (and what it started) stays in memory.
+    pub fn unload_unused(&mut self) {
+        let threads = &self.threads;
+        self.graphs
+            .retain(|path, _| threads.iter().any(|t| &t.graph == path));
     }
 
     pub fn is_running(&self, path: &str) -> bool {
@@ -352,6 +365,14 @@ impl GraphRunner {
                 }
                 NodeKind::LoadScene { scene } => {
                     self.commands.push(Command::LoadScene(scene.0.clone()));
+                    self.pass(thread, id, 0);
+                }
+                NodeKind::Ability { script, enabled } => {
+                    if *enabled {
+                        self.abilities.insert(script.0.clone());
+                    } else {
+                        self.abilities.remove(&script.0);
+                    }
                     self.pass(thread, id, 0);
                 }
                 NodeKind::SaveGame => {
@@ -602,6 +623,7 @@ impl GraphRunner {
         RunnerState {
             flags: self.flags.clone(),
             names: self.names.clone(),
+            abilities: self.abilities.clone(),
             threads: self
                 .threads
                 .iter()
@@ -620,6 +642,7 @@ impl GraphRunner {
     pub fn restore(&mut self, state: RunnerState) {
         self.flags = state.flags;
         self.names = state.names;
+        self.abilities = state.abilities;
         self.threads.clear();
         self.queue.clear();
         self.showing = None;
@@ -966,7 +989,7 @@ mod tests {
         assert!(scene.find("doorstep").is_some() && scene.find("gate").is_some());
 
         let mut runner = GraphRunner::new(dir, flags.start());
-        assert!(runner.start("graphs/main.ron"));
+        assert!(runner.start("graphs/scenes/test_level.ron"));
         let lever = ["lever".to_string()];
         let doorstep = ["doorstep".to_string()];
         let at_door = World {
@@ -994,6 +1017,30 @@ mod tests {
                 .iter()
                 .any(|c| matches!(c, Command::Show { object, .. } if object == "room lamp"))
         );
+
+        // The feather turns on the double jump.
+        let feather = ["feather".to_string()];
+        runner.update(
+            &World {
+                picked: &feather,
+                ..Default::default()
+            },
+            0.1,
+        );
+        assert!(runner.abilities.contains("scripts/double_jump.rhai"));
+        assert!(
+            runner
+                .state()
+                .abilities
+                .contains("scripts/double_jump.rhai")
+        );
+
+        // Leaving the scene: its graph leaves memory, and comes back.
+        let paused = runner.suspend("graphs/scenes/test_level.ron");
+        runner.unload_unused();
+        assert!(runner.running().is_empty());
+        runner.resume(paused);
+        assert!(runner.is_running("graphs/scenes/test_level.ron"));
 
         // The keeper: unknown at first, Ada after a friendly answer.
         assert!(runner.start("graphs/keeper.ron"));

@@ -56,9 +56,8 @@ pub struct Player {
     bob_weight: f32,
     /// A foot came down this frame (the head bob's lowest point).
     pub stepped: bool,
-    /// Jumps allowed in mid-air now (abilities can lock them).
-    pub air_jumps: u32,
-    air_jumps_used: u32,
+    /// The controller jumped this frame (scripts read it).
+    pub jumped_now: bool,
     dip_offset: f32,
     dip_velocity: f32,
     /// View offset that eases out height changes from stairs and slopes.
@@ -84,8 +83,7 @@ impl Player {
             bob_phase: 0.0,
             bob_weight: 0.0,
             stepped: false,
-            air_jumps: settings.jump.air_jumps,
-            air_jumps_used: 0,
+            jumped_now: false,
             dip_offset: 0.0,
             dip_velocity: 0.0,
             fov_kick: 0.0,
@@ -95,6 +93,43 @@ impl Player {
 
     pub fn respawn(&mut self, settings: &PlayerSettings) {
         *self = Self::new(self.spawn, settings);
+    }
+
+    /// What scripts see of the player this frame.
+    pub fn script_view(
+        &self,
+        input: &Input,
+        settings: &PlayerSettings,
+    ) -> crate::script::PlayerView {
+        crate::script::PlayerView {
+            grounded: self.grounded,
+            jumped: self.jumped_now,
+            crouching: self.crouching,
+            sprinting: self.sprinting,
+            position: self.feet,
+            velocity: self.velocity,
+            jump_speed: settings.jump.takeoff_speed(),
+            jump: false,
+            input: input.clone(),
+        }
+    }
+
+    /// Takes on what scripts changed: the velocity, and a jump (a fresh
+    /// full jump from wherever the player is, held for variable height
+    /// like any other).
+    pub fn apply_script(&mut self, view: &crate::script::PlayerView, settings: &PlayerSettings) {
+        if view.velocity != self.velocity {
+            self.velocity = view.velocity;
+            if self.velocity.y > 0.0 {
+                self.grounded = false;
+            }
+        }
+        if view.jump {
+            self.velocity.y = settings.jump.takeoff_speed();
+            self.jump_buffer = 0.0;
+            self.jumped = true;
+            self.grounded = false;
+        }
     }
 
     pub fn horizontal_speed(&self) -> f32 {
@@ -198,14 +233,8 @@ impl Player {
             self.jumped = true;
             self.grounded = false;
             jumped_now = true;
-        } else if input.pressed(KeyCode::Space) && self.air_jumps_used < self.air_jumps {
-            // An air jump: a fresh full jump from wherever the player is.
-            self.velocity.y = jump.takeoff_speed();
-            self.jump_buffer = 0.0;
-            self.jumped = true;
-            self.air_jumps_used += 1;
-            jumped_now = true;
         }
+        self.jumped_now = jumped_now;
 
         // Gravity: lighter on the way up while jump is held, heavier when
         // falling or when jump was released early.
@@ -267,7 +296,6 @@ impl Player {
                         self.land(fall_speed, settings);
                     }
                     self.grounded = true;
-                    self.air_jumps_used = 0;
                     self.jumped = false;
                     self.time_since_grounded = 0.0;
                 } else {
