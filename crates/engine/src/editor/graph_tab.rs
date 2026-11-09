@@ -734,6 +734,7 @@ impl Editor {
     /// The project's flags (`flags.ron`): add, rename, set the starting
     /// value, delete. Saved as soon as a change is finished.
     fn flags_panel(&mut self, ui: &mut Ui) {
+        let scripts = self.index.names.scripts.clone();
         let mut defs = self.index.flags.clone();
         let before = defs.clone();
         ui.horizontal(|ui| {
@@ -751,6 +752,7 @@ impl Editor {
                     defs.flags.push(FlagDef {
                         name: format!("flag_{n}"),
                         value,
+                        script: Default::default(),
                     });
                 }
             }
@@ -776,6 +778,33 @@ impl Editor {
                                 if ui.small_button(text).clicked() {
                                     *b = !*b;
                                 }
+                                // An ability: a script that runs while true.
+                                let shown = if flag.script.0.is_empty() {
+                                    "NO SCRIPT".to_owned()
+                                } else {
+                                    flag.script.0.trim_start_matches("scripts/").to_uppercase()
+                                };
+                                egui::ComboBox::from_id_salt(("flag_script", i))
+                                    .selected_text(shown)
+                                    .width(110.0)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(
+                                            &mut flag.script,
+                                            Default::default(),
+                                            "NO SCRIPT",
+                                        );
+                                        for script in &scripts {
+                                            ui.selectable_value(
+                                                &mut flag.script,
+                                                crate::scene::ScriptRef(script.clone()),
+                                                script.as_str(),
+                                            );
+                                        }
+                                    })
+                                    .response
+                                    .on_hover_text(
+                                        "AN ABILITY: THIS SCRIPT RUNS WHILE THE FLAG IS TRUE",
+                                    );
                             }
                             FlagValue::Number(n) => {
                                 ui.add(egui::DragValue::new(n).speed(0.1));

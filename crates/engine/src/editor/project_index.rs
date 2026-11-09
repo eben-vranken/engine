@@ -311,6 +311,15 @@ impl ProjectIndex {
                     problems.push(format!("{title}: NO OBJECT \"{}\"", object.name));
                 }
             }
+            if let crate::graph::NodeKind::Ability { script, .. } = &node.kind
+                && !script.0.is_empty()
+                && !self.flags.flags.iter().any(|f| f.script == *script)
+            {
+                problems.push(format!(
+                    "{title}: BIND \"{}\" TO A YES/NO FLAG (FLAGS) TO MAKE IT AN ABILITY",
+                    script.0
+                ));
+            }
             if let Some(c) = node.kind.character()
                 && !self.names.characters.iter().any(|k| k == c)
             {

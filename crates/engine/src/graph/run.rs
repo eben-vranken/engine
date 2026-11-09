@@ -124,8 +124,11 @@ pub struct GraphRunner {
     pub flags: Flags,
     /// Characters renamed by graphs: id → name.
     pub names: BTreeMap<String, String>,
-    /// Abilities turned on by graphs: their scripts' paths.
+    /// Abilities an ABILITY node turned on whose script no flag is bound
+    /// to (projects from before abilities were flags): their scripts.
     pub abilities: BTreeSet<String>,
+    /// Abilities that are flags: script path → its flag.
+    bound: BTreeMap<String, String>,
     showing: Option<Showing>,
     serial: u64,
     commands: Vec<Command>,
@@ -145,12 +148,31 @@ impl GraphRunner {
             flags,
             names: BTreeMap::new(),
             abilities: BTreeSet::new(),
+            bound: BTreeMap::new(),
             showing: None,
             serial: 0,
             commands: Vec::new(),
             queue: Vec::new(),
             log: Vec::new(),
         }
+    }
+
+    /// Which scripts are abilities bound to flags (`FlagDefs::abilities`).
+    pub fn bind_abilities(&mut self, bound: BTreeMap<String, String>) {
+        self.bound = bound;
+    }
+
+    /// The abilities' scripts that run now: those whose flag is true, and
+    /// unbound ones an ABILITY node turned on.
+    pub fn active_abilities(&self) -> BTreeSet<String> {
+        let mut active = self.abilities.clone();
+        active.extend(
+            self.bound
+                .iter()
+                .filter(|(_, flag)| self.flags.is_true(flag))
+                .map(|(script, _)| script.clone()),
+        );
+        active
     }
 
     /// Uses `graph` for `path` instead of reading the file.
@@ -375,7 +397,11 @@ impl GraphRunner {
                     self.pass(thread, id, 0);
                 }
                 NodeKind::Ability { script, enabled } => {
-                    if *enabled {
+                    // An ability is its flag; unbound scripts are the old way.
+                    if let Some(flag) = self.bound.get(&script.0).cloned() {
+                        self.flags
+                            .set(&flag, if *enabled { "true" } else { "false" });
+                    } else if *enabled {
                         self.abilities.insert(script.0.clone());
                     } else {
                         self.abilities.remove(&script.0);
@@ -996,6 +1022,7 @@ mod tests {
         assert!(scene.find("doorstep").is_some() && scene.find("gate").is_some());
 
         let mut runner = GraphRunner::new(dir, flags.start());
+        runner.bind_abilities(flags.abilities());
         assert!(runner.start("graphs/scenes/test_level.ron"));
         let lever = [ObjectRef::named("lever")];
         let doorstep = [ObjectRef::named("doorstep")];
@@ -1034,13 +1061,16 @@ mod tests {
             },
             0.1,
         );
-        assert!(runner.abilities.contains("scripts/double_jump.rhai"));
+        // The double jump is a flag with its script bound: the ABILITY node
+        // sets the flag, and the flag is what's saved.
+        assert!(runner.flags.is_true("double_jump"));
+        assert!(runner.abilities.is_empty());
         assert!(
             runner
-                .state()
-                .abilities
+                .active_abilities()
                 .contains("scripts/double_jump.rhai")
         );
+        assert!(runner.state().flags.is_true("double_jump"));
 
         // Leaving the scene: its graph leaves memory, and comes back.
         let paused = runner.suspend("graphs/scenes/test_level.ron");

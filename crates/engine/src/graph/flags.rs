@@ -1,8 +1,10 @@
 //! Flags: the game's named state (yes/no, numbers, text), declared with
 //! starting values in the project's `flags.ron`, set and checked by
-//! graphs. Abilities, story progress and dialogue outcomes are all flags.
+//! graphs. Abilities, story progress and dialogue outcomes are all flags:
+//! an ability is a yes/no flag with a script bound to it, which runs while
+//! the flag is true.
 
-use crate::scene::FlagRef;
+use crate::scene::{FlagRef, ScriptRef};
 use bevy_reflect::Reflect;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -94,6 +96,13 @@ fn parse_bool(text: &str) -> Option<bool> {
 pub struct FlagDef {
     pub name: String,
     pub value: FlagValue,
+    /// Makes the flag an ability: this script runs while it is true.
+    #[serde(default, skip_serializing_if = "no_script")]
+    pub script: ScriptRef,
+}
+
+fn no_script(script: &ScriptRef) -> bool {
+    script.0.is_empty()
 }
 
 /// `flags.ron`: every flag the game uses, with its starting value.
@@ -125,6 +134,15 @@ impl FlagDefs {
         let config = ron::ser::PrettyConfig::default().struct_names(false);
         let text = ron::ser::to_string_pretty(self, config).expect("flags always serialize");
         std::fs::write(Self::file(project_dir), text)
+    }
+
+    /// Abilities: script path → the flag that turns it on.
+    pub fn abilities(&self) -> BTreeMap<String, String> {
+        self.flags
+            .iter()
+            .filter(|f| !f.script.0.is_empty())
+            .map(|f| (f.script.0.clone(), f.name.clone()))
+            .collect()
     }
 
     pub fn names(&self) -> Vec<String> {
@@ -248,14 +266,17 @@ mod tests {
                 FlagDef {
                     name: "lantern".into(),
                     value: FlagValue::Bool(false),
+                    script: ScriptRef::default(),
                 },
                 FlagDef {
                     name: "coins".into(),
                     value: FlagValue::Number(0.0),
+                    script: ScriptRef::default(),
                 },
                 FlagDef {
                     name: "path".into(),
                     value: FlagValue::Text(String::new()),
+                    script: ScriptRef::default(),
                 },
             ],
         }

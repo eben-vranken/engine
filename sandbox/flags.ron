@@ -15,6 +15,7 @@
         (
             name: "double_jump",
             value: Bool(false),
+            script: "scripts/double_jump.rhai",
         ),
     ],
 )

@@ -83,9 +83,11 @@ impl Running {
     /// the saved game if there is one.
     pub(super) fn start_story(&mut self, resume: bool) {
         let settings = Project::open(&self.game_dir).map(|p| p.settings).ok();
-        let flags = FlagDefs::load(&self.game_dir).start();
+        let defs = FlagDefs::load(&self.game_dir);
+        let mut runner = GraphRunner::new(self.game_dir.clone(), defs.start());
+        runner.bind_abilities(defs.abilities());
         self.story = Some(Story {
-            runner: GraphRunner::new(self.game_dir.clone(), flags),
+            runner,
             scripts: crate::script::Scripts::new(self.game_dir.clone()),
             world: WorldState::default(),
             style: settings
@@ -619,7 +621,7 @@ impl Running {
     /// objects.
     pub(super) fn run_scripts(&mut self, input: &crate::input::Input, dt: f32) {
         let Some(story) = &mut self.story else { return };
-        story.scripts.sync(&story.runner.abilities);
+        story.scripts.sync(&story.runner.active_abilities());
         let mut view = self.player.script_view(input, &self.settings);
         let mut objects: Vec<crate::script::ObjectView> = self
             .scene
