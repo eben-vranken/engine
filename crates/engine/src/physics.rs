@@ -4,7 +4,7 @@
 
 use crate::assets::{Assets, Resolved};
 use crate::render::mesh::{MeshData, Shape};
-use crate::scene::{Component, PhysicsBody, Scene, Transform};
+use crate::scene::{Component, Geometry, PhysicsBody, Scene, Transform};
 use crate::zones::Active;
 use glam::{Quat, Vec3};
 use rapier3d::prelude::*;
@@ -77,22 +77,32 @@ impl PhysicsWorld {
             accumulator: 0.0,
         };
         let mut object_bodies = HashMap::new();
+        // Placements of the same piece at the same scale share one shape
+        // (rapier's shapes are reference-counted); only the pose differs.
+        let mut shapes: HashMap<String, Option<SharedShape>> = HashMap::new();
         for (object, geometry, transform, solid) in scene.colliders_with_hidden() {
             let hidden = scene.objects[object].hidden;
             if hidden {
                 world.hidden.insert(object);
             }
             let body = game.then(|| physics_body(scene, object)).flatten();
-            let collider = match assets.resolve(geometry) {
-                Resolved::Shape(shape) => collider_for(shape, transform),
-                // Moving triangle meshes don't collide well; a hull does.
-                // A group of parts that turned out empty.
-                Resolved::Model(model) if model.parts.is_empty() => None,
-                Resolved::Model(model) => mesh_collider(&model.mesh, transform, body.is_some()),
-            };
-            let Some(mut collider) = collider else {
+            // Moving triangle meshes don't collide well; a hull does.
+            let convex = body.is_some();
+            let scale = transform.scale.to_array().map(f32::to_bits);
+            let key = format!("{geometry:?} {scale:?} {convex}");
+            let shape = shapes
+                .entry(key)
+                .or_insert_with(|| match assets.resolve(geometry) {
+                    Resolved::Shape(shape) => primitive_shape(shape, transform.scale),
+                    // A group of parts that turned out empty.
+                    Resolved::Model(model) if model.parts.is_empty() => None,
+                    Resolved::Model(model) => mesh_shape(&model.mesh, transform.scale, convex),
+                })
+                .clone();
+            let Some(shape) = shape else {
                 continue;
             };
+            let mut collider = placed_collider(shape, geometry, transform);
             collider.user_data = object as u128;
             let relative = object_pose(transform).inverse() * *collider.position();
             if !solid {
@@ -369,70 +379,80 @@ fn object_pose(transform: &Transform) -> Pose {
     Pose::from_parts(transform.position, transform.quat())
 }
 
-/// A collider matching the primitive's render mesh. Scale is baked into the
-/// shape, since colliders can't be scaled after the fact.
-fn collider_for(shape: Shape, transform: &Transform) -> Option<Collider> {
-    let scale = transform.scale.abs();
-    let collider_shape = match shape {
+/// A primitive's collision shape at this scale, matching its render mesh.
+/// Scale is baked into the shape, since colliders can't be scaled after
+/// the fact.
+fn primitive_shape(shape: Shape, scale: Vec3) -> Option<SharedShape> {
+    let scale_abs = scale.abs();
+    Some(match shape {
         Shape::Box { size } => {
-            let half = size * scale * 0.5;
+            let half = size * scale_abs * 0.5;
             SharedShape::cuboid(half.x, half.y, half.z)
         }
         // A thin slab just under the quad, so it can be stood on.
-        Shape::Plane { size } => {
-            SharedShape::cuboid(size.x * scale.x * 0.5, 0.005, size.y * scale.z * 0.5)
-        }
+        Shape::Plane { size } => SharedShape::cuboid(
+            size.x * scale_abs.x * 0.5,
+            0.005,
+            size.y * scale_abs.z * 0.5,
+        ),
         // Everything else is convex: wrap its render mesh, so collision matches what you see.
         shape => {
             let points: Vec<Vector> = MeshData::from_shape(shape)
                 .vertices
                 .iter()
-                .map(|v| Vector::from(v.position) * transform.scale)
+                .map(|v| Vector::from(v.position) * scale)
                 .collect();
             SharedShape::convex_hull(&points)?
         }
-    };
-    let rotation = transform.quat();
-    let offset = match shape {
-        Shape::Plane { .. } => Vector::Y * -0.005,
-        _ => Vector::ZERO,
-    };
-    Some(
-        ColliderBuilder::new(collider_shape)
-            .position(Pose::from_parts(
-                transform.position + rotation * offset,
-                rotation,
-            ))
-            .build(),
-    )
+    })
 }
 
-/// An exact triangle-mesh collider for a model (static only), scale baked in.
-/// A collider for a model: its exact triangles, or with `convex` its
-/// convex hull (needed for bodies that move).
-fn mesh_collider(mesh: &MeshData, transform: &Transform, convex: bool) -> Option<Collider> {
+/// A collider of `shape` where the object is (a plane's slab sits just
+/// under it).
+fn placed_collider(shape: SharedShape, geometry: Geometry, transform: &Transform) -> Collider {
+    let rotation = transform.quat();
+    let offset = match geometry {
+        Geometry::Shape(Shape::Plane { .. }) => Vector::Y * -0.005,
+        _ => Vector::ZERO,
+    };
+    ColliderBuilder::new(shape)
+        .position(Pose::from_parts(
+            transform.position + rotation * offset,
+            rotation,
+        ))
+        .build()
+}
+
+/// A primitive's collider where the object is.
+#[cfg(test)]
+fn collider_for(shape: Shape, transform: &Transform) -> Option<Collider> {
+    let collider_shape = primitive_shape(shape, transform.scale)?;
+    Some(placed_collider(
+        collider_shape,
+        Geometry::Shape(shape),
+        transform,
+    ))
+}
+
+/// A model's collision shape at this scale: its exact triangles (static
+/// only), or with `convex` its convex hull (needed for bodies that move).
+fn mesh_shape(mesh: &MeshData, scale: Vec3, convex: bool) -> Option<SharedShape> {
     let vertices: Vec<Vector> = mesh
         .vertices
         .iter()
-        .map(|v| Vector::from(v.position) * transform.scale)
+        .map(|v| Vector::from(v.position) * scale)
         .collect();
+    if convex {
+        return SharedShape::convex_hull(&vertices);
+    }
     let indices: Vec<[u32; 3]> = mesh
         .indices
         .chunks_exact(3)
         .map(|t| [t[0], t[1], t[2]])
         .collect();
-    let shape = if convex {
-        SharedShape::convex_hull(&vertices)
-    } else {
-        SharedShape::trimesh(vertices, indices)
-            .inspect_err(|err| log::error!("bad model mesh: {err}"))
-            .ok()
-    }?;
-    Some(
-        ColliderBuilder::new(shape)
-            .position(Pose::from_parts(transform.position, transform.quat()))
-            .build(),
-    )
+    SharedShape::trimesh(vertices, indices)
+        .inspect_err(|err| log::error!("bad model mesh: {err}"))
+        .ok()
 }
 
 #[cfg(test)]

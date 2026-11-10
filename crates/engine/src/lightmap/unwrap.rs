@@ -6,9 +6,11 @@
 //! meter and packed into its zone's atlas with a border of padding texels,
 //! so bilinear filtering never reads a neighbouring chart.
 //!
-//! Charts are laid out in world space, so a scaled box gets more texels,
-//! and vertices shared between charts are duplicated (each needs its own
-//! lightmap UV).
+//! A mesh is unwrapped once, in its own space (with the shape of its
+//! scale), into a layout shared by every placement of it; each placement
+//! gets that layout scaled to its size in its zone's atlas (see
+//! `lightmap::bake`). Vertices shared between charts are duplicated (each
+//! needs its own lightmap UV).
 
 use crate::render::mesh::MeshData;
 use glam::{Mat4, Vec2, Vec3};
@@ -46,9 +48,11 @@ impl Chart {
             + Vec2::splat(PAD as f32)
     }
 
-    /// The center of a texel of this chart (local x, y) → plane coords.
-    pub fn plane_of(&self, x: u32, y: u32) -> Vec2 {
-        self.min + (Vec2::new(x as f32, y as f32) + 0.5 - Vec2::splat(PAD as f32)) / self.scale
+    /// A point in the layout (texels at the unwrap's density) → plane
+    /// coords; the inverse of `texel_of`.
+    pub fn plane_at(&self, layout: Vec2) -> Vec2 {
+        let rect = Vec2::new(self.rect[0] as f32, self.rect[1] as f32);
+        self.min + (layout - rect - Vec2::splat(PAD as f32)) / self.scale
     }
 
     pub fn project(&self, p: Vec3) -> Vec2 {
@@ -203,33 +207,142 @@ pub fn unwrap(mesh: &MeshData, model: Mat4, density: f32) -> Unwrapped {
 /// Packs charts into rows ("shelves"), tallest first. Sets each chart's
 /// `rect` and returns the atlas size.
 pub fn pack(charts: &mut [&mut Chart]) -> [u32; 2] {
-    if charts.is_empty() {
-        return [0, 0];
+    let sizes: Vec<[u32; 2]> = charts.iter().map(|c| c.size).collect();
+    let (corners, size) = pack_sizes(&sizes, true);
+    for (chart, corner) in charts.iter_mut().zip(corners) {
+        chart.rect = corner;
     }
-    let area: u64 = charts
-        .iter()
-        .map(|c| c.size[0] as u64 * c.size[1] as u64)
-        .sum();
-    let widest = charts.iter().map(|c| c.size[0]).max().unwrap_or(1);
-    let width = ((area as f64 * 1.2).sqrt().ceil() as u32)
+    size
+}
+
+/// Packs one mesh's charts as tightly as shelves allow (no power-of-two
+/// width): the layout every placement of the mesh scales into its atlas.
+pub fn pack_layout(charts: &mut [Chart]) -> [u32; 2] {
+    let sizes: Vec<[u32; 2]> = charts.iter().map(|c| c.size).collect();
+    // Shelves waste what's above shorter charts in a row; a layout is
+    // packed twice (its charts, then it into the atlas), so try a few
+    // widths and keep the smallest. Only roughly square ones: a long thin
+    // layout makes its atlas as long.
+    let area: u64 = sizes.iter().map(|s| s[0] as u64 * s[1] as u64).sum();
+    let widest = sizes.iter().map(|s| s[0]).max().unwrap_or(1);
+    let square = (area as f64).sqrt().ceil() as u32;
+    let (corners, size) = (0..=16)
+        .map(|k| (square / 2 + square * 3 * k / 32).max(widest))
+        .map(|width| shelves(&sizes, width))
+        .min_by_key(|(_, [w, h])| (*w as u64 * *h as u64, w.abs_diff(*h)))
+        .unwrap_or_default();
+    for (chart, corner) in charts.iter_mut().zip(corners) {
+        chart.rect = corner;
+    }
+    size
+}
+
+/// Rectangles packed into rows ("shelves"), tallest first: each one's
+/// top-left corner, and the size of the whole. `atlas`: a power-of-two
+/// width and a height rounded up to 4, as atlases are made.
+pub fn pack_sizes(sizes: &[[u32; 2]], atlas: bool) -> (Vec<[u32; 2]>, [u32; 2]) {
+    if sizes.is_empty() {
+        return (Vec::new(), [0, 0]);
+    }
+    let area: u64 = sizes.iter().map(|s| s[0] as u64 * s[1] as u64).sum();
+    let widest = sizes.iter().map(|s| s[0]).max().unwrap_or(1);
+    if !atlas {
+        let width = ((area as f64 * 1.1).sqrt().ceil() as u32).max(widest);
+        return shelves(sizes, width);
+    }
+    // Power-of-two widths around a square; the one with the least area.
+    let first = ((area as f64).sqrt().ceil() as u32)
         .next_power_of_two()
-        .max(widest)
+        .max(widest.next_power_of_two())
         .max(16);
-    let mut order: Vec<usize> = (0..charts.len()).collect();
-    order.sort_by_key(|&i| std::cmp::Reverse((charts[i].size[1], charts[i].size[0])));
-    let (mut x, mut y, mut shelf) = (0, 0, 0);
+    [first / 2, first, first * 2]
+        .into_iter()
+        .filter(|&w| w >= widest && w >= 16)
+        .map(|width| {
+            let (corners, height) = skyline(sizes, width);
+            (corners, [width, height.next_multiple_of(4)])
+        })
+        .min_by_key(|(_, [w, h])| (*w as u64 * *h as u64, w.abs_diff(*h)))
+        .unwrap_or_default()
+}
+
+/// Skyline packing ("bottom-left"): tallest first, each rectangle where its
+/// top ends lowest along the outline of what's placed. Wastes far less than
+/// shelves on rectangles of many sizes. Corners, and the height used.
+fn skyline(sizes: &[[u32; 2]], width: u32) -> (Vec<[u32; 2]>, u32) {
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse((sizes[i][1], sizes[i][0])));
+    // The outline: (x, height) steps, left to right, covering the width.
+    let mut steps: Vec<(u32, u32)> = vec![(0, 0)];
+    let mut corners = vec![[0, 0]; sizes.len()];
+    let mut top = 0;
     for i in order {
-        let [w, h] = charts[i].size;
+        let [w, h] = sizes[i];
+        // The lowest place to put it, leftmost on ties.
+        let mut best: Option<(u32, u32, usize)> = None;
+        for start in 0..steps.len() {
+            let x = steps[start].0;
+            if x + w > width {
+                break;
+            }
+            let mut y = 0;
+            for &(sx, sy) in &steps[start..] {
+                if sx >= x + w {
+                    break;
+                }
+                y = y.max(sy);
+            }
+            if best.is_none_or(|(by, bx, _)| (y + h, x) < (by + h, bx)) {
+                best = Some((y, x, start));
+            }
+        }
+        let Some((y, x, start)) = best else {
+            // Wider than the atlas: on top of everything, at the left.
+            corners[i] = [0, top];
+            top += h;
+            steps = vec![(0, top)];
+            continue;
+        };
+        corners[i] = [x, y];
+        top = top.max(y + h);
+        // The outline under it becomes its top; the step that continued
+        // past its right edge starts again there.
+        let end = x + w;
+        let after = steps[start..]
+            .iter()
+            .take_while(|(sx, _)| *sx < end)
+            .last()
+            .map_or(0, |&(_, sy)| sy);
+        steps.retain(|&(sx, _)| sx < x || sx >= end);
+        let at = steps.partition_point(|&(sx, _)| sx < x);
+        steps.insert(at, (x, y + h));
+        if end < width && steps.get(at + 1).is_none_or(|&(sx, _)| sx > end) {
+            steps.insert(at + 1, (end, after));
+        }
+        steps.dedup_by(|b, a| a.1 == b.1);
+    }
+    (corners, top)
+}
+
+/// Shelf packing at a given width: corners, and the width and height used.
+fn shelves(sizes: &[[u32; 2]], width: u32) -> (Vec<[u32; 2]>, [u32; 2]) {
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse((sizes[i][1], sizes[i][0])));
+    let mut corners = vec![[0, 0]; sizes.len()];
+    let (mut x, mut y, mut shelf, mut right) = (0, 0, 0, 0);
+    for i in order {
+        let [w, h] = sizes[i];
         if x + w > width {
             x = 0;
             y += shelf;
             shelf = 0;
         }
-        charts[i].rect = [x, y];
+        corners[i] = [x, y];
         x += w;
+        right = right.max(x);
         shelf = shelf.max(h);
     }
-    [width, (y + shelf).next_multiple_of(4)]
+    (corners, [right, y + shelf])
 }
 
 #[cfg(test)]
@@ -279,6 +392,42 @@ mod tests {
             .collect();
         for (i, a) in rects.iter().enumerate() {
             assert!(a[0] + a[2] <= w && a[1] + a[3] <= h);
+            for b in &rects[i + 1..] {
+                let apart = a[0] + a[2] <= b[0]
+                    || b[0] + b[2] <= a[0]
+                    || a[1] + a[3] <= b[1]
+                    || b[1] + b[3] <= a[1];
+                assert!(apart, "{a:?} {b:?}");
+            }
+        }
+    }
+
+    /// Rectangles of many sizes (and some wider than a square atlas)
+    /// never overlap and stay inside the atlas.
+    #[test]
+    fn atlas_packing_keeps_rectangles_apart() {
+        let mut seed = 12345u32;
+        let mut next = |n: u32| {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            (seed >> 16) % n + 1
+        };
+        let mut sizes: Vec<[u32; 2]> = (0..400).map(|_| [next(60), next(60)]).collect();
+        sizes.push([300, 7]);
+        sizes.push([5, 200]);
+        let (corners, [w, h]) = pack_sizes(&sizes, true);
+        assert!(w.is_power_of_two());
+        let rects: Vec<[u32; 4]> = corners
+            .iter()
+            .zip(&sizes)
+            .map(|(c, s)| [c[0], c[1], s[0], s[1]])
+            .collect();
+        let used: u64 = sizes.iter().map(|s| s[0] as u64 * s[1] as u64).sum();
+        assert!(used as f64 / (w as f64 * h as f64) > 0.7, "{w} x {h}");
+        for (i, a) in rects.iter().enumerate() {
+            assert!(
+                a[0] + a[2] <= w && a[1] + a[3] <= h,
+                "{a:?} outside {w} x {h}"
+            );
             for b in &rects[i + 1..] {
                 let apart = a[0] + a[2] <= b[0]
                     || b[0] + b[2] <= a[0]

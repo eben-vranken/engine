@@ -24,7 +24,9 @@ struct Frame {
     dust: vec4<f32>,
 };
 
-struct Object {
+// One placed draw. Instanced draws read theirs through `visible`, the
+// frame's list of instances per draw.
+struct Instance {
     model: mat4x4<f32>,
     normal_matrix: mat4x4<f32>,
     color: vec4<f32>,
@@ -39,6 +41,8 @@ struct Object {
     surface: vec4<f32>,
     // Light arriving from +X, -X, +Y, -Y, +Z, -Z (probes or the sky).
     ambient: array<vec4<f32>, 6>,
+    // Lightmap UV = the mesh's layout UV * xy + zw (its place in the atlas).
+    lightmap_rect: vec4<f32>,
 };
 
 struct Light {
@@ -76,7 +80,8 @@ const HIGHLIGHT: vec3<f32> = vec3<f32>(1.0, 0.34, 0.025);
 @group(0) @binding(8) var reflections: texture_cube_array<f32>;
 @group(0) @binding(9) var<storage, read> reflection_boxes: array<Reflection>;
 @group(0) @binding(10) var reflection_sampler: sampler;
-@group(1) @binding(0) var<uniform> object: Object;
+@group(1) @binding(0) var<storage, read> instances: array<Instance>;
+@group(1) @binding(1) var<storage, read> visible: array<u32>;
 // The grid for primitives; a model part's base color texture.
 @group(2) @binding(0) var albedo_texture: texture_2d<f32>;
 @group(2) @binding(1) var albedo_sampler: sampler;
@@ -98,6 +103,7 @@ struct VertexOut {
     @location(2) uv: vec2<f32>,
     @location(3) lightmap_uv: vec2<f32>,
     @location(4) color: vec3<f32>,
+    @location(5) @interpolate(flat) instance: u32,
 };
 
 @vertex
@@ -107,14 +113,18 @@ fn vs_main(
     @location(2) uv: vec2<f32>,
     @location(3) lightmap_uv: vec2<f32>,
     @location(4) color: vec4<f32>,
+    @builtin(instance_index) slot: u32,
 ) -> VertexOut {
+    let index = visible[slot];
+    let object = instances[index];
     let world = object.model * vec4<f32>(position, 1.0);
     var out: VertexOut;
     out.clip = frame.view_proj * world;
     out.world = world.xyz;
     out.normal = (object.normal_matrix * vec4<f32>(normal, 0.0)).xyz;
     out.uv = uv;
-    out.lightmap_uv = lightmap_uv;
+    out.lightmap_uv = lightmap_uv * object.lightmap_rect.xy + object.lightmap_rect.zw;
+    out.instance = index;
     out.color = color.rgb;
     return out;
 }
@@ -294,8 +304,8 @@ fn point_lights(world: vec3<f32>, s: Surface) -> Lit {
 
 // What a glossy surface reflects along r: its zone's cube, projected onto
 // the zone's box so walls appear where they are; the sky without a bake.
-fn reflected(world: vec3<f32>, r: vec3<f32>, roughness: f32) -> vec3<f32> {
-    let index = i32(object.surface.z);
+fn reflected(world: vec3<f32>, r: vec3<f32>, roughness: f32, cube: f32) -> vec3<f32> {
+    let index = i32(cube);
     if index < 0 {
         return mix(frame.ambient_ground.rgb, frame.ambient_sky.rgb, r.y * 0.5 + 0.5);
     }
@@ -324,6 +334,7 @@ fn reflectance(f0: vec3<f32>, roughness: f32, ndv: f32) -> vec3<f32> {
 
 @fragment
 fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    let object = instances[in.instance];
     let geometric = normalize(in.normal);
     let uv = in.uv * object.highlight.y;
     let albedo = textureSample(albedo_texture, albedo_sampler, uv).rgb * object.color.rgb * in.color;
@@ -361,7 +372,7 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     if s.glossy {
         let ndv = max(dot(n, to_camera), 1e-4);
         let r = reflect(-to_camera, n);
-        specular += reflected(in.world, r, roughness) * reflectance(s.f0, roughness, ndv) * occlusion;
+        specular += reflected(in.world, r, roughness, object.surface.z) * reflectance(s.f0, roughness, ndv) * occlusion;
     }
     var color = albedo * (1.0 - metalness) * diffuse + specular + object.emissive.rgb;
 

@@ -87,10 +87,12 @@ struct FrameUniform {
     dust: Vec4,
 }
 
-/// Matches `Object` in `scene.wgsl`.
+/// One placed draw's data, read by `instance_index` through the frame's
+/// visible list: matches `Instance` in `scene.wgsl` (its start in
+/// `shadow.wgsl`).
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
-struct ObjectUniform {
+struct InstanceData {
     model: Mat4,
     normal_matrix: Mat4,
     color: Vec4,
@@ -102,24 +104,31 @@ struct ObjectUniform {
     surface: Vec4,
     /// Light arriving from +X, -X, +Y, -Y, +Z, -Z (probes or the sky).
     ambient: [Vec4; 6],
+    /// Lightmap UV = the mesh's layout UV * xy + zw (its atlas rectangle).
+    lightmap_rect: Vec4,
 }
 
-struct Draw {
+/// One placed draw: an object's primitive, model, or model part.
+struct Instance {
     /// Index into `Scene::objects`.
     object: usize,
     /// What the mesh was built from, to notice when it changes.
     geometry: GeometryKey,
-    /// Primitives tile the grid texture in meters; models use their own UVs.
-    textured: bool,
+    /// Index into `Renderer::meshes`, shared with other placements.
+    mesh: usize,
+    /// Index into `Renderer::materials` (primitives; models use their
+    /// mesh's own).
+    material: usize,
     /// Index into `Renderer::lightmaps`, if drawn with a lightmap.
     lightmap: Option<usize>,
+    lightmap_rect: Vec4,
     /// Material texture path ("" = none), to notice when it changes.
     texture: String,
-    /// The model's own roughness and metalness (primitives: matte).
-    surface: [f32; 2],
     /// The object is hidden (picked up, an open gate): kept, not drawn.
     hidden: bool,
-    uniform: ObjectUniform,
+    /// World bounding sphere (center, radius), for culling.
+    sphere: (Vec3, f32),
+    data: InstanceData,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -151,9 +160,10 @@ struct Look {
     surface: [f32; 2],
     /// Reflection cube index.
     reflection: Option<usize>,
+    lightmap_rect: Vec4,
 }
 
-fn object_uniform(r: &Renderable, highlighted: bool, look: &Look) -> ObjectUniform {
+fn instance_data(r: &Renderable, highlighted: bool, look: &Look) -> InstanceData {
     let model = r.transform.matrix();
     // Texture repeats per meter of UV: primitives' UVs are in meters.
     let uv_scale = match (look.textured, r.material) {
@@ -165,7 +175,7 @@ fn object_uniform(r: &Renderable, highlighted: bool, look: &Look) -> ObjectUnifo
         Some(m) => [m.roughness, m.metalness],
         None => look.surface,
     };
-    ObjectUniform {
+    InstanceData {
         model,
         normal_matrix: model.inverse().transpose(),
         color: r.color.extend(1.0),
@@ -179,7 +189,25 @@ fn object_uniform(r: &Renderable, highlighted: bool, look: &Look) -> ObjectUnifo
             0.0,
         ),
         ambient: look.ambient.map(|c| c.extend(0.0)),
+        lightmap_rect: look.lightmap_rect,
     }
+}
+
+/// Sorts `items` (key, instance) by key and appends the instances to
+/// `visible`, the frame's list: one range per key, drawn as one instanced
+/// draw (`instance_index` runs over the range).
+fn batch<K: Ord + Copy>(items: &mut [(K, u32)], visible: &mut Vec<u32>) -> Vec<(K, Range<u32>)> {
+    items.sort_unstable_by_key(|(key, _)| *key);
+    let mut batches: Vec<(K, Range<u32>)> = Vec::new();
+    for &(key, instance) in items.iter() {
+        let at = visible.len() as u32;
+        visible.push(instance);
+        match batches.last_mut() {
+            Some((k, range)) if *k == key => range.end = at + 1,
+            _ => batches.push((key, at..at + 1)),
+        }
+    }
+    batches
 }
 
 /// Matches `Reflection` in `scene.wgsl`.
@@ -198,16 +226,23 @@ fn sky_cube(env: &Environment) -> AmbientCube {
     [side, side, env.ambient_sky, env.ambient_ground, side, side]
 }
 
+/// A mesh on the GPU, shared by every placement of the same geometry (and
+/// lightmap layout).
 struct GpuMesh {
     /// Bounding sphere in the mesh's own space, for culling.
     sphere: (Vec3, f32),
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
-    /// Lightmap UV per vertex (zeros without a lightmap).
+    /// Lightmap layout UV per vertex (zeros without a lightmap).
     lightmap_uvs: wgpu::Buffer,
     index_count: u32,
-    /// Index ranges and the texture each is drawn with.
-    parts: Vec<(Range<u32>, wgpu::BindGroup)>,
+    /// Index ranges and their own material (a model's textures); `None`:
+    /// the instance's (primitives: the grid or a material texture).
+    parts: Vec<(Range<u32>, Option<wgpu::BindGroup>)>,
+    /// A primitive: UVs in meters, tiled by the instance's material.
+    textured: bool,
+    /// The model's own roughness and metalness (primitives: matte).
+    surface: [f32; 2],
 }
 
 /// Render targets at internal resolution; rebuilt when it changes.
@@ -285,8 +320,12 @@ pub struct Renderer {
     reflection_buffer: wgpu::Buffer,
     /// Baked zone name → reflection cube index.
     reflections: HashMap<String, usize>,
-    /// Material textures by path.
-    textures: HashMap<String, wgpu::BindGroup>,
+    /// Primitives' materials: the grid first, then textures as used.
+    materials: Vec<wgpu::BindGroup>,
+    /// Texture path → index into `materials`.
+    material_of: HashMap<String, usize>,
+    /// Each model's materials (one per image), uploaded once per model.
+    model_materials: HashMap<String, Vec<wgpu::BindGroup>>,
     frame_buffer: wgpu::Buffer,
     frame_bind_group: wgpu::BindGroup,
     object_layout: wgpu::BindGroupLayout,
@@ -298,13 +337,18 @@ pub struct Renderer {
     /// roughness/metal factor, no occlusion).
     flat_normal: wgpu::Texture,
     white_data: wgpu::Texture,
-    grid_material: wgpu::BindGroup,
-    object_stride: u64,
-    object_buffer: wgpu::Buffer,
-    object_bind_group: wgpu::BindGroup,
+    /// Every instance's data, read by `instance_index` (storage).
+    instance_buffer: wgpu::Buffer,
+    /// This frame's instances per draw, in order (storage, rewritten every
+    /// frame); grows as needed.
+    visible_buffer: wgpu::Buffer,
+    instance_bind_group: wgpu::BindGroup,
+    /// One per geometry and lightmap layout, shared by their placements.
     meshes: Vec<GpuMesh>,
-    /// One per mesh in `meshes`: which object it draws, and its data.
-    draws: Vec<Draw>,
+    /// (geometry, layout) → index into `meshes`, and whether the layout fit.
+    mesh_of: HashMap<(String, Option<u32>), (usize, bool)>,
+    /// One per placed draw: what it draws and its data.
+    instances: Vec<Instance>,
     /// Scene object shown as selected.
     highlighted: Vec<usize>,
     environment: Environment,
@@ -551,18 +595,22 @@ impl Renderer {
             [1, 1],
             &[0],
         );
+        // Every instance's data and the frame's list of which to draw, read
+        // in the vertex shader with `instance_index` (needs vertex storage
+        // buffers: Vulkan, DX12 and Metal have them).
+        let storage = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let object_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("object"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: true,
-                    min_binding_size: wgpu::BufferSize::new(size_of::<ObjectUniform>() as u64),
-                },
-                count: None,
-            }],
+            label: Some("instances"),
+            entries: &[storage(0), storage(1)],
         });
 
         let frame_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -715,10 +763,11 @@ impl Renderer {
             [&grid, &flat_normal, &white_data, &white_data],
         );
 
-        let alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
-        let object_stride = (size_of::<ObjectUniform>() as u64).next_multiple_of(alignment);
-        let (object_buffer, object_bind_group) =
-            create_object_buffer(&device, &object_layout, object_stride, 1);
+        let instance_buffer =
+            storage_buffer(&device, "instances", size_of::<InstanceData>() as u64);
+        let visible_buffer = storage_buffer(&device, "visible instances", 4096);
+        let instance_bind_group =
+            instance_bind_group(&device, &object_layout, &instance_buffer, &visible_buffer);
 
         let scene_shader = device.create_shader_module(wgpu::include_wgsl!("shaders/scene.wgsl"));
         let scene_pipeline_layout =
@@ -884,7 +933,9 @@ impl Renderer {
             reflection_texture,
             reflection_buffer,
             reflections: HashMap::new(),
-            textures: HashMap::new(),
+            materials: vec![grid_material],
+            material_of: HashMap::new(),
+            model_materials: HashMap::new(),
             frame_buffer,
             frame_bind_group,
             object_layout,
@@ -892,12 +943,12 @@ impl Renderer {
             sampler,
             flat_normal,
             white_data,
-            grid_material,
-            object_stride,
-            object_buffer,
-            object_bind_group,
+            instance_buffer,
+            visible_buffer,
+            instance_bind_group,
             meshes: Vec::new(),
-            draws: Vec::new(),
+            mesh_of: HashMap::new(),
+            instances: Vec::new(),
             drawn: [0, 0],
             highlighted: Vec::new(),
             environment: Environment::default(),
@@ -1020,27 +1071,35 @@ impl Renderer {
         self.reflections.get(&scene.objects[object].zone).copied()
     }
 
-    /// A material texture's bind group, uploaded on first use; `None` if
-    /// the texture can't be loaded.
-    fn texture_group(&mut self, path: &str, assets: &mut Assets) -> Option<wgpu::BindGroup> {
-        if let Some(group) = self.textures.get(path) {
-            return Some(group.clone());
+    /// Index into `materials` for a primitive's texture: the grid for ""
+    /// or one that can't be loaded; uploaded on first use.
+    fn material_index(&mut self, path: &str, assets: &mut Assets) -> usize {
+        if path.is_empty() {
+            return 0;
         }
-        let image = assets.texture(path)?;
-        let texture = texture::upload(&self.device, &self.queue, &image);
-        let group = material_bind_group(
-            &self.device,
-            &self.material_layout,
-            &self.sampler,
-            [
-                &texture,
-                &self.flat_normal,
-                &self.white_data,
-                &self.white_data,
-            ],
-        );
-        self.textures.insert(path.to_owned(), group.clone());
-        Some(group)
+        if let Some(&index) = self.material_of.get(path) {
+            return index;
+        }
+        let index = match assets.texture(path) {
+            Some(image) => {
+                let texture = texture::upload(&self.device, &self.queue, &image);
+                self.materials.push(material_bind_group(
+                    &self.device,
+                    &self.material_layout,
+                    &self.sampler,
+                    [
+                        &texture,
+                        &self.flat_normal,
+                        &self.white_data,
+                        &self.white_data,
+                    ],
+                ));
+                self.materials.len() - 1
+            }
+            None => 0,
+        };
+        self.material_of.insert(path.to_owned(), index);
+        index
     }
 
     /// A zone's average baked ambient light (from its probes), if baked.
@@ -1084,7 +1143,6 @@ impl Renderer {
         self.zone_fogs = scene.zones.iter().map(|z| z.fog.clone()).collect();
         self.lights = scene_lights(scene, assets);
         self.shadows.invalidate();
-        self.textures.clear();
         self.fog.set_regions(
             &self.queue,
             &fog::regions(scene, |zone| self.zone_light(zone)),
@@ -1092,73 +1150,104 @@ impl Renderer {
         self.fog.reset();
         self.post
             .set_grades(&self.device, &self.queue, scene, assets.root());
+        self.materials.truncate(1);
+        self.material_of.clear();
+        self.model_materials.clear();
+        self.meshes.clear();
+        self.mesh_of.clear();
+        self.instances.clear();
+        let baked = self.baked.clone();
+        let by_key: HashMap<lightmap::DrawKey, &BakedDraw> = baked
+            .iter()
+            .flat_map(|b| &b.draws)
+            .map(|d| (d.key, d))
+            .collect();
         // Hidden objects too: showing one again is then `update_object`.
         // (`draw_keys` also has one key per draw of every object.)
-        let renderables: Vec<_> = scene.renderables_with_hidden().collect();
-        let (buffer, bind_group) = create_object_buffer(
-            &self.device,
-            &self.object_layout,
-            self.object_stride,
-            renderables.len().max(1),
-        );
-        self.object_buffer = buffer;
-        self.object_bind_group = bind_group;
-        self.meshes.clear();
-        self.draws.clear();
-        let baked = self.baked.clone();
-        let draws = baked.iter().flat_map(|b| &b.draws);
-        // By object id and part; files from before ids by name.
-        let by_id: HashMap<(u32, u32), &BakedDraw> = draws
-            .clone()
-            .filter(|d| d.key.id != 0)
-            .map(|d| (d.key.by_id(), d))
-            .collect();
-        let by_name: HashMap<(&str, u32, u32), &BakedDraw> = draws
-            .filter(|d| d.key.id == 0)
-            .map(|d| (d.key.by_name(), d))
-            .collect();
         let keys = lightmap::draw_keys(scene);
-        for (r, key) in renderables.into_iter().zip(&keys) {
-            // Only objects that stay put use their lightmap.
-            let baked_draw = by_id
-                .get(&key.by_id())
-                .or_else(|| by_name.get(&key.by_name()))
+        for (r, key) in scene.renderables_with_hidden().zip(keys) {
+            // Only objects that stay put use their lightmap, and only a
+            // layout made for this mesh (and shape of scale).
+            let placed = by_key
+                .get(&key)
                 .copied()
                 .filter(|_| !lightmap::moves(&scene.objects[r.object]))
                 .filter(|d| matches!(self.lightmaps.get(d.zone as usize), Some(Some(_))));
+            let layout = placed.and_then(|d| {
+                let layout = baked.as_ref()?.layouts.get(d.layout as usize)?;
+                let fits = layout.mesh == lightmap::mesh_key(r.geometry, r.transform.scale);
+                fits.then_some((d.layout, layout))
+            });
+            let (mesh, fits) = self.mesh_for(r.geometry, assets, layout);
+            let placed = placed.filter(|_| fits && layout.is_some());
             let texture = material_texture(&r);
-            let group = (!texture.is_empty())
-                .then(|| self.texture_group(&texture, assets))
-                .flatten();
-            let (mesh, textured, lightmapped, surface) =
-                self.create_mesh(assets.resolve(r.geometry), baked_draw, group);
-            let lightmap = lightmapped
-                .then(|| baked_draw.map(|d| d.zone as usize))
-                .flatten();
-            let center = frustum::world_sphere(&r.transform.matrix(), mesh.sphere).0;
-            let look = Look {
-                textured,
-                lightmapped: lightmap.is_some(),
-                ambient: self.ambient_at(scene, r.object, center),
-                surface,
-                reflection: self.reflection_of(scene, r.object),
-            };
-            self.meshes.push(mesh);
-            let highlighted = self.highlighted.contains(&r.object);
-            self.draws.push(Draw {
+            let material = self.material_index(&texture, assets);
+            let instance = Instance {
                 object: r.object,
                 geometry: r.geometry.into(),
-                textured,
-                lightmap,
+                mesh,
+                material,
+                lightmap: placed.map(|d| d.zone as usize),
+                lightmap_rect: placed.map_or(Vec4::ZERO, |d| Vec4::from_array(d.rect)),
                 texture,
-                surface,
                 hidden: scene.objects[r.object].hidden,
-                uniform: object_uniform(&r, highlighted, &look),
-            });
+                sphere: (Vec3::ZERO, 0.0),
+                data: InstanceData::zeroed(),
+            };
+            self.instances.push(instance);
+            let slot = self.instances.len() - 1;
+            self.refresh_instance(scene, slot, &r);
         }
-        for i in 0..self.draws.len() {
-            self.write_draw(i);
+        self.instance_buffer = storage_buffer(
+            &self.device,
+            "instances",
+            (self.instances.len().max(1) * size_of::<InstanceData>()) as u64,
+        );
+        self.instance_bind_group = instance_bind_group(
+            &self.device,
+            &self.object_layout,
+            &self.instance_buffer,
+            &self.visible_buffer,
+        );
+        let data: Vec<InstanceData> = self.instances.iter().map(|i| i.data).collect();
+        if !data.is_empty() {
+            self.queue
+                .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&data));
         }
+        let mesh_bytes: u64 = self
+            .meshes
+            .iter()
+            .map(|m| m.vertices.size() + m.indices.size() + m.lightmap_uvs.size())
+            .sum();
+        log::info!(
+            "set scene: {} draws, {} meshes, mesh buffers {:.2} MB, object data {:.2} MB",
+            self.instances.len(),
+            self.meshes.len(),
+            mesh_bytes as f64 / 1e6,
+            (self.instance_buffer.size() + self.visible_buffer.size()) as f64 / 1e6,
+        );
+    }
+
+    /// Recomputes an instance's data from its renderable: where it is, its
+    /// bounds, how it looks. Doesn't upload it.
+    fn refresh_instance(&mut self, scene: &Scene, slot: usize, r: &Renderable) {
+        let instance = &self.instances[slot];
+        let gpu = &self.meshes[instance.mesh];
+        let sphere = frustum::world_sphere(&r.transform.matrix(), gpu.sphere);
+        let look = Look {
+            textured: gpu.textured,
+            lightmapped: instance.lightmap.is_some(),
+            ambient: self.ambient_at(scene, r.object, sphere.0),
+            surface: gpu.surface,
+            reflection: self.reflection_of(scene, r.object),
+            lightmap_rect: instance.lightmap_rect,
+        };
+        let highlighted = self.highlighted.contains(&r.object);
+        let data = instance_data(r, highlighted, &look);
+        let instance = &mut self.instances[slot];
+        instance.sphere = sphere;
+        instance.hidden = scene.objects[r.object].hidden;
+        instance.data = data;
     }
 
     /// Re-uploads one object after it was edited, moved, shown or hidden:
@@ -1187,62 +1276,45 @@ impl Renderer {
             );
         }
         let renderables: Vec<_> = scene.renderables_of(index).collect();
-        let slots: Vec<usize> = (0..self.draws.len())
-            .filter(|&i| self.draws[i].object == index)
+        let slots: Vec<usize> = (0..self.instances.len())
+            .filter(|&i| self.instances[i].object == index)
             .collect();
         if renderables.len() != slots.len() {
             // Components were added or removed: rebuild everything.
             self.set_scene(scene, assets);
             return;
         }
-        let highlighted = self.highlighted.contains(&index);
         for (&slot, r) in slots.iter().zip(renderables) {
             let key = GeometryKey::from(r.geometry);
-            let texture = material_texture(&r);
-            if self.draws[slot].geometry != key || self.draws[slot].texture != texture {
-                // Reshaped or retextured: a reshaped mesh's lightmap no
-                // longer fits until the next bake.
-                let reshaped = self.draws[slot].geometry != key;
-                let group = (!texture.is_empty())
-                    .then(|| self.texture_group(&texture, assets))
-                    .flatten();
-                let (mesh, textured, _, surface) =
-                    self.create_mesh(assets.resolve(r.geometry), None, group);
-                if reshaped {
-                    self.meshes[slot] = mesh;
-                    self.draws[slot].lightmap = None;
-                } else {
-                    // Same mesh (keeps its lightmap UVs): only the texture.
-                    self.meshes[slot].parts = mesh.parts;
-                }
-                self.draws[slot].geometry = key;
-                self.draws[slot].textured = textured;
-                self.draws[slot].texture = texture;
-                self.draws[slot].surface = surface;
+            if self.instances[slot].geometry != key {
+                // Reshaped: its lightmap no longer fits until the next bake.
+                let (mesh, _) = self.mesh_for(r.geometry, assets, None);
+                let instance = &mut self.instances[slot];
+                instance.mesh = mesh;
+                instance.geometry = key;
+                instance.lightmap = None;
+                instance.lightmap_rect = Vec4::ZERO;
                 self.shadows.invalidate();
             }
-            let center = frustum::world_sphere(&r.transform.matrix(), self.meshes[slot].sphere).0;
-            let look = Look {
-                textured: self.draws[slot].textured,
-                lightmapped: self.draws[slot].lightmap.is_some(),
-                ambient: self.ambient_at(scene, index, center),
-                surface: self.draws[slot].surface,
-                reflection: self.reflection_of(scene, index),
-            };
-            self.draws[slot].hidden = object.hidden;
-            self.draws[slot].uniform = object_uniform(&r, highlighted, &look);
-            self.write_draw(slot);
+            let texture = material_texture(&r);
+            if self.instances[slot].texture != texture {
+                // Retextured: same mesh, it keeps its lightmap.
+                self.instances[slot].material = self.material_index(&texture, assets);
+                self.instances[slot].texture = texture;
+            }
+            self.refresh_instance(scene, slot, &r);
+            self.write_instance(slot);
         }
     }
 
     /// Highlights the given scene objects (by index) as selected.
     pub fn set_highlight(&mut self, selected: &[usize]) {
         self.highlighted = selected.to_vec();
-        for i in 0..self.draws.len() {
-            let highlight = selected.contains(&self.draws[i].object) as u32 as f32;
-            if self.draws[i].uniform.highlight.x != highlight {
-                self.draws[i].uniform.highlight.x = highlight;
-                self.write_draw(i);
+        for i in 0..self.instances.len() {
+            let highlight = selected.contains(&self.instances[i].object) as u32 as f32;
+            if self.instances[i].data.highlight.x != highlight {
+                self.instances[i].data.highlight.x = highlight;
+                self.write_instance(i);
             }
         }
     }
@@ -1264,14 +1336,84 @@ impl Renderer {
         self.zone = zone;
     }
 
-    /// Uploads a mesh; also says whether it gets the grid texture and
-    /// whether `lightmap` fit it (then it's drawn with its lightmap UVs).
+    /// The GPU mesh for a geometry, shared by every placement of it: with a
+    /// lightmap layout's split vertices and UVs, or plain. Uploaded on first
+    /// use. Also says whether the layout fit (not if the mesh changed since
+    /// the bake).
+    fn mesh_for(
+        &mut self,
+        geometry: Geometry,
+        assets: &mut Assets,
+        layout: Option<(u32, &lightmap::BakedLayout)>,
+    ) -> (usize, bool) {
+        let key = (
+            format!("{:?}", GeometryKey::from(geometry)),
+            layout.map(|(i, _)| i),
+        );
+        if let Some(&found) = self.mesh_of.get(&key) {
+            return found;
+        }
+        let path = match geometry {
+            Geometry::Model(path, _) => Some(path.to_owned()),
+            Geometry::Shape(_) => None,
+        };
+        let (mesh, fits) = self.create_mesh(
+            assets.resolve(geometry),
+            path.as_deref(),
+            layout.map(|(_, l)| l),
+        );
+        self.meshes.push(mesh);
+        let found = (self.meshes.len() - 1, fits);
+        self.mesh_of.insert(key, found);
+        found
+    }
+
+    /// A model's materials, one per image: its base color and glTF maps.
+    fn model_materials(&self, model: &crate::assets::ModelData) -> Vec<wgpu::BindGroup> {
+        let max = self.device.limits().max_texture_dimension_2d;
+        let upload = |image: Option<&Image>| {
+            let image = image?;
+            if image.width.max(image.height) > max {
+                log::warn!("texture larger than {max} px; leaving it out");
+                return None;
+            }
+            Some(texture::upload(&self.device, &self.queue, image))
+        };
+        model
+            .images
+            .iter()
+            .enumerate()
+            .map(|(i, image)| {
+                let maps = model.maps.get(i);
+                let color = upload(Some(image)).unwrap_or_else(|| {
+                    texture::upload(&self.device, &self.queue, &Image::solid([1.0; 3]))
+                });
+                let normal = upload(maps.and_then(|m| m.normal.as_ref()));
+                let metal_rough = upload(maps.and_then(|m| m.metal_rough.as_ref()));
+                let occlusion = upload(maps.and_then(|m| m.occlusion.as_ref()));
+                material_bind_group(
+                    &self.device,
+                    &self.material_layout,
+                    &self.sampler,
+                    [
+                        &color,
+                        normal.as_ref().unwrap_or(&self.flat_normal),
+                        metal_rough.as_ref().unwrap_or(&self.white_data),
+                        occlusion.as_ref().unwrap_or(&self.white_data),
+                    ],
+                )
+            })
+            .collect()
+    }
+
+    /// Uploads a mesh, re-made for `layout` if it fits it (then it's drawn
+    /// with its lightmap UVs); also says whether it did.
     fn create_mesh(
-        &self,
+        &mut self,
         geometry: Resolved,
-        lightmap: Option<&BakedDraw>,
-        texture: Option<wgpu::BindGroup>,
-    ) -> (GpuMesh, bool, bool, [f32; 2]) {
+        path: Option<&str>,
+        layout: Option<&lightmap::BakedLayout>,
+    ) -> (GpuMesh, bool) {
         let shape_mesh;
         let surface = match &geometry {
             Resolved::Model(model) => model.surface,
@@ -1281,53 +1423,26 @@ impl Renderer {
             Resolved::Shape(shape) => {
                 shape_mesh = MeshData::from_shape(*shape);
                 let all = 0..shape_mesh.indices.len() as u32;
-                let material = texture.unwrap_or_else(|| self.grid_material.clone());
-                (&shape_mesh, vec![(all, material)], true)
+                (&shape_mesh, vec![(all, None)], true)
             }
             Resolved::Model(model) => {
-                let max = self.device.limits().max_texture_dimension_2d;
-                let upload = |image: Option<&Image>| {
-                    let image = image?;
-                    if image.width.max(image.height) > max {
-                        log::warn!("texture larger than {max} px; leaving it out");
-                        return None;
+                let cached = path.and_then(|p| self.model_materials.get(p)).cloned();
+                let materials = cached.unwrap_or_else(|| {
+                    let made = self.model_materials(model);
+                    if let Some(p) = path {
+                        self.model_materials.insert(p.to_owned(), made.clone());
                     }
-                    Some(texture::upload(&self.device, &self.queue, image))
-                };
-                let materials: Vec<wgpu::BindGroup> = model
-                    .images
-                    .iter()
-                    .enumerate()
-                    .map(|(i, image)| {
-                        let maps = model.maps.get(i);
-                        let color = upload(Some(image)).unwrap_or_else(|| {
-                            texture::upload(&self.device, &self.queue, &Image::solid([1.0; 3]))
-                        });
-                        let normal = upload(maps.and_then(|m| m.normal.as_ref()));
-                        let metal_rough = upload(maps.and_then(|m| m.metal_rough.as_ref()));
-                        let occlusion = upload(maps.and_then(|m| m.occlusion.as_ref()));
-                        material_bind_group(
-                            &self.device,
-                            &self.material_layout,
-                            &self.sampler,
-                            [
-                                &color,
-                                normal.as_ref().unwrap_or(&self.flat_normal),
-                                metal_rough.as_ref().unwrap_or(&self.white_data),
-                                occlusion.as_ref().unwrap_or(&self.white_data),
-                            ],
-                        )
-                    })
-                    .collect();
+                    made
+                });
                 let parts = model
                     .parts
                     .iter()
-                    .map(|part| (part.indices.clone(), materials[part.image].clone()))
+                    .map(|part| (part.indices.clone(), materials.get(part.image).cloned()))
                     .collect();
                 (&model.mesh, parts, false)
             }
         };
-        let remade = lightmap.and_then(|l| l.apply(data));
+        let remade = layout.and_then(|l| l.apply(data));
         let (data, uvs) = match &remade {
             Some((mesh, uvs)) => (mesh, uvs.clone()),
             None => (data, vec![[0.0; 2]; data.vertices.len()]),
@@ -1359,15 +1474,17 @@ impl Renderer {
             ),
             index_count: data.indices.len() as u32,
             parts,
+            textured,
+            surface,
         };
-        (mesh, textured, remade.is_some(), surface)
+        (mesh, remade.is_some())
     }
 
-    fn write_draw(&self, i: usize) {
+    fn write_instance(&self, i: usize) {
         self.queue.write_buffer(
-            &self.object_buffer,
-            i as u64 * self.object_stride,
-            bytemuck::bytes_of(&self.draws[i].uniform),
+            &self.instance_buffer,
+            (i * size_of::<InstanceData>()) as u64,
+            bytemuck::bytes_of(&self.instances[i].data),
         );
     }
 
@@ -1566,13 +1683,12 @@ impl Renderer {
         // Emissive surfaces glow in the fog: the nearest become fog-only
         // lights after the real ones.
         let mut glowing: Vec<(f32, GpuLight)> = self
-            .meshes
+            .instances
             .iter()
-            .zip(&self.draws)
-            .filter(|(_, d)| !d.hidden && d.uniform.emissive.max_element() > 0.0)
-            .map(|(mesh, d)| {
-                let (center, radius) = frustum::world_sphere(&d.uniform.model, mesh.sphere);
-                let light = lights::emissive_light(d.uniform.emissive.truncate(), center, radius);
+            .filter(|i| !i.hidden && i.data.emissive.max_element() > 0.0)
+            .map(|i| {
+                let (center, radius) = i.sphere;
+                let light = lights::emissive_light(i.data.emissive.truncate(), center, radius);
                 (center.distance(camera.position), light)
             })
             .collect();
@@ -1648,30 +1764,62 @@ impl Renderer {
         };
         mark(&mut encoder, &self.timer, 0);
         let casters: Vec<Caster> = self
-            .meshes
+            .instances
             .iter()
-            .zip(&self.draws)
             .enumerate()
-            .filter(|(_, (_, draw))| !draw.hidden)
-            .map(|(i, (mesh, draw))| Caster {
-                object: draw.object,
-                model: draw.uniform.model,
-                sphere: frustum::world_sphere(&draw.uniform.model, mesh.sphere),
-                vertices: &mesh.vertices,
-                indices: &mesh.indices,
-                index_count: mesh.index_count,
-                offset: (i as u64 * self.object_stride) as u32,
+            .filter(|(_, i)| !i.hidden)
+            .map(|(n, i)| Caster {
+                object: i.object,
+                mesh: i.mesh,
+                instance: n as u32,
+                model: i.data.model,
+                sphere: i.sphere,
+                index_count: self.meshes[i.mesh].index_count,
             })
             .collect();
-        self.shadows.render(
+        // Every pass's instances go into one list for the frame: shadow
+        // passes first, then the scene, one instanced draw per mesh (and
+        // material and lightmap) in each.
+        let mut visible: Vec<u32> = Vec::new();
+        let shadow_plan = self.shadows.plan(
             &self.queue,
-            &mut encoder,
-            &self.object_bind_group,
             &casters,
             sun_on.then_some(sun_view_proj),
             &frame_lights,
+            &mut visible,
         );
         drop(casters);
+        let mut items: Vec<((usize, usize, usize), u32)> = self
+            .instances
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| !i.hidden && frustum.sees_sphere(i.sphere.0, i.sphere.1))
+            .map(|(n, i)| {
+                (
+                    (i.mesh, i.material, i.lightmap.map_or(0, |z| z + 1)),
+                    n as u32,
+                )
+            })
+            .collect();
+        let drawn = items.len();
+        let batches = batch(&mut items, &mut visible);
+        grow_visible(
+            &self.device,
+            &self.object_layout,
+            &self.instance_buffer,
+            (&mut self.visible_buffer, &mut self.instance_bind_group),
+            visible.len(),
+        );
+        if !visible.is_empty() {
+            self.queue
+                .write_buffer(&self.visible_buffer, 0, bytemuck::cast_slice(&visible));
+        }
+        self.shadows.encode(
+            &mut encoder,
+            &shadow_plan,
+            &self.instance_bind_group,
+            &self.meshes,
+        );
         mark(&mut encoder, &self.timer, 1);
         if env.fog_distance > 0.0 {
             self.fog.render(
@@ -1724,33 +1872,28 @@ impl Renderer {
             });
             pass.set_pipeline(&self.scene_pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
-            let mut drawn = 0;
-            for (i, mesh) in self.meshes.iter().enumerate() {
-                if self.draws[i].hidden {
-                    continue;
-                }
-                let (center, radius) =
-                    frustum::world_sphere(&self.draws[i].uniform.model, mesh.sphere);
-                if !frustum.sees_sphere(center, radius) {
-                    continue;
-                }
-                drawn += 1;
-                let offset = (i as u64 * self.object_stride) as u32;
-                pass.set_bind_group(1, &self.object_bind_group, &[offset]);
+            pass.set_bind_group(1, &self.instance_bind_group, &[]);
+            let mut calls = 0;
+            for ((mesh, material, lightmap), range) in &batches {
+                let mesh = &self.meshes[*mesh];
                 pass.set_vertex_buffer(0, mesh.vertices.slice(..));
                 pass.set_vertex_buffer(1, mesh.lightmap_uvs.slice(..));
-                let lightmap = self.draws[i]
-                    .lightmap
+                let lightmap = lightmap
+                    .checked_sub(1)
                     .and_then(|z| self.lightmaps.get(z)?.as_ref())
                     .unwrap_or(&self.no_lightmap);
                 pass.set_bind_group(3, lightmap, &[]);
                 pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                for (indices, material) in &mesh.parts {
+                for (indices, own) in &mesh.parts {
+                    let material = own.as_ref().unwrap_or(&self.materials[*material]);
                     pass.set_bind_group(2, material, &[]);
-                    pass.draw_indexed(indices.clone(), 0, 0..1);
+                    pass.draw_indexed(indices.clone(), 0, range.clone());
+                    calls += 1;
                 }
             }
-            self.drawn = [drawn, self.meshes.len()];
+            self.drawn = [drawn, self.instances.len()];
+            crate::perf::count("DRAWN", drawn);
+            crate::perf::count("DRAW CALLS", calls);
             pass.set_pipeline(&self.sky_pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.draw(0..3, 0..1);
@@ -1780,6 +1923,9 @@ impl Renderer {
         if let Some(t) = &self.timer {
             t.resolve(&mut encoder);
         }
+        // The CPU's share of drawing the scene (culling, shadows, encoding),
+        // after the swapchain wait and before the editor's overlay.
+        crate::perf::count("RENDER CPU US", acquired.elapsed().as_micros() as usize);
 
         overlay(&self.device, &self.queue, &mut encoder, &output);
 
@@ -1886,31 +2032,54 @@ fn lightmap_bind_group(
     })
 }
 
-fn create_object_buffer(
+/// Makes room for `count` entries in the frame's visible list (a new
+/// buffer, and the bind group with it).
+fn grow_visible(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    stride: u64,
+    instances: &wgpu::Buffer,
+    (visible, group): (&mut wgpu::Buffer, &mut wgpu::BindGroup),
     count: usize,
-) -> (wgpu::Buffer, wgpu::BindGroup) {
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("objects"),
-        size: stride * count as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+) {
+    let needed = (count.max(1) * 4) as u64;
+    if visible.size() >= needed {
+        return;
+    }
+    *visible = storage_buffer(device, "visible instances", needed.next_power_of_two());
+    *group = instance_bind_group(device, layout, instances, visible);
+}
+
+/// A storage buffer the CPU writes to.
+fn storage_buffer(device: &wgpu::Device, label: &str, size: u64) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("objects"),
+    })
+}
+
+/// Group 1: every instance's data and the frame's visible list.
+fn instance_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    instances: &wgpu::Buffer,
+    visible: &wgpu::Buffer,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("instances"),
         layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &buffer,
-                offset: 0,
-                size: wgpu::BufferSize::new(size_of::<ObjectUniform>() as u64),
-            }),
-        }],
-    });
-    (buffer, bind_group)
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: instances.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: visible.as_entire_binding(),
+            },
+        ],
+    })
 }
 
 fn create_targets(device: &wgpu::Device, layout: ScaleLayout) -> Targets {

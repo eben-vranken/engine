@@ -15,17 +15,38 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Something that casts shadows, as the frame sees it.
-pub struct Caster<'a> {
+/// An instance that casts shadows.
+pub struct Caster {
+    /// Index into `Scene::objects` (a light doesn't shadow its own object).
     pub object: usize,
+    /// Index into the renderer's meshes.
+    pub mesh: usize,
+    /// Index into the renderer's instances.
+    pub instance: u32,
     pub model: Mat4,
-    /// World-space bounding sphere.
     pub sphere: (Vec3, f32),
-    pub vertices: &'a wgpu::Buffer,
-    pub indices: &'a wgpu::Buffer,
     pub index_count: u32,
-    /// Dynamic offset of its object uniform.
-    pub offset: u32,
+}
+
+/// One shadow map to draw this frame.
+pub struct PassPlan {
+    /// A sun cascade, or a layer of the point-light cube faces.
+    target: Target,
+    /// Its view-projection's slot in the pass buffer.
+    index: usize,
+    /// One instanced draw per mesh: the mesh and its range of the frame's
+    /// visible list.
+    batches: Vec<(usize, std::ops::Range<u32>)>,
+}
+
+enum Target {
+    Cascade(usize),
+    Face(usize),
+}
+
+/// This frame's shadow maps to draw.
+pub struct ShadowPlan {
+    passes: Vec<PassPlan>,
 }
 
 pub struct Shadows {
@@ -214,16 +235,18 @@ impl Shadows {
 
     /// Renders the sun's map (if `sun` is given) and every shadowed light's
     /// faces that are out of date.
-    #[allow(clippy::too_many_arguments)]
-    pub fn render(
+    /// Decides what this frame's shadow maps draw: every sun cascade, and
+    /// the cube faces whose casters changed. Culled instances go into
+    /// `visible`, grouped per mesh; `encode` draws them once that list is
+    /// on the GPU.
+    pub fn plan(
         &mut self,
         queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        object_bind_group: &wgpu::BindGroup,
         casters: &[Caster],
         sun: Option<[Mat4; CASCADES]>,
         lights: &[FrameLight],
-    ) {
+        visible: &mut Vec<u32>,
+    ) -> ShadowPlan {
         let mut faces = vec![Mat4::ZERO; self.slots() * 6];
         let mut todo: Vec<(usize, &FrameLight)> = Vec::new();
         for light in lights {
@@ -251,83 +274,98 @@ impl Shadows {
             );
         }
 
+        let mut plan = ShadowPlan { passes: Vec::new() };
         if let Some(sun) = sun {
-            crate::perf::time("SUN SHADOW PASSES", || {
-                for (i, matrix) in sun.into_iter().enumerate() {
-                    let view = &self.cascade_views[i];
-                    self.pass(encoder, view, i, matrix, object_bind_group, casters, None);
-                }
+            for (i, matrix) in sun.into_iter().enumerate() {
+                let batches = cull(matrix, casters, None, visible);
+                plan.passes.push(PassPlan {
+                    target: Target::Cascade(i),
+                    index: i,
+                    batches,
+                });
+            }
+        }
+        if !todo.is_empty() {
+            crate::perf::count("CUBE FACES", todo.len());
+        }
+        for (layer, light) in todo {
+            let range = Some((light.object, light.position, light.range));
+            let batches = cull(faces[layer], casters, range, visible);
+            plan.passes.push(PassPlan {
+                target: Target::Face(layer),
+                index: CASCADES + layer,
+                batches,
             });
         }
-        if todo.is_empty() {
-            return;
-        }
-        // Cube faces re-rendered: each is a pass over the casters in reach.
-        crate::perf::count("CUBE FACES", todo.len());
-        crate::perf::time("CUBE SHADOW PASSES", || {
-            for (layer, light) in todo {
-                let range = Some((light.object, light.position, light.range));
-                self.pass(
-                    encoder,
-                    &self.face_views[layer],
-                    CASCADES + layer,
-                    faces[layer],
-                    object_bind_group,
-                    casters,
-                    range,
-                );
-            }
-        });
+        plan
     }
 
-    /// One depth pass. `light`: the light's object (it doesn't shadow
-    /// itself), position and range, to skip casters out of reach.
-    #[allow(clippy::too_many_arguments)]
-    fn pass(
+    /// Draws the planned shadow maps (the visible list must be uploaded).
+    pub fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        index: usize,
-        view_proj: Mat4,
-        object_bind_group: &wgpu::BindGroup,
-        casters: &[Caster],
-        light: Option<(usize, Vec3, f32)>,
+        plan: &ShadowPlan,
+        instance_bind_group: &wgpu::BindGroup,
+        meshes: &[super::GpuMesh],
     ) {
-        let frustum = Frustum::new(view_proj);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("shadow"),
-            color_attachments: &[],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: target,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
+        let mut draws = 0;
+        for p in &plan.passes {
+            let target = match p.target {
+                Target::Cascade(i) => &self.cascade_views[i],
+                Target::Face(layer) => &self.face_views[layer],
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("shadow"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: target,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
                 }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(&self.pipeline);
-        let offset = (index as u64 * self.pass_stride) as u32;
-        pass.set_bind_group(0, &self.pass_bind_group, &[offset]);
-        for caster in casters {
-            if let Some((object, position, range)) = light
-                && (caster.object == object
-                    || caster.sphere.0.distance(position) > range + caster.sphere.1)
-            {
-                continue;
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipeline);
+            let offset = (p.index as u64 * self.pass_stride) as u32;
+            pass.set_bind_group(0, &self.pass_bind_group, &[offset]);
+            pass.set_bind_group(1, instance_bind_group, &[]);
+            for (mesh, range) in &p.batches {
+                let mesh = &meshes[*mesh];
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, range.clone());
+                draws += 1;
             }
-            if !frustum.sees_sphere(caster.sphere.0, caster.sphere.1) {
-                continue;
-            }
-            pass.set_bind_group(1, object_bind_group, &[caster.offset]);
-            pass.set_vertex_buffer(0, caster.vertices.slice(..));
-            pass.set_index_buffer(caster.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..caster.index_count, 0, 0..1);
         }
+        crate::perf::count("SHADOW DRAWS", draws);
     }
+}
+
+/// The casters one shadow map sees (`light`: a point light's object, which
+/// casts no shadow of its own, and its reach), grouped per mesh into
+/// `visible`.
+fn cull(
+    view_proj: Mat4,
+    casters: &[Caster],
+    light: Option<(usize, Vec3, f32)>,
+    visible: &mut Vec<u32>,
+) -> Vec<(usize, std::ops::Range<u32>)> {
+    let frustum = Frustum::new(view_proj);
+    let mut items: Vec<(usize, u32)> = casters
+        .iter()
+        .filter(|c| {
+            light.is_none_or(|(object, position, range)| {
+                c.object != object && c.sphere.0.distance(position) <= range + c.sphere.1
+            })
+        })
+        .filter(|c| frustum.sees_sphere(c.sphere.0, c.sphere.1))
+        .map(|c| (c.mesh, c.instance))
+        .collect();
+    super::batch(&mut items, visible)
 }
 
 /// Identifies what one cube face of a light's shadow map shows: the light,
