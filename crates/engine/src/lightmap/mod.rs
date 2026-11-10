@@ -25,7 +25,10 @@ use std::thread::JoinHandle;
 use trace::{BakeLight, Rng, World};
 use unwrap::Unwrapped;
 
-const MAGIC: &[u8; 8] = b"LIGHTM02";
+const MAGIC: &[u8; 8] = b"LIGHTM03";
+/// The format before draws were keyed by object id: still read, matched
+/// by name (see `DrawKey`).
+const MAGIC_NAMES: &[u8; 8] = b"LIGHTM02";
 /// Texels per side of each face of a zone's reflection cube.
 pub const REFLECTION_SIZE: u32 = 64;
 /// Bounce rays per reflection texel.
@@ -53,14 +56,28 @@ pub enum LightmapError {
     Crashed,
 }
 
-/// Which draw a lightmap belongs to, stable across loads: the object's
-/// name, which object of that name it is (names can repeat), and which of
-/// its drawable components.
+/// Which draw a lightmap belongs to, stable across loads, renames and
+/// reorders: the object's id and which of its drawable components. Files
+/// from before ids (`id` 0) are matched the old way: the object's name and
+/// which object of that name it is (names can repeat).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct DrawKey {
+    pub id: u32,
     pub name: String,
     pub occurrence: u32,
     pub part: u32,
+}
+
+impl DrawKey {
+    /// What a bake is found by: the id and part.
+    pub fn by_id(&self) -> (u32, u32) {
+        (self.id, self.part)
+    }
+
+    /// What an old (pre-id) bake is found by.
+    pub fn by_name(&self) -> (&str, u32, u32) {
+        (&self.name, self.occurrence, self.part)
+    }
 }
 
 /// Keys for every renderable, in `Scene::renderables` order.
@@ -81,6 +98,7 @@ pub fn draw_keys(scene: &Scene) -> Vec<DrawKey> {
             .sum();
         for part in 0..parts as u32 {
             keys.push(DrawKey {
+                id: object.id,
                 name: object.name.clone(),
                 occurrence: *occurrence,
                 part,
@@ -274,11 +292,9 @@ pub fn signature(scene: &Scene) -> u64 {
                 | Component::ZoneVolume(_)
                 | Component::LightSource(_)
                 | Component::Material(_) => {
-                    format!(
-                        "{}{}{:?}{:?}",
-                        object.name, object.zone, object.transform, c
-                    )
-                    .hash(&mut hasher);
+                    // The id, not the name: renaming changes no light.
+                    format!("{}{}{:?}{:?}", object.id, object.zone, object.transform, c)
+                        .hash(&mut hasher);
                 }
                 _ => {}
             }
@@ -1008,7 +1024,12 @@ impl Reader<'_> {
 }
 
 fn encode(baked: &Baked) -> Vec<u8> {
-    let mut w = Writer(MAGIC.to_vec());
+    encode_as(baked, true)
+}
+
+/// `with_ids: false` writes the older, name-keyed format (for tests).
+fn encode_as(baked: &Baked, with_ids: bool) -> Vec<u8> {
+    let mut w = Writer(if with_ids { MAGIC } else { MAGIC_NAMES }.to_vec());
     w.0.extend_from_slice(&baked.signature.to_le_bytes());
     w.u32(baked.zones.len() as u32);
     for z in &baked.zones {
@@ -1051,6 +1072,9 @@ fn encode(baked: &Baked) -> Vec<u8> {
     }
     w.u32(baked.draws.len() as u32);
     for d in &baked.draws {
+        if with_ids {
+            w.u32(d.key.id);
+        }
         w.string(&d.key.name);
         w.u32(d.key.occurrence);
         w.u32(d.key.part);
@@ -1071,9 +1095,12 @@ fn encode(baked: &Baked) -> Vec<u8> {
 
 fn decode(bytes: &[u8]) -> Option<Baked> {
     let mut r = Reader(bytes);
-    if r.bytes(8)? != MAGIC {
-        return None;
-    }
+    let magic = r.bytes(8)?;
+    let with_ids = match magic {
+        m if m == MAGIC => true,
+        m if m == MAGIC_NAMES => false,
+        _ => return None,
+    };
     let signature = r.u64()?;
     let mut zones = Vec::new();
     for _ in 0..r.count(4)? {
@@ -1138,6 +1165,7 @@ fn decode(bytes: &[u8]) -> Option<Baked> {
     let mut draws = Vec::new();
     for _ in 0..r.count(4)? {
         let key = DrawKey {
+            id: if with_ids { r.u32()? } else { 0 },
             name: r.string()?,
             occurrence: r.u32()?,
             part: r.u32()?,
@@ -1250,6 +1278,47 @@ mod tests {
         assert_eq!(keys[1].occurrence, 1);
     }
 
+    /// Renaming or reordering objects keeps each one's key: bakes stay on
+    /// their object.
+    #[test]
+    fn keys_follow_the_object_through_renames_and_reorders() {
+        let mut scene = crate::scene::test_scene(vec![
+            (Shape::Box { size: Vec3::ONE }, Vec3::ZERO),
+            (Shape::Box { size: Vec3::ONE }, Vec3::X),
+        ]);
+        let before: Vec<(u32, u32)> = draw_keys(&scene).iter().map(DrawKey::by_id).collect();
+        scene.objects.reverse();
+        scene.objects[0].name = "renamed".into();
+        let after: Vec<(u32, u32)> = draw_keys(&scene).iter().map(DrawKey::by_id).collect();
+        assert_eq!(after, [before[1], before[0]]);
+    }
+
+    /// A file written before ids still loads; its draws have no id and are
+    /// matched by name.
+    #[test]
+    fn name_keyed_files_still_load() {
+        let baked = Baked {
+            signature: 7,
+            zones: Vec::new(),
+            draws: vec![BakedDraw {
+                key: DrawKey {
+                    id: 3,
+                    name: "pillar".into(),
+                    occurrence: 1,
+                    part: 0,
+                },
+                zone: 0,
+                vertices: vec![(0, [0.5, 0.5])],
+                indices: vec![0, 0, 0],
+            }],
+        };
+        let old = decode(&encode_as(&baked, false)).expect("loads");
+        assert_eq!(old.draws[0].key.id, 0);
+        assert_eq!(old.draws[0].key.by_name(), ("pillar", 1, 0));
+        assert_eq!(decode(&encode(&baked)).expect("loads"), baked);
+        assert!(decode(b"LIGHTM01garbage").is_none());
+    }
+
     #[test]
     fn probes_blend_and_skip_invalid_ones() {
         let grid = ProbeGrid {
@@ -1273,6 +1342,7 @@ mod tests {
         let u = unwrap::unwrap(&mesh, Mat4::IDENTITY, 4.0);
         let draw = BakedDraw {
             key: DrawKey {
+                id: 1,
                 name: "a".into(),
                 occurrence: 0,
                 part: 0,

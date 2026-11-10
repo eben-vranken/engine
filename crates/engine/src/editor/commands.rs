@@ -68,8 +68,8 @@ pub(super) enum Command {
     PlayInWindow,
     BakeLighting,
     BakeAcoustics,
-    /// An index into `primitives()`.
-    AddPrimitive(usize),
+    /// A shape, by its name in `primitives()`.
+    AddPrimitive(&'static str),
     AddPlayerStart,
     AddZoneVolume,
     AddPortal,
@@ -85,11 +85,14 @@ pub(super) enum Command {
     Shortcuts,
     OpenScene(PathBuf),
     OpenGraph(PathBuf),
-    Select(usize),
-    /// An index into `new_components()`, for the selected object.
-    AddBehavior(usize),
-    /// An index into `NodeKind::all()`, for the open graph.
-    AddNode(usize),
+    /// An object, by id.
+    Select(u32),
+    /// A behavior, by its name in `new_components()`, for the selected
+    /// object. Names, not positions: a queued command must still mean the
+    /// same thing when the list changes.
+    AddBehavior(&'static str),
+    /// A node kind, by its title in `NodeKind::all()`, for the open graph.
+    AddNode(&'static str),
 }
 
 impl Command {
@@ -132,12 +135,7 @@ impl Command {
             PlayInWindow => "PLAY IN A WINDOW, AS A PLAYER".into(),
             BakeLighting => "BAKE LIGHTING".into(),
             BakeAcoustics => "BAKE ACOUSTICS".into(),
-            AddPrimitive(i) => format!(
-                "ADD {}",
-                primitives()
-                    .get(*i)
-                    .map_or("?".into(), |(k, _)| k.to_uppercase())
-            ),
+            AddPrimitive(kind) => format!("ADD {}", kind.to_uppercase()),
             AddPlayerStart => "ADD PLAYER START".into(),
             AddZoneVolume => "ADD ZONE VOLUME".into(),
             AddPortal => "ADD PORTAL".into(),
@@ -156,18 +154,8 @@ impl Command {
             OpenScene(p) => format!("OPEN {}", p.display()).to_uppercase(),
             OpenGraph(p) => format!("OPEN {}", p.display()).to_uppercase(),
             Select(_) => "SELECT".into(),
-            AddBehavior(i) => format!(
-                "ADD BEHAVIOR › {}",
-                super::object_panel::new_components()
-                    .get(*i)
-                    .map_or("?".into(), |(n, _)| n.to_uppercase())
-            ),
-            AddNode(i) => format!(
-                "ADD NODE › {}",
-                crate::graph::NodeKind::all()
-                    .get(*i)
-                    .map_or("?", |k| k.title())
-            ),
+            AddBehavior(name) => format!("ADD BEHAVIOR › {}", name.to_uppercase()),
+            AddNode(title) => format!("ADD NODE › {title}"),
         }
     }
 
@@ -216,7 +204,7 @@ impl Command {
             BakeLighting,
             BakeAcoustics,
         ];
-        list.extend((0..primitives().len()).map(AddPrimitive));
+        list.extend(primitives().map(|(kind, _)| AddPrimitive(kind)));
         list.extend([AddPlayerStart, AddZoneVolume, AddPortal, AddZone]);
         list.extend(Section::ALL.iter().map(|s| Settings(*s)));
         list.extend([
@@ -263,7 +251,7 @@ impl Editor {
             },
             Duplicate | Delete => match &self.graph {
                 Some(doc) => doc.selected.is_some(),
-                None => build && self.selected.is_some_and(|i| i < scene.objects.len()),
+                None => build && self.selected_index(scene).is_some(),
             },
             Play | PlayFromHere => build,
             PlayFromSave => build && crate::save::exists(&self.project_dir),
@@ -278,11 +266,9 @@ impl Editor {
                 self.graph.as_ref().is_some_and(|d| d.selected.is_some())
             }
             Paste if self.graph.is_some() => self.node_clipboard.is_some(),
-            Copy | Frame | Rename | MoveToZone(_) => {
-                build && self.selected.is_some_and(|i| i < scene.objects.len())
-            }
+            Copy | Frame | Rename | MoveToZone(_) => build && self.selected_index(scene).is_some(),
             Paste => build && !self.clipboard.is_empty() && !scene.zones.is_empty(),
-            AddBehavior(_) => build && self.selected.is_some(),
+            AddBehavior(_) => build && self.selected_index(scene).is_some(),
             AddNode(_) => self.graph.is_some(),
             _ => true,
         }
@@ -339,9 +325,9 @@ impl Editor {
             }
             Copy => {
                 self.clipboard = self
-                    .selected_objects()
+                    .selected_indices(scene)
                     .into_iter()
-                    .filter_map(|i| scene.objects.get(i).cloned())
+                    .map(|i| scene.objects[i].clone())
                     .collect();
                 self.show_message(format!("COPIED {}", self.clipboard.len()));
             }
@@ -391,8 +377,8 @@ impl Editor {
             PlayInWindow => output.play_window = true,
             BakeLighting => output.bake_lighting = true,
             BakeAcoustics => output.bake = true,
-            AddPrimitive(i) => {
-                if let Some((kind, shape)) = primitives().into_iter().nth(i) {
+            AddPrimitive(name) => {
+                if let Some((kind, shape)) = primitives().into_iter().find(|(k, _)| *k == name) {
                     change = self.add_primitive(scene, kind, shape, view);
                 }
             }
@@ -414,14 +400,18 @@ impl Editor {
                 None => output.new_tab = Some(path),
             },
             OpenGraph(path) => output.open_graph = Some(path),
-            Select(index) => {
-                output.settled |= self.select(scene, Some(index));
-                self.reveal_selection = true;
+            Select(id) => {
+                if scene.index_of(id).is_some() {
+                    output.settled |= self.select(scene, Some(id));
+                    self.reveal_selection = true;
+                }
             }
-            AddBehavior(i) => {
+            AddBehavior(name) => {
                 if let (Some(index), Some((_, component))) = (
-                    self.selected.filter(|&s| s < scene.objects.len()),
-                    super::object_panel::new_components().into_iter().nth(i),
+                    self.selected_index(scene),
+                    super::object_panel::new_components()
+                        .into_iter()
+                        .find(|(n, _)| *n == name),
                 ) {
                     let before = scene.objects[index].clone();
                     let kind = std::mem::discriminant(&component);
@@ -432,15 +422,19 @@ impl Editor {
                         .any(|c| std::mem::discriminant(c) == kind)
                     {
                         object.components.push(component);
-                        self.begin_edit(index, &before);
-                        output.changed.push(super::history::Change::Modified(index));
+                        self.begin_edit(&before);
+                        output
+                            .changed
+                            .push(super::history::Change::Modified(before.id));
                     }
                 }
             }
-            AddNode(i) => {
+            AddNode(title) => {
                 if let (Some(doc), Some(kind)) = (
                     &mut self.graph,
-                    crate::graph::NodeKind::all().into_iter().nth(i),
+                    crate::graph::NodeKind::all()
+                        .into_iter()
+                        .find(|k| k.title() == title),
                 ) {
                     doc.add_in_view(kind);
                 }
@@ -501,5 +495,56 @@ impl Editor {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::camera::Camera;
+    use crate::editor::testing::*;
+    use crate::scene::Component;
+
+    /// A command queued with an object's id and a behavior's name means the
+    /// same thing after the object list was reordered.
+    #[test]
+    fn queued_commands_keep_their_meaning_after_a_reorder() {
+        let mut scene = boxes(3);
+        let mut editor = editor();
+        let camera = Camera {
+            position: glam::Vec3::ZERO,
+            yaw: 0.0,
+            pitch: 0.0,
+            fov_y: 70.0,
+            near: 0.1,
+            far: 100.0,
+        };
+        let view = View {
+            camera: &camera,
+            image: egui::Rect::NOTHING,
+            looking: false,
+            aim: None,
+        };
+        let mut player = PlayerSettings::default();
+        let mut output = output();
+        let queued = [Command::Select(2), Command::AddBehavior("door")];
+        scene.objects.reverse();
+        for command in queued {
+            editor.run(command, &mut scene, &mut player, &view, &mut output);
+        }
+        assert_eq!(editor.selected, Some(2));
+        let door =
+            |o: &crate::scene::Object| o.components.iter().any(|c| matches!(c, Component::Door(_)));
+        assert!(door(scene.object(2).unwrap()));
+        assert_eq!(scene.objects.iter().filter(|o| door(o)).count(), 1);
+        // An id no object has selects nothing.
+        editor.run(
+            Command::Select(99),
+            &mut scene,
+            &mut player,
+            &view,
+            &mut output,
+        );
+        assert_eq!(editor.selected, Some(2));
     }
 }

@@ -52,9 +52,9 @@ impl Editor {
     pub(super) fn all_problems(&self, scene: &Scene) -> Vec<(Place, String)> {
         let mut all = Vec::new();
         if self.graph.is_none() && self.script.is_none() {
-            for (index, object) in scene.objects.iter().enumerate() {
+            for object in &scene.objects {
                 for problem in self.object_problems(scene, object) {
-                    all.push((Place::Object(index, object.name.clone()), problem));
+                    all.push((Place::Object(object.id, object.name.clone()), problem));
                 }
             }
         }
@@ -102,9 +102,9 @@ impl Editor {
             self.problems_open = false;
         }
         match go {
-            Some(Place::Object(index, _)) => {
+            Some(Place::Object(id, _)) => {
                 self.problems_open = false;
-                output.settled |= self.select(scene, Some(index));
+                output.settled |= self.select(scene, Some(id));
                 self.reveal_selection = true;
             }
             Some(Place::Graph(path)) => {
@@ -119,8 +119,8 @@ impl Editor {
 /// Where a problem is.
 #[derive(Debug, Clone)]
 pub(super) enum Place {
-    /// An object of the open scene: index and name.
-    Object(usize, String),
+    /// An object of the open scene: id and name.
+    Object(u32, String),
     /// A graph file.
     Graph(String),
 }

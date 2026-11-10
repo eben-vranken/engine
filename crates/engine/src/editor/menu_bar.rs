@@ -302,7 +302,7 @@ impl Editor {
         match self.workspace() {
             Workspace::Build => {
                 let mut add: Vec<Option<Command>> = vec![Some(AddDialog), None];
-                add.extend((0..super::objects::primitives().len()).map(|i| Some(AddPrimitive(i))));
+                add.extend(super::objects::primitives().map(|(kind, _)| Some(AddPrimitive(kind))));
                 add.extend([
                     None,
                     Some(AddPlayerStart),

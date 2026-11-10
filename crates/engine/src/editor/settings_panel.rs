@@ -90,11 +90,7 @@ impl Editor {
                         // The zone's space is its volume objects.
                         section(ui, "VOLUME");
                         let mut any = false;
-                        for (index, object) in objects
-                            .iter_mut()
-                            .enumerate()
-                            .filter(|(_, o)| o.zone == zone.name)
-                        {
+                        for object in objects.iter_mut().filter(|o| o.zone == zone.name) {
                             let Some(volume) = object.components.iter_mut().find_map(|c| match c {
                                 Component::ZoneVolume(v) => Some(v),
                                 _ => None,
@@ -110,7 +106,7 @@ impl Editor {
                                         .on_hover_text("MOVE, TURN OR SCALE IT WITH THE GIZMO")
                                         .clicked()
                                     {
-                                        pick = Some(index);
+                                        pick = Some(object.id);
                                     }
                                 });
                             });

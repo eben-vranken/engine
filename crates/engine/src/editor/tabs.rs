@@ -20,7 +20,7 @@ pub(super) struct Document {
     pub scene_path: PathBuf,
     pub saved_state: Option<u64>,
     pub history: History,
-    pub selected: Option<usize>,
+    pub selected: Option<u32>,
     pub also: Vec<super::Pick>,
     pub settings: Option<SettingsTarget>,
     pub search: String,
@@ -384,14 +384,14 @@ mod tests {
         let mut player = PlayerSettings::default();
 
         // An edit in A, then open B and edit it too.
-        editor.selected = Some(0);
+        editor.selected = Some(1);
         editor.duplicate_selected(&mut scene);
         editor.open_tab("scenes/b.ron".into(), boxes(3), &mut scene, &fly);
         assert_eq!((editor.tab_count(), editor.active_tab()), (2, 1));
         assert_eq!(editor.selected, None);
         assert!(!editor.is_dirty());
         fly.camera.position = Vec3::Y;
-        editor.selected = Some(2);
+        editor.selected = Some(3);
         editor.delete_selected(&mut scene);
         assert_eq!(scene.objects.len(), 2);
         assert_eq!(editor.dirty_paths().len(), 2);
@@ -400,7 +400,7 @@ mod tests {
         assert!(editor.switch_tab(0, &mut scene, &mut fly));
         assert_eq!(editor.scene_path, Path::new("scenes/a.ron"));
         assert_eq!(scene.objects.len(), 2);
-        assert_eq!(editor.selected, Some(1));
+        assert_eq!(editor.selected, Some(2), "the copy, by id");
         assert_eq!(fly.camera.position, Vec3::ZERO);
         editor.undo(&mut scene, &mut player);
         assert_eq!(scene.objects.len(), 1);

@@ -7,15 +7,18 @@ use crate::scene::{Object, Scene};
 
 #[derive(Debug, Clone)]
 pub enum Edit {
-    /// Replace one object (any change to its fields or components).
+    /// Replace one object (any change to its fields or components),
+    /// found by its id wherever it is in the list by then.
     SetObject {
-        index: usize,
+        id: u32,
         before: Box<Object>,
         after: Box<Object>,
     },
-    /// Insert an object at `index` (new, duplicated).
+    /// Insert an object at `index` (new, duplicated); the position only
+    /// keeps the list's order on redo.
     Add { index: usize, object: Box<Object> },
-    /// Remove the object at `index`; `object` is kept to put it back.
+    /// Remove the object (found by its id); `index` is where it was, so
+    /// undo puts it back in the same place.
     Remove { index: usize, object: Box<Object> },
     /// Replace the whole scene: zone edits (add, rename, delete), which can
     /// touch every object in the zone.
@@ -48,18 +51,18 @@ impl Edit {
     }
 }
 
-/// What applying or reverting an edit did to the scene's object list.
-/// Selection, highlight and draws all refer to objects by index, so they
-/// have to follow insertions and removals.
+/// What applying or reverting an edit did to the scene's objects, by
+/// object id. The editor's selection follows ids; what is drawn is looked
+/// up by position when it is rebuilt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Change {
-    /// The object at this index changed; no indices moved.
-    Modified(usize),
-    /// An object was inserted here; later objects moved up by one.
-    Added(usize),
-    /// The object here was removed; later objects moved down by one.
-    Removed(usize),
-    /// Anything may have changed, but no objects were added or removed.
+    /// The object with this id changed; nothing moved in the list.
+    Modified(u32),
+    /// The object with this id was inserted; later objects moved up.
+    Added(u32),
+    /// The object with this id was removed; later objects moved down.
+    Removed(u32),
+    /// Anything may have changed, objects may have come or gone.
     All,
     /// Only zone or environment settings changed (fog, grade, sun, sky):
     /// no meshes need re-uploading.
@@ -71,12 +74,9 @@ pub enum Change {
 impl Edit {
     fn apply(&self, scene: &mut Scene, player: &mut PlayerSettings) -> Change {
         match self {
-            Edit::SetObject { index, after, .. } => {
-                scene.objects[*index] = (**after).clone();
-                Change::Modified(*index)
-            }
+            Edit::SetObject { id, after, .. } => set(scene, *id, after),
             Edit::Add { index, object } => insert(scene, *index, object),
-            Edit::Remove { index, .. } => remove(scene, *index),
+            Edit::Remove { index, object } => remove(scene, *index, object),
             Edit::SetScene { after, .. } => {
                 *scene = (**after).clone();
                 Change::All
@@ -90,11 +90,8 @@ impl Edit {
 
     fn revert(&self, scene: &mut Scene, player: &mut PlayerSettings) -> Change {
         match self {
-            Edit::SetObject { index, before, .. } => {
-                scene.objects[*index] = (**before).clone();
-                Change::Modified(*index)
-            }
-            Edit::Add { index, .. } => remove(scene, *index),
+            Edit::SetObject { id, before, .. } => set(scene, *id, before),
+            Edit::Add { index, object } => remove(scene, *index, object),
             Edit::Remove { index, object } => insert(scene, *index, object),
             Edit::SetScene { before, .. } => {
                 *scene = (**before).clone();
@@ -108,14 +105,36 @@ impl Edit {
     }
 }
 
-fn insert(scene: &mut Scene, index: usize, object: &Object) -> Change {
-    scene.objects.insert(index, object.clone());
-    Change::Added(index)
+fn set(scene: &mut Scene, id: u32, object: &Object) -> Change {
+    match scene.object_mut(id) {
+        Some(slot) => {
+            *slot = object.clone();
+            Change::Modified(id)
+        }
+        // Not there (it never should be): nothing to put it over.
+        None => Change::All,
+    }
 }
 
-fn remove(scene: &mut Scene, index: usize) -> Change {
-    scene.objects.remove(index);
-    Change::Removed(index)
+fn insert(scene: &mut Scene, index: usize, object: &Object) -> Change {
+    scene
+        .objects
+        .insert(index.min(scene.objects.len()), object.clone());
+    Change::Added(object.id)
+}
+
+/// Removes `object` by its id; `index` only if it has none.
+fn remove(scene: &mut Scene, index: usize, object: &Object) -> Change {
+    let at = scene
+        .index_of(object.id)
+        .or_else(|| (index < scene.objects.len()).then_some(index));
+    match at {
+        Some(at) => {
+            scene.objects.remove(at);
+            Change::Removed(object.id)
+        }
+        None => Change::All,
+    }
 }
 
 /// Edits carry an id so "has the scene changed since it was saved?" can be
@@ -186,7 +205,7 @@ mod tests {
         let before = scene.objects[0].clone();
         scene.objects[0].transform.position.x = x;
         history.record(Edit::SetObject {
-            index: 0,
+            id: scene.objects[0].id,
             before: Box::new(before),
             after: Box::new(scene.objects[0].clone()),
         });
@@ -201,7 +220,7 @@ mod tests {
 
         assert_eq!(
             history.undo(&mut scene, &mut PlayerSettings::default()),
-            Some(Change::Modified(0))
+            Some(Change::Modified(1))
         );
         assert_eq!(scene.objects[0].transform.position.x, 1.0);
         history.undo(&mut scene, &mut PlayerSettings::default());
@@ -265,7 +284,7 @@ mod tests {
                 object: Box::new(copy),
             },
         );
-        assert_eq!(change, Change::Added(1));
+        assert_eq!(change, Change::Added(4));
         assert_eq!(scene.objects[1].name, "copy");
         // The copy got an id of its own.
         assert_ne!(scene.objects[1].id, scene.objects[0].id);
@@ -279,7 +298,7 @@ mod tests {
                 object: removed,
             },
         );
-        assert_eq!(change, Change::Removed(3));
+        assert_eq!(change, Change::Removed(3), "object 2 has id 3");
         assert_eq!(scene.objects.len(), 3);
 
         assert_eq!(
@@ -288,12 +307,12 @@ mod tests {
         );
         assert_eq!(
             history.undo(&mut scene, &mut PlayerSettings::default()),
-            Some(Change::Removed(1))
+            Some(Change::Removed(4))
         );
         assert_eq!(scene, original);
         assert_eq!(
             history.redo(&mut scene, &mut PlayerSettings::default()),
-            Some(Change::Added(1))
+            Some(Change::Added(4))
         );
         assert_eq!(
             history.redo(&mut scene, &mut PlayerSettings::default()),

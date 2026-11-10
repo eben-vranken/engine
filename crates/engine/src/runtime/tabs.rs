@@ -9,20 +9,22 @@ use std::path::PathBuf;
 
 impl Running {
     /// Editor: redraws what an edit changed. Adding or removing objects
-    /// shifts the indices the draws refer to, so those rebuild all draws.
+    /// shifts the positions the draws refer to, so those rebuild all draws.
     pub(super) fn show_change(&mut self, change: Change) {
         match change {
-            Change::Modified(index) => {
-                self.renderer
-                    .update_object(&self.scene, index, &mut self.assets);
-            }
+            Change::Modified(id) => match self.scene.index_of(id) {
+                Some(index) => self
+                    .renderer
+                    .update_object(&self.scene, index, &mut self.assets),
+                None => self.renderer.set_scene(&self.scene, &mut self.assets),
+            },
             Change::Settings => self.renderer.set_zones(&self.scene, &self.assets),
             Change::Player => {}
             Change::Added(_) | Change::Removed(_) | Change::All => {
                 let selected = self
                     .editor
                     .as_ref()
-                    .map(|e| e.selected_objects())
+                    .map(|e| e.selected_indices(&self.scene))
                     .unwrap_or_default();
                 self.renderer.set_highlight(&selected);
                 self.highlighted = selected;

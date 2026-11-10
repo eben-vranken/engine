@@ -1106,16 +1106,23 @@ impl Renderer {
         self.meshes.clear();
         self.draws.clear();
         let baked = self.baked.clone();
-        let by_key: HashMap<&lightmap::DrawKey, &BakedDraw> = baked
-            .iter()
-            .flat_map(|b| &b.draws)
-            .map(|d| (&d.key, d))
+        let draws = baked.iter().flat_map(|b| &b.draws);
+        // By object id and part; files from before ids by name.
+        let by_id: HashMap<(u32, u32), &BakedDraw> = draws
+            .clone()
+            .filter(|d| d.key.id != 0)
+            .map(|d| (d.key.by_id(), d))
+            .collect();
+        let by_name: HashMap<(&str, u32, u32), &BakedDraw> = draws
+            .filter(|d| d.key.id == 0)
+            .map(|d| (d.key.by_name(), d))
             .collect();
         let keys = lightmap::draw_keys(scene);
         for (r, key) in renderables.into_iter().zip(&keys) {
             // Only objects that stay put use their lightmap.
-            let baked_draw = by_key
-                .get(key)
+            let baked_draw = by_id
+                .get(&key.by_id())
+                .or_else(|| by_name.get(&key.by_name()))
                 .copied()
                 .filter(|_| !lightmap::moves(&scene.objects[r.object]))
                 .filter(|d| matches!(self.lightmaps.get(d.zone as usize), Some(Some(_))));

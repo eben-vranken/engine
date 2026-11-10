@@ -76,8 +76,9 @@ impl Editor {
         let mut shown_any = false;
         ui.add_space(4.0);
         let mut clicked = None;
-        // The right-click menu on an object's row: the object, and the command.
-        let mut row_command: Option<(usize, Command)> = None;
+        // The right-click menu on an object's row: the object (its id), and
+        // the command.
+        let mut row_command: Option<(u32, Command)> = None;
         // Each object's problems, marked on its row.
         let problems: Vec<Vec<String>> = scene
             .objects
@@ -179,7 +180,7 @@ impl Editor {
                     };
                     let header = format!("{} [{shown}]", zone.name.to_uppercase());
                     let reveal = self.reveal_selection
-                        && members.iter().any(|(i, _)| Some(*i) == self.selected);
+                        && members.iter().any(|(_, o)| Some(o.id) == self.selected);
                     if let Some((old, typed)) = &mut self.renaming
                         && *old == zone.name
                     {
@@ -203,30 +204,31 @@ impl Editor {
                         .open((reveal || searching).then_some(true))
                         .show(ui, |ui| {
                             for (index, object) in members {
-                                let selected = self.selected == Some(index);
+                                let id = object.id;
+                                let selected = self.selected == Some(id);
                                 let parts = model_parts(object, &self.model_parts);
-                                let whole = self.is_picked(index, None);
+                                let whole = self.is_picked(id, None);
                                 if parts.len() < 2 && query.part.is_none() {
                                     let response = object_row(ui, whole, object, &problems[index]);
                                     if response.clicked() {
-                                        clicked = Some((index, None));
+                                        clicked = Some((id, None));
                                     }
-                                    row_menu(&response, index, &zone_names, &mut row_command);
+                                    row_menu(&response, id, &zone_names, &mut row_command);
                                     if selected && reveal {
                                         response.scroll_to_me(Some(Align::Center));
                                     }
                                     continue;
                                 }
                                 // A model made of parts opens to show them.
-                                let id = ui.make_persistent_id(("object_parts", &object.name, index));
+                                let state_id = ui.make_persistent_id(("object_parts", id));
                                 let mut state =
                                     egui::collapsing_header::CollapsingState::load_with_default_open(
                                         ui.ctx(),
-                                        id,
+                                        state_id,
                                         false,
                                     );
                                 let part_picked =
-                                    self.picks().iter().any(|p| p.object == index && p.part.is_some());
+                                    self.picks().iter().any(|p| p.object == id && p.part.is_some());
                                 if ((reveal || selected) && part_picked) || query.part.is_some() {
                                     state.set_open(true);
                                 }
@@ -235,16 +237,16 @@ impl Editor {
                                 let header = state.show_header(ui, |ui| {
                                     let response = object_row(ui, whole, object, &problems[index]);
                                     if response.clicked() {
-                                        clicked = Some((index, None));
+                                        clicked = Some((id, None));
                                     }
-                                    row_menu(&response, index, &zone_names, &mut row_command);
+                                    row_menu(&response, id, &zone_names, &mut row_command);
                                     if selected && reveal {
                                         response.scroll_to_me(Some(Align::Center));
                                     }
                                 });
                                 header.body(|ui| {
                                     for part in parts {
-                                        let chosen = self.is_picked(index, Some(&part));
+                                        let chosen = self.is_picked(id, Some(&part));
                                         let own = has_own_settings(object, &part);
                                         let text = if own {
                                             format!("{part} *")
@@ -260,7 +262,7 @@ impl Editor {
                                             })
                                             .clicked()
                                         {
-                                            clicked = Some((index, Some(part)));
+                                            clicked = Some((id, Some(part)));
                                         }
                                     }
                                 });
@@ -286,25 +288,19 @@ impl Editor {
             });
         self.reveal_selection = false;
         self.zone_delete_dialog(ui, scene, output);
-        if let Some((index, part)) = clicked {
+        if let Some((id, part)) = clicked {
             if ui.input(|i| i.modifiers.shift) {
-                self.toggle_pick(
-                    scene,
-                    super::Pick {
-                        object: index,
-                        part,
-                    },
-                );
+                self.toggle_pick(scene, super::Pick { object: id, part });
             } else {
-                self.select(scene, Some(index));
+                self.select(scene, Some(id));
                 self.selected_part = part;
             }
         }
         // A row's menu acts on that object (selecting it first, unless it
         // is part of the selection); it runs like the menus' commands.
-        if let Some((index, command)) = row_command {
-            if !self.selected_objects().contains(&index) {
-                self.select(scene, Some(index));
+        if let Some((id, command)) = row_command {
+            if !self.selected_objects().contains(&id) {
+                self.select(scene, Some(id));
             }
             self.queued.push(command);
         }
@@ -626,7 +622,7 @@ impl Query {
 fn search_parts(scene: &Scene, parts: &super::ModelParts, query: &Query) -> Vec<super::Pick> {
     let mut found = Vec::new();
     for zone in &scene.zones {
-        for (index, object) in scene.objects.iter().enumerate() {
+        for object in &scene.objects {
             if object.zone != zone.name {
                 continue;
             }
@@ -636,7 +632,7 @@ fn search_parts(scene: &Scene, parts: &super::ModelParts, query: &Query) -> Vec<
             }
             for name in names.into_iter().filter(|p| query.part_matches(p)) {
                 found.push(super::Pick {
-                    object: index,
+                    object: object.id,
                     part: Some(name),
                 });
             }
@@ -717,6 +713,7 @@ mod tests {
             candle("Candle 3", "models/candle.glb"),
             candle("lantern", "models/lantern.glb"),
         ];
+        scene.assign_ids();
         let mut parts = crate::editor::ModelParts::new();
         let names = |list: &[&str]| {
             list.iter()
@@ -733,7 +730,7 @@ mod tests {
             .collect();
         assert_eq!(
             found,
-            [(0, "sphere".to_string()), (1, "sphere".to_string())]
+            [(1, "sphere".to_string()), (2, "sphere".to_string())]
         );
 
         // No object query: that part in every model.
@@ -831,7 +828,7 @@ mod tests {
         })];
         let original = scene.clone();
         let mut editor = editor();
-        editor.selected = Some(1);
+        editor.selected = Some(scene.objects[1].id);
 
         assert!(
             editor
@@ -877,9 +874,9 @@ mod tests {
 /// The right-click menu on an object's row.
 fn row_menu(
     response: &egui::Response,
-    index: usize,
+    id: u32,
     zones: &[String],
-    picked: &mut Option<(usize, Command)>,
+    picked: &mut Option<(u32, Command)>,
 ) {
     response.context_menu(|ui| {
         ui.set_min_width(220.0);
@@ -894,20 +891,20 @@ fn row_menu(
                 .add(egui::Button::new(command.label()).shortcut_text(command.shortcut()))
                 .clicked()
             {
-                *picked = Some((index, command));
+                *picked = Some((id, command));
                 ui.close();
             }
         }
         ui.menu_button("MOVE TO ZONE", |ui| {
             for zone in zones {
                 if ui.button(zone.to_uppercase()).clicked() {
-                    *picked = Some((index, Command::MoveToZone(zone.clone())));
+                    *picked = Some((id, Command::MoveToZone(zone.clone())));
                     ui.close();
                 }
             }
         });
         if ui.button("SHOW IN LOGIC").clicked() {
-            *picked = Some((index, Command::Go(super::Workspace::Logic)));
+            *picked = Some((id, Command::Go(super::Workspace::Logic)));
             ui.close();
         }
         ui.separator();
@@ -917,7 +914,7 @@ fn row_menu(
             )
             .clicked()
         {
-            *picked = Some((index, Command::Delete));
+            *picked = Some((id, Command::Delete));
             ui.close();
         }
     });

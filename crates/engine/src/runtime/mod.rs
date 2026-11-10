@@ -1025,10 +1025,13 @@ impl Running {
             );
             if ndc.abs().max_element() <= 1.0 {
                 let (origin, direction) = camera.ray(ndc, w / h);
+                // Physics answers with a position in the list; the
+                // selection holds ids.
                 let hit = self
                     .physics
                     .pick(origin, direction, camera.far)
-                    .map(|(object, _)| object);
+                    .and_then(|(object, _)| self.scene.objects.get(object))
+                    .map(|o| o.id);
                 let shift =
                     self.input.held(KeyCode::ShiftLeft) || self.input.held(KeyCode::ShiftRight);
                 let settled = match hit {
@@ -1063,12 +1066,11 @@ impl Running {
             let [x, y, w, h] = self.renderer.image_rect();
             let view_proj = camera.view_projection(w / h);
             let (min, max) = (a.min(b), a.max(b));
-            let inside: Vec<usize> = self
+            let inside: Vec<u32> = self
                 .scene
                 .objects
                 .iter()
-                .enumerate()
-                .filter(|(_, o)| {
+                .filter(|o| {
                     let clip = view_proj * o.transform.position.extend(1.0);
                     if clip.w <= 0.0 {
                         return false;
@@ -1078,7 +1080,7 @@ impl Running {
                         Vec2::new(x + (ndc.x + 1.0) * 0.5 * w, y + (1.0 - ndc.y) * 0.5 * h);
                     screen.cmpge(min).all() && screen.cmple(max).all()
                 })
-                .map(|(i, _)| i)
+                .map(|o| o.id)
                 .collect();
             let shift = self.input.held(KeyCode::ShiftLeft) || self.input.held(KeyCode::ShiftRight);
             if editor.select_objects(&self.scene, &inside, shift) {
@@ -1179,9 +1181,11 @@ impl Running {
                 v.height().max(1.0) as u32,
             ]
         }));
-        // No selection highlight in the running game.
+        // No selection highlight in the running game. The renderer's draws
+        // know objects by position, looked up from the ids every frame, so
+        // a reorder (undo, delete) moves the highlight with the object.
         let selected = match &self.editor {
-            Some(editor) if self.play.is_none() => editor.selected_objects(),
+            Some(editor) if self.play.is_none() => editor.selected_indices(&self.scene),
             _ => Vec::new(),
         };
         if selected != self.highlighted {

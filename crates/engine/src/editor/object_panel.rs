@@ -23,7 +23,7 @@ impl Editor {
         player: &mut PlayerSettings,
         output: &mut EditorOutput,
     ) {
-        let Some(index) = self.selected.filter(|&i| i < scene.objects.len()) else {
+        let Some(index) = self.selected_index(scene) else {
             if !self.settings_inspector(ui, scene, output) {
                 ui.label(dim("NOTHING SELECTED"));
             }
@@ -58,8 +58,8 @@ impl Editor {
                 if several {
                     self.spread_part_edit(scene, index, &before, output);
                 } else {
-                    self.begin_edit(index, &before);
-                    output.changed.push(Change::Modified(index));
+                    self.begin_edit(&before);
+                    output.changed.push(Change::Modified(before.id));
                 }
             }
             return;
@@ -208,8 +208,8 @@ impl Editor {
             if several {
                 self.spread_object_edit(scene, index, &before, output);
             } else {
-                self.begin_edit(index, &before);
-                output.changed.push(Change::Modified(index));
+                self.begin_edit(&before);
+                output.changed.push(Change::Modified(before.id));
             }
         }
         if *player != player_before {
@@ -325,46 +325,51 @@ fn group_of(component: &Component) -> &'static str {
     }
 }
 
-/// `new_components()` by group, with a line each: (group, [(index, line)]).
-pub(super) const BEHAVIOR_GROUPS: [(&str, &[(usize, &str)]); 5] = [
+/// `new_components()` by group, with a line each: (group, [(name, line)]).
+/// By name, so reordering `new_components()` can't point a row at the
+/// wrong behavior (or past the end).
+pub(super) const BEHAVIOR_GROUPS: [(&str, &[(&str, &str)]); 5] = [
     (
         "GAMEPLAY",
         &[
-            (2, "E or stand on it to flip a door"),
-            (11, "a box graphs wait for"),
-            (12, "talk with E; runs a dialogue"),
-            (13, "E to take; sets a flag"),
-            (14, "E saves the game here"),
-            (15, "shown while a flag holds (gates, bridges)"),
-            (16, "runs a script of yours on it"),
+            ("switch", "E or stand on it to flip a door"),
+            ("trigger", "a box graphs wait for"),
+            ("character", "talk with E; runs a dialogue"),
+            ("pickup", "E to take; sets a flag"),
+            ("save point", "E saves the game here"),
+            ("visible when", "shown while a flag holds (gates, bridges)"),
+            ("script", "runs a script of yours on it"),
         ],
     ),
     (
         "MOTION",
         &[
-            (1, "swings or slides open"),
-            (0, "bobs up and down"),
-            (3, "falls, tumbles, can be pushed"),
+            ("door", "swings or slides open"),
+            ("floating", "bobs up and down"),
+            ("physics body", "falls, tumbles, can be pushed"),
         ],
     ),
     (
         "SOUND",
         &[
-            (4, "plays through the acoustics"),
-            (5, "how the surface sounds"),
+            ("sound source", "plays through the acoustics"),
+            ("acoustic material", "how the surface sounds"),
         ],
     ),
     (
         "LOOK",
         &[
-            (10, "texture, roughness, metal"),
-            (8, "lantern, candle, brazier"),
-            (9, "local mist or smoke"),
+            ("material", "texture, roughness, metal"),
+            ("light source", "lantern, candle, brazier"),
+            ("fog volume", "local mist or smoke"),
         ],
     ),
     (
         "WORLD",
-        &[(6, "where a zone is"), (7, "doorway between zones")],
+        &[
+            ("zone volume", "where a zone is"),
+            ("portal", "doorway between zones"),
+        ],
     ),
 ];
 
@@ -386,8 +391,12 @@ fn add_behavior_menu(ui: &mut Ui, object: &mut Object) {
                                     .small()
                                     .color(crate::ui::theme::AMBER_DIM),
                             );
-                            for (index, line) in entries.iter() {
-                                let (name, component) = &components[*index];
+                            for (wanted, line) in entries.iter() {
+                                let Some((name, component)) =
+                                    components.iter().find(|(n, _)| n == wanted)
+                                else {
+                                    continue;
+                                };
                                 let kind = std::mem::discriminant(component);
                                 let present = object
                                     .components
@@ -471,22 +480,45 @@ mod tests {
     use super::*;
 
     /// ADD BEHAVIOR lists every behavior exactly once, each in its own
-    /// group (an index past the end crashed the menu when it opened).
+    /// group (an index past the end once crashed the menu when it opened).
     #[test]
     fn the_add_behavior_menu_lists_every_behavior_once() {
         let components = new_components();
         let components = &components;
-        let mut listed: Vec<usize> = BEHAVIOR_GROUPS
+        let mut listed: Vec<&str> = BEHAVIOR_GROUPS
             .iter()
             .flat_map(|(group, entries)| {
-                entries.iter().map(move |(index, _)| {
-                    assert!(*index < components.len(), "{group}: no behavior {index}");
-                    assert_eq!(group_of(&components[*index].1), *group, "{index}");
-                    *index
+                entries.iter().map(move |(name, _)| {
+                    let found = components.iter().find(|(n, _)| n == name);
+                    let (_, component) = found.unwrap_or_else(|| panic!("{group}: no {name}"));
+                    assert_eq!(group_of(component), *group, "{name}");
+                    *name
                 })
             })
             .collect();
         listed.sort_unstable();
-        assert_eq!(listed, (0..components.len()).collect::<Vec<_>>());
+        let mut all: Vec<&str> = components.iter().map(|(n, _)| *n).collect();
+        all.sort_unstable();
+        assert_eq!(listed, all);
+    }
+
+    /// Commands name table entries; the names must be unique to mean one.
+    #[test]
+    fn table_names_are_unique() {
+        let mut behaviors: Vec<&str> = new_components().iter().map(|(n, _)| *n).collect();
+        let mut shapes: Vec<&str> = super::super::objects::primitives()
+            .iter()
+            .map(|(n, _)| *n)
+            .collect();
+        let mut nodes: Vec<&str> = crate::graph::NodeKind::all()
+            .iter()
+            .map(|k| k.title())
+            .collect();
+        for list in [&mut behaviors, &mut shapes, &mut nodes] {
+            let count = list.len();
+            list.sort_unstable();
+            list.dedup();
+            assert_eq!(list.len(), count, "{list:?}");
+        }
     }
 }

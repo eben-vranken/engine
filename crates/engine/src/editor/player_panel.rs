@@ -24,7 +24,7 @@ impl Editor {
     /// Whether the inspector shows the player settings (Player Start is selected).
     pub fn shows_player(&self, scene: &Scene) -> bool {
         self.selected
-            .and_then(|i| scene.objects.get(i))
+            .and_then(|id| scene.object(id))
             .is_some_and(|o| o.components.contains(&Component::PlayerStart))
     }
 

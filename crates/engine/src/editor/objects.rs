@@ -129,7 +129,7 @@ impl Editor {
     /// New objects go into the selection's zone, or the first zone.
     pub(super) fn new_object_zone(&self, scene: &Scene) -> Option<String> {
         self.selected
-            .and_then(|i| scene.objects.get(i))
+            .and_then(|id| scene.object(id))
             .map(|o| o.zone.clone())
             .or_else(|| scene.zones.first().map(|z| z.name.clone()))
     }
@@ -154,7 +154,7 @@ impl Editor {
         if self.selected_objects().len() > 1 {
             return self.delete_all_selected(scene);
         }
-        let index = self.selected.filter(|&i| i < scene.objects.len())?;
+        let index = self.selected_index(scene)?;
         // Commit first so undo restores the object with its latest edit.
         self.commit_pending(scene);
         let object = Box::new(scene.objects[index].clone());
@@ -173,7 +173,7 @@ impl Editor {
         if self.selected_objects().len() > 1 {
             return self.duplicate_all_selected(scene);
         }
-        let index = self.selected.filter(|&i| i < scene.objects.len())?;
+        let index = self.selected_index(scene)?;
         let mut object = scene.objects[index].clone();
         object.name = unique_name(scene, &object.name);
         Some(self.push(
@@ -286,11 +286,12 @@ impl Editor {
             }
             after.objects.push(copy);
         }
-        let count = self.clipboard.len();
+        // The copies get ids of their own when the edit is recorded.
         let change = self.push_scene(scene, after);
-        self.selected = Some(first);
+        let mut copies = scene.objects[first..].iter().map(|o| o.id);
+        self.selected = copies.next();
         self.selected_part = None;
-        self.also = (first + 1..first + count)
+        self.also = copies
             .map(|object| super::Pick { object, part: None })
             .collect();
         self.reveal_selection = true;
@@ -304,8 +305,8 @@ impl Editor {
             return None;
         }
         let mut after = scene.clone();
-        for i in picked {
-            if let Some(object) = after.objects.get_mut(i) {
+        for id in picked {
+            if let Some(object) = after.object_mut(id) {
                 object.zone = zone.to_owned();
             }
         }
@@ -317,7 +318,7 @@ impl Editor {
         let objects: Vec<&crate::scene::Object> = self
             .selected_objects()
             .into_iter()
-            .filter_map(|i| scene.objects.get(i))
+            .filter_map(|id| scene.object(id))
             .collect();
         if objects.is_empty() {
             return None;
@@ -358,13 +359,15 @@ mod tests {
         let mut scene = boxes(3);
         let mut editor = editor();
 
-        // Deleting an earlier object keeps the same object selected.
-        editor.selected = Some(0);
+        // Deleting the selected object clears the selection.
+        editor.selected = Some(1);
         editor.delete_selected(&mut scene);
         assert_eq!(editor.selected, None);
-        editor.selected = Some(1);
+        // Undo brings it back in its place, selected.
+        editor.selected = Some(2);
         editor.undo(&mut scene, &mut PlayerSettings::default());
-        assert_eq!(editor.selected, Some(0), "restored object is selected");
+        assert_eq!(editor.selected, Some(1), "restored object is selected");
+        assert_eq!(scene.objects[0].id, 1);
         assert_eq!(scene.objects[2].name, "object 2");
 
         editor.redo(&mut scene, &mut PlayerSettings::default());
@@ -377,12 +380,14 @@ mod tests {
         let mut scene = boxes(2);
         let original = scene.clone();
         let mut editor = editor();
-        editor.selected = Some(0);
+        editor.selected = Some(1);
+        // The copy is new object 3, right after the original.
         assert_eq!(
             editor.duplicate_selected(&mut scene),
-            Some(Change::Added(1))
+            Some(Change::Added(3))
         );
-        assert_eq!(editor.selected, Some(1));
+        assert_eq!(editor.selected, Some(3));
+        assert_eq!(scene.objects[1].id, 3);
         assert_eq!(scene.objects[1].name, "object 2");
         assert_eq!(scene.objects[1].transform, scene.objects[0].transform);
 
@@ -396,7 +401,7 @@ mod tests {
         scene.zones.push(crate::scene::Zone::new("other"));
         scene.objects[0].zone = "other".into();
         let mut editor = editor();
-        editor.selected = Some(0);
+        editor.selected = Some(1);
         let camera = Camera {
             position: Vec3::new(0.1, 1.7, 0.0),
             yaw: 0.3,
@@ -413,7 +418,7 @@ mod tests {
         };
         let (kind, shape) = primitives()[0];
         let change = editor.add_primitive(&mut scene, kind, shape, &view);
-        assert_eq!(change, Some(Change::Added(1)));
+        assert_eq!(change, Some(Change::Added(2)));
         let added = &scene.objects[1];
         assert_eq!(added.zone, "other");
         let p = added.transform.position;

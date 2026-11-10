@@ -1289,6 +1289,26 @@ impl Scene {
         self.objects.iter().position(|o| o.name == name)
     }
 
+    /// Where the object with this id is in `objects` now. What lives longer
+    /// than one frame (the editor's selection, undo steps, bakes) holds ids
+    /// and looks the position up here when it needs one.
+    pub fn index_of(&self, id: u32) -> Option<usize> {
+        if id == 0 {
+            return None;
+        }
+        self.objects.iter().position(|o| o.id == id)
+    }
+
+    /// The object with this id.
+    pub fn object(&self, id: u32) -> Option<&Object> {
+        self.index_of(id).map(|i| &self.objects[i])
+    }
+
+    /// The object with this id, to change.
+    pub fn object_mut(&mut self, id: u32) -> Option<&mut Object> {
+        self.index_of(id).map(|i| &mut self.objects[i])
+    }
+
     /// The object's component of a kind, picked out by `pick`.
     pub fn component<'a, T>(
         &'a self,

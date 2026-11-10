@@ -9,10 +9,10 @@ use super::{Editor, EditorOutput, inspector, objects::unique_name};
 use crate::scene::{Component, Model, ModelPart, Object, Scene};
 use std::mem::discriminant;
 
-/// One selected thing: an object, or one part of its model.
+/// One selected thing: an object (by id), or one part of its model.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pick {
-    pub object: usize,
+    pub object: u32,
     pub part: Option<String>,
 }
 
@@ -29,9 +29,9 @@ impl Editor {
             .collect()
     }
 
-    /// The selected objects (an object with selected parts counts), each
-    /// once, the primary's first.
-    pub fn selected_objects(&self) -> Vec<usize> {
+    /// The selected objects' ids (an object with selected parts counts),
+    /// each once, the primary's first.
+    pub fn selected_objects(&self) -> Vec<u32> {
         let mut objects = Vec::new();
         for pick in self.picks() {
             if !objects.contains(&pick.object) {
@@ -41,8 +41,17 @@ impl Editor {
         objects
     }
 
-    /// Whether `object` (or its `part`) is selected.
-    pub(super) fn is_picked(&self, object: usize, part: Option<&str>) -> bool {
+    /// Where the selected objects are in the list now, the primary's first;
+    /// ids no object has (any more) are left out.
+    pub fn selected_indices(&self, scene: &Scene) -> Vec<usize> {
+        self.selected_objects()
+            .into_iter()
+            .filter_map(|id| scene.index_of(id))
+            .collect()
+    }
+
+    /// Whether object `object` (an id), or its `part`, is selected.
+    pub(super) fn is_picked(&self, object: u32, part: Option<&str>) -> bool {
         self.picks()
             .iter()
             .any(|p| p.object == object && p.part.as_deref() == part)
@@ -50,9 +59,9 @@ impl Editor {
 
     /// Shift-click: adds `pick` to the selection as the new primary, or
     /// takes it out if it was in. Returns true if an edit was committed.
-    /// Box select: these objects become the selection (`add`: added to
-    /// it). Returns whether an edit was settled.
-    pub fn select_objects(&mut self, scene: &Scene, objects: &[usize], add: bool) -> bool {
+    /// Box select: these objects (ids) become the selection (`add`: added
+    /// to it). Returns whether an edit was settled.
+    pub fn select_objects(&mut self, scene: &Scene, objects: &[u32], add: bool) -> bool {
         let mut picks: Vec<Pick> = if add { self.picks() } else { Vec::new() };
         for &object in objects {
             let pick = Pick { object, part: None };
@@ -129,12 +138,12 @@ impl Editor {
         self.begin_scene_edit(scene, index, before);
         let after = scene.objects[index].clone();
         for pick in self.others(false) {
-            if let Some(target) = scene.objects.get_mut(pick.object) {
+            if let Some(target) = scene.object_mut(pick.object) {
                 copy_object_changes(before, &after, target);
                 output.changed.push(Change::Modified(pick.object));
             }
         }
-        output.changed.push(Change::Modified(index));
+        output.changed.push(Change::Modified(after.id));
     }
 
     /// The primary part (of object `index`) was edited: copies the change
@@ -162,7 +171,7 @@ impl Editor {
             .and_then(|m| m.part(&part))
             .cloned();
         for pick in self.others(true) {
-            let (Some(name), Some(target)) = (pick.part, scene.objects.get_mut(pick.object)) else {
+            let (Some(name), Some(target)) = (pick.part, scene.object_mut(pick.object)) else {
                 continue;
             };
             let Some(model) = model_of_mut(target) else {
@@ -181,7 +190,9 @@ impl Editor {
             }
             output.changed.push(Change::Modified(pick.object));
         }
-        output.changed.push(Change::Modified(index));
+        output
+            .changed
+            .push(Change::Modified(scene.objects[index].id));
     }
 
     /// Starts (or continues) an edit of several objects, held as one undo
@@ -205,8 +216,7 @@ impl Editor {
 
     /// Removes every selected object, as one undo step.
     pub(super) fn delete_all_selected(&mut self, scene: &mut Scene) -> Option<Change> {
-        let mut doomed = self.selected_objects();
-        doomed.retain(|&i| i < scene.objects.len());
+        let mut doomed = self.selected_indices(scene);
         if doomed.is_empty() {
             return None;
         }
@@ -222,11 +232,7 @@ impl Editor {
     /// Copies every selected object (to the end of the list) and selects
     /// the copies, as one undo step.
     pub(super) fn duplicate_all_selected(&mut self, scene: &mut Scene) -> Option<Change> {
-        let originals: Vec<usize> = self
-            .selected_objects()
-            .into_iter()
-            .filter(|&i| i < scene.objects.len())
-            .collect();
+        let originals = self.selected_indices(scene);
         if originals.is_empty() {
             return None;
         }
@@ -237,12 +243,12 @@ impl Editor {
             copy.name = unique_name(&after, &copy.name);
             after.objects.push(copy);
         }
+        // The copies get ids of their own when the edit is recorded.
         let change = self.push_scene(scene, after);
-        self.selected = Some(first);
+        let mut copies = scene.objects[first..].iter().map(|o| o.id);
+        self.selected = copies.next();
         self.selected_part = None;
-        self.also = (first + 1..first + originals.len())
-            .map(|object| Pick { object, part: None })
-            .collect();
+        self.also = copies.map(|object| Pick { object, part: None }).collect();
         self.reveal_selection = true;
         Some(change)
     }
@@ -253,13 +259,18 @@ impl Editor {
         self.also.clear();
     }
 
-    /// Keeps the other picks on the same objects when one is removed.
-    pub(super) fn follow_removed(&mut self, index: usize) {
-        self.also.retain(|p| p.object != index);
-        for pick in &mut self.also {
-            if pick.object > index {
-                pick.object -= 1;
-            }
+    /// Drops picks of objects the scene no longer has (deleted, or undone
+    /// away); the primary goes too, and the inspector with it.
+    pub(super) fn drop_missing(&mut self, scene: &Scene) {
+        self.also.retain(|p| scene.index_of(p.object).is_some());
+        if self.selected.is_some_and(|id| scene.index_of(id).is_none()) {
+            self.selected = None;
+            self.selected_part = None;
+        }
+        if let Some((id, _)) = &self.pending
+            && scene.index_of(*id).is_none()
+        {
+            self.pending = None;
         }
     }
 }
@@ -356,28 +367,28 @@ mod tests {
     fn shift_clicks_add_and_remove_picks() {
         let scene = boxes(3);
         let mut editor = editor();
-        editor.select(&scene, Some(0));
+        editor.select(&scene, Some(1));
         editor.toggle_pick(
             &scene,
             Pick {
-                object: 2,
+                object: 3,
                 part: None,
             },
         );
-        assert_eq!(editor.selected, Some(2), "the newest is the primary");
-        assert_eq!(editor.selected_objects(), [2, 0]);
+        assert_eq!(editor.selected, Some(3), "the newest is the primary");
+        assert_eq!(editor.selected_objects(), [3, 1]);
         editor.toggle_pick(
             &scene,
             Pick {
-                object: 2,
+                object: 3,
                 part: None,
             },
         );
-        assert_eq!(editor.selected_objects(), [0]);
+        assert_eq!(editor.selected_objects(), [1]);
         editor.toggle_pick(
             &scene,
             Pick {
-                object: 0,
+                object: 1,
                 part: None,
             },
         );
@@ -386,19 +397,19 @@ mod tests {
         editor.toggle_pick(
             &scene,
             Pick {
-                object: 1,
+                object: 2,
                 part: None,
             },
         );
         editor.toggle_pick(
             &scene,
             Pick {
-                object: 2,
+                object: 3,
                 part: None,
             },
         );
-        editor.select(&scene, Some(0));
-        assert_eq!(editor.selected_objects(), [0]);
+        editor.select(&scene, Some(1));
+        assert_eq!(editor.selected_objects(), [1]);
     }
 
     #[test]
@@ -406,15 +417,15 @@ mod tests {
         let mut scene = boxes(3);
         let original = scene.clone();
         let mut editor = editor();
-        editor.select(&scene, Some(0));
+        editor.select(&scene, Some(1));
         editor.toggle_pick(
             &scene,
             Pick {
-                object: 1,
+                object: 2,
                 part: None,
             },
         );
-        assert_eq!(editor.selected, Some(1));
+        assert_eq!(editor.selected, Some(2));
         assert!(editor.edits_several());
 
         // As the inspector does: the primary changes, then it's spread.
@@ -451,13 +462,14 @@ mod tests {
             candle("candle 2", 1.0),
             candle("candle 3", 2.0),
         ];
+        scene.assign_ids();
         let mut editor = editor();
         let flame = |object| Pick {
             object,
             part: Some("flame".into()),
         };
-        editor.toggle_pick(&scene, flame(0));
         editor.toggle_pick(&scene, flame(1));
+        editor.toggle_pick(&scene, flame(2));
         assert_eq!(editor.selected_part.as_deref(), Some("flame"));
 
         // GIVE IT ITS OWN, then a glow and a light: every selected flame.
@@ -487,6 +499,21 @@ mod tests {
         let mut scene = boxes(4);
         let original = scene.clone();
         let mut editor = editor();
+        editor.select(&scene, Some(2));
+        editor.toggle_pick(
+            &scene,
+            Pick {
+                object: 4,
+                part: None,
+            },
+        );
+        editor.duplicate_all_selected(&mut scene);
+        assert_eq!(scene.objects.len(), 6);
+        // The copies have new ids (5, 6), selected.
+        assert_eq!(editor.selected_objects(), [5, 6]);
+        assert_eq!(scene.objects[4].transform, original.objects[3].transform);
+        editor.delete_all_selected(&mut scene);
+        assert_eq!(scene, original);
         editor.select(&scene, Some(1));
         editor.toggle_pick(
             &scene,
@@ -495,13 +522,25 @@ mod tests {
                 part: None,
             },
         );
-        editor.duplicate_all_selected(&mut scene);
-        assert_eq!(scene.objects.len(), 6);
-        assert_eq!(editor.selected_objects(), [4, 5]);
-        assert_eq!(scene.objects[4].transform, original.objects[3].transform);
         editor.delete_all_selected(&mut scene);
+        assert_eq!(scene.objects.len(), 2);
+        assert_eq!(editor.picks(), []);
+        editor.undo(&mut scene, &mut PlayerSettings::default());
         assert_eq!(scene, original);
-        editor.select(&scene, Some(0));
+    }
+
+    fn ids(scene: &Scene) -> Vec<u32> {
+        scene.objects.iter().map(|o| o.id).collect()
+    }
+
+    /// Undoing a delete of several objects (one whole-scene step) puts
+    /// objects back in front of the selected one: it stays selected, not
+    /// whatever now sits at its old position.
+    #[test]
+    fn the_selection_stays_on_its_object_when_undo_shifts_the_list() {
+        let mut scene = boxes(3);
+        let mut editor = editor();
+        editor.select(&scene, Some(1));
         editor.toggle_pick(
             &scene,
             Pick {
@@ -510,9 +549,88 @@ mod tests {
             },
         );
         editor.delete_all_selected(&mut scene);
-        assert_eq!(scene.objects.len(), 2);
-        assert_eq!(editor.picks(), []);
+        assert_eq!(ids(&scene), [3]);
+        editor.select(&scene, Some(3));
         editor.undo(&mut scene, &mut PlayerSettings::default());
+        assert_eq!(ids(&scene), [1, 2, 3]);
+        assert_eq!(editor.selected, Some(3));
+        assert_eq!(editor.selected_indices(&scene), [2]);
+    }
+
+    /// Undoing a duplicate of several objects takes the copies away; the
+    /// picks of the copies go with them instead of pointing past the end
+    /// (or at other objects).
+    #[test]
+    fn picks_of_objects_undone_away_are_dropped() {
+        let mut scene = boxes(2);
+        let mut editor = editor();
+        editor.select(&scene, Some(1));
+        editor.toggle_pick(
+            &scene,
+            Pick {
+                object: 2,
+                part: None,
+            },
+        );
+        editor.duplicate_all_selected(&mut scene);
+        assert_eq!(editor.selected_objects(), [3, 4]);
+        editor.undo(&mut scene, &mut PlayerSettings::default());
+        assert_eq!(editor.picks(), []);
+        assert_eq!(editor.selected_index(&scene), None);
+    }
+
+    /// An edit in progress is recorded on the object it started on, even
+    /// if the list moved under it, and undo reverts that object only.
+    #[test]
+    fn a_pending_edit_lands_on_its_object_after_a_reorder() {
+        let mut scene = boxes(3);
+        let original = scene.clone();
+        let mut editor = editor();
+        editor.select(&scene, Some(3));
+        let before = scene.objects[2].clone();
+        scene.objects[2].transform.position.y = 5.0;
+        editor.begin_edit(&before);
+        // Something else reorders the list meanwhile.
+        scene.objects.reverse();
+        assert!(editor.commit_pending(&scene));
+        assert_eq!(editor.selected_indices(&scene), [0]);
+        editor.undo(&mut scene, &mut PlayerSettings::default());
+        scene.objects.reverse();
         assert_eq!(scene, original);
+    }
+
+    /// Deleting an earlier object (and undoing it) moves the others in
+    /// the list; picks and the primary follow their objects.
+    #[test]
+    fn picks_follow_their_objects_through_delete_and_undo() {
+        let mut scene = boxes(4);
+        let mut editor = editor();
+        editor.select(&scene, Some(1));
+        editor.delete_selected(&mut scene);
+        editor.select(&scene, Some(4));
+        editor.toggle_pick(
+            &scene,
+            Pick {
+                object: 2,
+                part: None,
+            },
+        );
+        editor.toggle_pick(
+            &scene,
+            Pick {
+                object: 3,
+                part: Some("lid".into()),
+            },
+        );
+        assert_eq!(editor.selected_indices(&scene), [1, 0, 2]);
+        // Undo brings object 1 back first in the list (and selects it);
+        // redo deletes it again: nothing else is lost along the way.
+        editor.undo(&mut scene, &mut PlayerSettings::default());
+        assert_eq!(editor.selected, Some(1));
+        editor.select(&scene, Some(4));
+        assert_eq!(editor.selected_indices(&scene), [3]);
+        editor.redo(&mut scene, &mut PlayerSettings::default());
+        assert_eq!(editor.selected, Some(4));
+        assert_eq!(editor.selected_indices(&scene), [2]);
     }
 }

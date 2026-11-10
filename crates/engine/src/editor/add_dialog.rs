@@ -67,12 +67,12 @@ impl Editor {
 
     fn add_entries(&self, scene: &crate::scene::Scene) -> Vec<Entry> {
         let mut entries = Vec::new();
-        for (i, (name, _)) in super::objects::primitives().iter().enumerate() {
+        for (name, _) in super::objects::primitives() {
             entries.push(Entry {
                 name: name.to_uppercase(),
                 kind: Filter::Shapes,
                 description: "A primitive shape; its type can be changed later.".into(),
-                pick: Pick::Run(Command::AddPrimitive(i)),
+                pick: Pick::Run(Command::AddPrimitive(name)),
             });
         }
         for path in all_models(&self.project_dir) {
@@ -86,18 +86,15 @@ impl Editor {
                 pick: Pick::Model(path),
             });
         }
-        if self.selected.is_some_and(|i| i < scene.objects.len()) {
-            for (i, (name, component)) in super::object_panel::new_components()
-                .into_iter()
-                .enumerate()
-            {
+        if self.selected_index(scene).is_some() {
+            for (name, component) in super::object_panel::new_components() {
                 entries.push(Entry {
                     name: name.to_uppercase(),
                     kind: Filter::Behaviors,
                     description: super::inspector::doc_of(&component)
                         .unwrap_or("")
                         .to_owned(),
-                    pick: Pick::Run(Command::AddBehavior(i)),
+                    pick: Pick::Run(Command::AddBehavior(name)),
                 });
             }
         }

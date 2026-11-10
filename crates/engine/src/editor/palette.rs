@@ -51,7 +51,7 @@ impl Editor {
             }
         }
         if self.workspace() == Workspace::Build && !self.playing {
-            for (index, object) in scene.objects.iter().enumerate() {
+            for object in &scene.objects {
                 items.push(Item {
                     group: "OBJECTS",
                     text: object.name.clone(),
@@ -60,27 +60,27 @@ impl Editor {
                         object.zone.to_uppercase(),
                         super::hierarchy::tag(object)
                     ),
-                    command: Command::Select(index),
+                    command: Command::Select(object.id),
                 });
             }
-            if self.selected.is_some() {
-                for (i, (name, _)) in super::object_panel::new_components().iter().enumerate() {
+            if self.selected_index(scene).is_some() {
+                for (name, _) in super::object_panel::new_components() {
                     items.push(Item {
                         group: "ADD BEHAVIOR",
                         text: format!("ADD {}", name.to_uppercase()),
                         detail: "TO THE SELECTION".into(),
-                        command: Command::AddBehavior(i),
+                        command: Command::AddBehavior(name),
                     });
                 }
             }
         }
         if self.graph.is_some() && !self.playing {
-            for (i, kind) in crate::graph::NodeKind::all().iter().enumerate() {
+            for kind in crate::graph::NodeKind::all() {
                 items.push(Item {
                     group: "NODES",
                     text: format!("ADD {}", kind.title()),
                     detail: kind.category().title().into(),
-                    command: Command::AddNode(i),
+                    command: Command::AddNode(kind.title()),
                 });
             }
         }

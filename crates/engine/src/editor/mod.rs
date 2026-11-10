@@ -118,8 +118,8 @@ pub struct Editor {
     pub feel_changed: Option<(Box<PlayerSettings>, Box<PlayerSettings>)>,
     /// Commands from keys pressed this frame, run at the start of `ui`.
     queued: Vec<commands::Command>,
-    /// Index into `Scene::objects`.
-    pub selected: Option<usize>,
+    /// The primary selected object, by id (`Scene::index_of` finds it).
+    pub selected: Option<u32>,
     /// Open the selection's zone and scroll to it in the hierarchy (set when
     /// it was picked in the viewport).
     pub reveal_selection: bool,
@@ -134,8 +134,8 @@ pub struct Editor {
     /// Waiting for the user to decide about unsaved changes.
     confirm: Option<Confirm>,
     history: History,
-    /// An edit in progress: the object's index and how it was before.
-    pending: Option<(usize, Object)>,
+    /// An edit in progress: the object's id and how it was before.
+    pending: Option<(u32, Object)>,
     /// Whether the scene panel (left) and the inspector (right) are open.
     pub show_scene: bool,
     pub show_inspector: bool,
@@ -577,21 +577,18 @@ impl Editor {
             self.drop_model(ui, view.image, &mut output);
         }
 
-        if let Some(index) = self
-            .selected
-            .filter(|&i| i < scene.objects.len() && !self.playing)
-        {
+        if let Some(index) = self.selected_index(scene).filter(|_| !self.playing) {
             let current = scene.objects[index].transform;
             if let Some(moved) = self.gizmo.ui(ui, view, &current)
                 && moved != current
             {
                 let others: Vec<usize> = self
-                    .selected_objects()
+                    .selected_indices(scene)
                     .into_iter()
-                    .filter(|&i| i != index && i < scene.objects.len())
+                    .filter(|&i| i != index)
                     .collect();
                 if others.is_empty() {
-                    self.begin_edit(index, &scene.objects[index]);
+                    self.begin_edit(&scene.objects[index]);
                 } else {
                     self.begin_group_move(scene);
                 }
@@ -604,10 +601,12 @@ impl Editor {
                     t.position = position;
                     t.set_quat(rotation);
                     t.scale = scale;
-                    output.changed.push(Change::Modified(i));
+                    output.changed.push(Change::Modified(scene.objects[i].id));
                 }
                 scene.objects[index].transform = moved;
-                output.changed.push(Change::Modified(index));
+                output
+                    .changed
+                    .push(Change::Modified(scene.objects[index].id));
             }
             output.gizmo_hovered = self.gizmo.hovered() || self.gizmo.dragging();
         }
@@ -616,24 +615,27 @@ impl Editor {
             if self.show_probes {
                 markers::probes(ui, view, &self.probes);
             }
-            let starts = markers::player_starts(ui, view, scene, self.selected);
+            // Markers are drawn from the list as it is this frame.
+            let selected = self.selected_index(scene);
+            let starts = markers::player_starts(ui, view, scene, selected);
             let zones = if self.show_zones || self.show_triggers {
                 markers::zones(
                     ui,
                     view,
                     scene,
-                    self.selected,
+                    selected,
                     &stats.active_zones,
                     (self.show_zones, self.show_triggers),
                 )
             } else {
                 (None, false)
             };
-            let lights = markers::lights(ui, view, scene, self.selected, &self.model_parts);
+            let lights = markers::lights(ui, view, scene, selected, &self.model_parts);
             for (clicked, hovered) in [starts, zones, lights] {
                 output.gizmo_hovered |= hovered;
                 if let Some(index) = clicked {
-                    output.settled |= self.select(scene, Some(index));
+                    let id = scene.objects[index].id;
+                    output.settled |= self.select(scene, Some(id));
                     self.reveal_selection = true;
                 }
             }
@@ -759,9 +761,9 @@ impl Editor {
 
     /// Starts (or continues) an edit of one object; `object` is its state
     /// before this frame's change.
-    fn begin_edit(&mut self, index: usize, object: &Object) {
-        if self.pending.as_ref().is_none_or(|(i, _)| *i != index) {
-            self.pending = Some((index, object.clone()));
+    fn begin_edit(&mut self, object: &Object) {
+        if self.pending.as_ref().is_none_or(|(id, _)| *id != object.id) {
+            self.pending = Some((object.id, object.clone()));
         }
     }
 
@@ -782,15 +784,19 @@ impl Editor {
             });
             return true;
         }
-        let Some((index, before)) = self.pending.take() else {
+        let Some((id, before)) = self.pending.take() else {
             return false;
         };
-        let after = &scene.objects[index];
+        // Gone since (it never should be while an edit is open): nothing
+        // to record.
+        let Some(after) = scene.object(id) else {
+            return false;
+        };
         if *after == before {
             return false;
         }
         self.history.record(Edit::SetObject {
-            index,
+            id,
             before: Box::new(before),
             after: Box::new(after.clone()),
         });
@@ -805,7 +811,7 @@ impl Editor {
         }
         self.commit_pending(scene);
         let change = self.history.undo(scene, player)?;
-        self.follow(change);
+        self.follow(change, scene);
         Some(change)
     }
 
@@ -817,7 +823,7 @@ impl Editor {
         }
         self.commit_pending(scene);
         let change = self.history.redo(scene, player)?;
-        self.follow(change);
+        self.follow(change, scene);
         Some(change)
     }
 
@@ -825,33 +831,33 @@ impl Editor {
     fn push(&mut self, scene: &mut Scene, edit: Edit) -> Change {
         self.commit_pending(scene);
         let change = self.history.push(scene, edit);
-        self.follow(change);
+        self.follow(change, scene);
         change
     }
 
-    /// Keeps the selection on the same object when indices shift; a newly
-    /// added (or restored) object becomes the selection.
-    fn follow(&mut self, change: Change) {
+    /// After an edit, undo or redo: a newly added (or restored) object
+    /// becomes the selection, and picks of objects that are gone are
+    /// dropped. The selection holds ids, so nothing else has to move.
+    fn follow(&mut self, change: Change, scene: &Scene) {
         match change {
-            Change::Modified(_) | Change::All | Change::Settings | Change::Player => {}
-            Change::Added(index) => {
+            Change::Modified(_) | Change::Settings | Change::Player => {}
+            Change::Added(id) => {
                 self.clear_selection();
-                self.selected = Some(index);
+                self.selected = Some(id);
                 self.reveal_selection = true;
             }
-            Change::Removed(index) => {
-                self.follow_removed(index);
-                self.selected = match self.selected {
-                    Some(s) if s == index => None,
-                    Some(s) if s > index => Some(s - 1),
-                    s => s,
-                }
-            }
+            Change::Removed(_) | Change::All => self.drop_missing(scene),
         }
     }
 
-    /// Changes the selection, finishing any edit on the previous one.
-    pub fn select(&mut self, scene: &Scene, selected: Option<usize>) -> bool {
+    /// The primary selected object's position in the list now.
+    pub fn selected_index(&self, scene: &Scene) -> Option<usize> {
+        scene.index_of(self.selected?)
+    }
+
+    /// Changes the selection (an object id), finishing any edit on the
+    /// previous one.
+    pub fn select(&mut self, scene: &Scene, selected: Option<u32>) -> bool {
         if let Some(doc) = &mut self.graph {
             doc.clear_selection();
             return false;

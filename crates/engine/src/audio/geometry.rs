@@ -34,8 +34,10 @@ const PRESETS: [AcousticPreset; 13] = [
 
 pub struct AcousticGeometry {
     pub scene: audionimbus::Scene,
-    /// Moving objects: object index, instance, and its current transform.
-    instances: Vec<(usize, InstancedMeshHandle, Mat4)>,
+    /// Moving objects: object id, instance, and its current transform. By
+    /// id: the build runs apart from edits, so positions in the list may
+    /// have moved by the time it is used.
+    instances: Vec<(u32, InstancedMeshHandle, Mat4)>,
 }
 
 /// What the acoustic geometry is made of: every solid object's mesh,
@@ -46,7 +48,8 @@ pub struct GeometrySource {
 }
 
 struct Part {
-    object: usize,
+    /// The object's id.
+    object: u32,
     mesh: MeshData,
     transform: Mat4,
     preset: usize,
@@ -66,7 +69,7 @@ impl GeometrySource {
                 Resolved::Model(model) => model.mesh.clone(),
             };
             parts.push(Part {
-                object,
+                object: scene.objects[object].id,
                 mesh,
                 transform: transform.matrix(),
                 preset: preset_of(scene, object) as usize,
@@ -133,7 +136,7 @@ impl AcousticGeometry {
     pub fn follow(&mut self, scene: &Scene) -> bool {
         let mut moved = false;
         for (object, handle, placed) in &mut self.instances {
-            let Some(now) = scene.objects.get(*object).map(|o| o.transform.matrix()) else {
+            let Some(now) = scene.object(*object).map(|o| o.transform.matrix()) else {
                 continue;
             };
             if now != *placed {
@@ -156,7 +159,7 @@ pub fn signature(scene: &Scene) -> u64 {
         if !blocks_sound(scene, object, solid) {
             continue;
         }
-        object.hash(&mut hasher);
+        scene.objects[object].id.hash(&mut hasher);
         format!("{geometry:?}").hash(&mut hasher);
         (preset_of(scene, object) as usize).hash(&mut hasher);
         let moving = moves(scene, object);
