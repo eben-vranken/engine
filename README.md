@@ -27,12 +27,13 @@ The scene renders at a reduced internal resolution and is upscaled with sharp ne
 
 - **Render scale:** internal resolution = output ÷ an integer factor, so pixels stay perfectly square. AUTO picks about 540–720 internal lines (4K → ×3); a project can fix its own factor (×1–×8), and `[` `]` change it live.
 - **Real-time direct light:** the sun with three shadow cascades, and up to 32 point lights (`LightSource`: color, intensity, range, flicker) with cached cube shadow maps for the nearest ones (16 on HIGH, 8 on LOW). Moving objects and flickering lanterns cast correct shadows.
-- **Baked bounce light:** BAKE LIGHTING path-traces sky light, emissive surfaces and bounced light on all CPU cores into per-zone lightmaps. Lightmap UVs are generated automatically; moving objects get the same light from a grid of light probes. The bake is one `.lightmap` file next to the scene.
+- **Baked bounce light:** BAKE LIGHTING path-traces sky light, emissive surfaces and bounced light on all CPU cores into per-zone lightmaps. Lightmap UVs are generated automatically, once per mesh: copies of the same piece share one layout and each gets its own patch of the atlas, sized to it. Moving objects get the same light from a grid of light probes. The bake is one `.lightmap` file next to the scene; bakes from before shared layouts show BAKE OUTDATED until baked again. `cargo run --release -p app --example bake_lighting -- sandbox scenes/test_level.ron` bakes without the editor.
 - **Materials:** primitives take a project texture (point-sampled, meters per repeat), roughness and metalness; glTF models bring their base color, normal, metallic-roughness and occlusion maps. Glossy surfaces get highlights from every light.
 - **Reflections:** the light bake also captures one reflection cube per zone, box-projected to the zone's volume, so a polished floor reflects the window and the lantern in the right places.
 - **Volumetric fog:** a camera-aligned 3D grid (froxels) lit through the shadow maps: light shafts through windows, halos around lanterns. Density, color and height falloff per zone, local `FogVolume` boxes, optional drifting wisps and lit dust motes, all smoothed over frames with temporal accumulation.
 - **Post-processing:** emissive glow and bloom, exposure, AgX tone mapping, color grading per zone (exposure, contrast, saturation, tint, or a `.cube` LUT) and subtle film grain.
-- **Performance:** two quality presets (`--quality high|low`). The target is 60+ fps at 4K output on an RTX 3060 Ti class GPU; the lighting test hall runs at about 85 fps (HIGH) on an Intel Iris Xe laptop at 1080p. `--perf-log` prints FPS and per-stage GPU times.
+- **Big modular levels:** every copy of a piece (a column, an arch, a wall tile, the same primitive) shares one mesh on the GPU and one collision shape, and copies are drawn instanced, so thousands of placements cost a handful of draw calls.
+- **Performance:** two quality presets (`--quality high|low`). The target is 60+ fps at 4K output on an RTX 3060 Ti class GPU; the lighting test hall runs at about 85 fps (HIGH) on an Intel Iris Xe laptop at 1080p. `--perf-log` prints FPS, per-stage GPU times, draw calls and the renderer's CPU time.
 
 ## Sound
 
@@ -56,7 +57,7 @@ Acoustics come from [Steam Audio](https://valvesoftware.github.io/steam-audio/) 
 
 | Component | What it does |
 |---|---|
-| `Primitive` | Box, plane, wedge, cylinder or sphere; its type can be changed later |
+| `Primitive` | Box, plane, wedge, cylinder, sphere or stairs; its type can be changed later |
 | `Model` | A glTF model, with optional per-part color, glow, collision and light |
 | `Material` | Texture, scale, roughness and metalness |
 | `PlayerStart` | Where the player spawns |
@@ -93,6 +94,7 @@ Themed as a sparse amber-on-black terminal, in three workspaces chosen in the to
 - **LOGIC:** its own tabs (the scene in BUILD stays as it is): scripts in a code editor (see Scripts), and gameplay graphs grouped by owner: one per scene (`graphs/scenes/<scene>.ron`: loaded and run only while the scene is, and carries on where it was when the player returns; flags are global, so one scene's graph can change what another's sees), one per character (their dialogue), and others started by RUN GRAPH. Each graph shows its owner, what uses it and references that point at nothing. Nodes: events (in a zone or trigger, used, picked up, a script's signal, another graph ended), waits, branches on flags, actions (doors, show/hide, sounds, load scene, save, turn an ability on or off) and dialogue (lines with an optional sound, replies with conditions, renaming characters). The CONVERSATION view reads a dialogue as a script with a live preview and TEST CONVERSATION. Flags (`flags.ron`) are edited beside the graphs; a yes/no flag can have a script bound to it, which makes it an ability. A graph runs once at a time: starting one that runs already (RUN GRAPH, talking) waits for that one.
 - **PLAY** (F5, PLAY FROM HERE at the editor camera, or CONTINUE SAVE) runs the scene in place under a tinted bar with PAUSE (F6), STEP (F7), SPEED ¼–2× and FREE CAMERA (F2); STOP restores it, and asks whether to keep player feel changed while playing. The test drawer (F3; F1 opens its FEEL tab) shows the running graphs (OPEN AT NODE jumps to one in LOGIC) and an events log, flips flags, holds the audio switches, the player feel, the map and frame stats.
 - **Game systems:** characters to talk to, pickups, save points (one save per project), objects visible when a flag condition holds (gates), abilities (yes/no flags with a Rhai script from `scripts/` bound to them), and a map of visited zones (M).
+- **Stairs:** ADD ▸ STAIRS, or TYPE ▸ STAIRS on any primitive: width, total height, steps (the step height is shown), step depth, a turn over the whole flight (0° straight, 90° a quarter turn, 360° and more a spiral) and an inner radius (0 winds around a central post). A flight is solid to the floor (past a full turn its upper steps are slabs you can walk under) and collides step by step, so the player's step climbing works on every shape; a full spiral is entered from its outside, beside the last step.
 - **Bakes:** BAKE LIGHTING and BAKE ACOUSTICS per scene. **Packages:** a whole project in one `.gamepack` file to hand to someone else.
 - **Models** are made in Blender (or any glTF exporter) and dragged in; re-exporting over the file updates every scene using it. A glTF's named nodes become **parts** (a candle's stick, wax and flame), which a scene can give their own glow, collision and light.
 
@@ -107,9 +109,9 @@ cargo run -p app -- --game my-game.gamepack         # unpack and open a project 
 cargo run -p app -- --scene scenes/hall.ron         # play another scene of the project
 ```
 
-Other flags: `--player` to play as a player gets the game (no debug tools; the editor's Shift+F5 opens this in its own window), `--quality low` for integrated graphics, `--perf-log` to log FPS, GPU stage times and audio timing, `--new-game` to ignore the saved game.
+Other flags: `--player` to play as a player gets the game (no debug tools; the editor's Shift+F5 opens this in its own window), `--quality low` for integrated graphics, `--perf-log` to log FPS, GPU stage times and audio timing, `--new-game` to ignore the saved game, `--bench <route.ron>` to walk a route by itself and quit (with `--perf-log` for before/after numbers; a route can check the player's height at a stop and fails, exit code 1, if walking stalls).
 
-`sandbox/` is a small test project in this repo and the default `--game`. It has one scene, `test_level.ron`, with every feature once around a central plaza: the movement course to the north (ramps, stairs, gaps, heights, beam, tunnel, tower, a corner), the acoustics wing to the east (wood room, stone corridor, marble hall with the looping guitar), the dark hall to the west (window shaft, flickering lantern, mist, polished floor, a metal sphere, the arch model), the yard to the south (the keeper, lever, doorstep and gate, the feather and its walled ledge, the save stone, doors, switches, a pressure plate, physics crates, a floating platform, a walk-through curtain) and the void to the south-east (open, with a long stylized reverb). Run by the scene's own `graphs/scenes/test_level.ron` and the keeper's `graphs/keeper.ron`; the feather turns on `scripts/double_jump.rhai`.
+`sandbox/` is a small test project in this repo and the default `--game`. `scenes/stairs.ron` has straight, quarter-turn and spiral flights with 15, 20 and 30 cm steps; `cargo run --release -p app -- --scene scenes/stairs.ron --bench sandbox/stairs_bench.ron` climbs each. Its main scene, `test_level.ron`, has every feature once around a central plaza: the movement course to the north (ramps, stairs, gaps, heights, beam, tunnel, tower, a corner), the acoustics wing to the east (wood room, stone corridor, marble hall with the looping guitar), the dark hall to the west (window shaft, flickering lantern, mist, polished floor, a metal sphere, the arch model), the yard to the south (the keeper, lever, doorstep and gate, the feather and its walled ledge, the save stone, doors, switches, a pressure plate, physics crates, a floating platform, a walk-through curtain) and the void to the south-east (open, with a long stylized reverb). Run by the scene's own `graphs/scenes/test_level.ron` and the keeper's `graphs/keeper.ron`; the feather turns on `scripts/double_jump.rhai`.
 
 **Building needs** a stable Rust toolchain and LLVM/Clang 9+ with `clang` on `PATH` (AudioNimbus generates bindings with bindgen; on Windows: `winget install LLVM.LLVM`). The first build downloads Steam Audio (about 180 MB) and can look stuck while it does. Developed on Windows (RTX 3060 Ti) and tested on Linux (Arch, KDE Wayland, Intel Iris Xe). On Linux, Steam Audio's `libphonon.so` from the build folder must be on `LD_LIBRARY_PATH`.
 
@@ -187,7 +189,7 @@ sandbox/            the test project
 
 **Done:** renderer, first-person controller, editor, object creation, Play/Stop, behaviors, audio, zones, lighting, materials and reflections, scene tabs, project packages, model parts, multi-select, project settings and stylized reverb.
 **Done also:** gameplay graphs (scene and dialogue graphs), flags, saving, abilities, the map, the editor redesign and the one test level.
-**Next:** the stairs primitive. See the [roadmap](docs/ROADMAP.md).
+**Next:** see the [roadmap](docs/ROADMAP.md).
 
 ## License
 

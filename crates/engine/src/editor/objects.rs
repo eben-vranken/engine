@@ -186,6 +186,20 @@ impl Editor {
     }
 }
 
+/// How far an object reaches from its position: its primitive's box (a
+/// curved flight of stairs included), scaled; other objects about a meter.
+fn reach(object: &Object) -> f32 {
+    let half = object
+        .components
+        .iter()
+        .find_map(|c| match c {
+            Component::Primitive(p) => Some(p.shape.half_extents()),
+            _ => None,
+        })
+        .unwrap_or(Vec3::splat(0.5));
+    (half * object.transform.scale.abs()).length()
+}
+
 /// How far in front of the camera new objects float when the camera isn't
 /// looking at a surface, in meters.
 pub const NEW_OBJECT_DISTANCE: f32 = 4.0;
@@ -209,7 +223,7 @@ pub fn placement(bounds: (Vec3, Vec3), surface: Option<(Vec3, Vec3)>, fallback: 
 }
 
 /// The Add menu: each primitive with a starting size of about a meter.
-pub(super) fn primitives() -> [(&'static str, Shape); 5] {
+pub(super) fn primitives() -> [(&'static str, Shape); 6] {
     [
         ("box", Shape::Box { size: Vec3::ONE }),
         (
@@ -238,6 +252,17 @@ pub(super) fn primitives() -> [(&'static str, Shape); 5] {
                 radius: 0.5,
                 segments: 12,
                 rings: 8,
+            },
+        ),
+        (
+            "stairs",
+            Shape::Stairs {
+                width: 1.2,
+                height: 1.8,
+                steps: 10,
+                depth: 0.3,
+                turn: 0.0,
+                inner_radius: 0.0,
             },
         ),
     ]
@@ -330,7 +355,7 @@ impl Editor {
             / objects.len() as f32;
         let radius = objects
             .iter()
-            .map(|o| o.transform.position.distance(center) + o.transform.scale.max_element())
+            .map(|o| o.transform.position.distance(center) + reach(o))
             .fold(1.0, f32::max);
         Some((center, radius))
     }

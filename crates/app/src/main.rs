@@ -174,5 +174,8 @@ fn main() -> anyhow::Result<()> {
         player,
         bench,
     })?;
+    if engine::bench::failed() {
+        std::process::exit(1);
+    }
     Ok(())
 }

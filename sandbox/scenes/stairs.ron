@@ -1,0 +1,92 @@
+// Stairs to walk: straight, quarter-turn and spiral flights with 15, 20
+// and 30 cm steps, rows nearest the start first. `stairs_bench.ron` climbs
+// each and comes back down.
+(
+    environment: (
+        sun_direction: (-0.4, -0.85, -0.3),
+        sun_color: (2.6, 2.34, 2.03),
+        ambient_sky: (0.16, 0.18, 0.24),
+        ambient_ground: (0.05, 0.045, 0.04),
+        fog_distance: 60.0,
+        shadow_distance: 40.0,
+    ),
+    zones: [
+        (
+            name: "stairs",
+        ),
+    ],
+    objects: [
+        (
+            name: "floor",
+            zone: "stairs",
+            transform: (position: (6.000, -0.250, -8.000), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (40.0, 0.5, 40.0)), color: (0.55, 0.55, 0.55)))],
+        ),
+        (
+            name: "volume",
+            zone: "stairs",
+            transform: (position: (6.000, 5.000, -8.000), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [ZoneVolume((size: (40.0, 10.0, 40.0), probe_spacing: 4.0, probe_height: 1.5))],
+        ),
+        (
+            name: "player start",
+            zone: "stairs",
+            transform: (position: (6.000, 0.000, 9.000), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [PlayerStart],
+        ),
+        (
+            name: "straight 15 cm",
+            zone: "stairs",
+            transform: (position: (0.000, 1.200, -2.400), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Stairs(width: 1.2, height: 2.4, steps: 16, depth: 0.3, turn: 0.0, inner_radius: 0.0), color: (0.7, 0.65, 0.55)))],
+        ),
+        (
+            name: "quarter turn 15 cm",
+            zone: "stairs",
+            transform: (position: (5.500, 1.200, -1.100), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Stairs(width: 1.2, height: 2.4, steps: 16, depth: 0.3, turn: 90.0, inner_radius: 1.0), color: (0.7, 0.65, 0.55)))],
+        ),
+        (
+            name: "spiral 15 cm",
+            zone: "stairs",
+            transform: (position: (11.000, 1.200, 0.000), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Stairs(width: 1.2, height: 2.4, steps: 16, depth: 0.3, turn: 360.0, inner_radius: 0.4), color: (0.7, 0.65, 0.55)))],
+        ),
+        (
+            name: "straight 20 cm",
+            zone: "stairs",
+            transform: (position: (0.000, 1.200, -10.800), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Stairs(width: 1.2, height: 2.4, steps: 12, depth: 0.3, turn: 0.0, inner_radius: 0.0), color: (0.7, 0.65, 0.55)))],
+        ),
+        (
+            name: "quarter turn 20 cm",
+            zone: "stairs",
+            transform: (position: (5.500, 1.200, -10.100), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Stairs(width: 1.2, height: 2.4, steps: 12, depth: 0.3, turn: 90.0, inner_radius: 1.0), color: (0.7, 0.65, 0.55)))],
+        ),
+        (
+            name: "spiral 20 cm",
+            zone: "stairs",
+            transform: (position: (11.000, 1.200, -9.000), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Stairs(width: 1.2, height: 2.4, steps: 12, depth: 0.3, turn: 360.0, inner_radius: 0.4), color: (0.7, 0.65, 0.55)))],
+        ),
+        (
+            name: "straight 30 cm",
+            zone: "stairs",
+            transform: (position: (0.000, 1.200, -19.200), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Stairs(width: 1.2, height: 2.4, steps: 8, depth: 0.3, turn: 0.0, inner_radius: 0.0), color: (0.7, 0.65, 0.55)))],
+        ),
+        (
+            name: "quarter turn 30 cm",
+            zone: "stairs",
+            transform: (position: (5.500, 1.200, -19.100), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Stairs(width: 1.2, height: 2.4, steps: 8, depth: 0.3, turn: 90.0, inner_radius: 1.0), color: (0.7, 0.65, 0.55)))],
+        ),
+        (
+            name: "spiral 30 cm",
+            zone: "stairs",
+            transform: (position: (11.000, 1.200, -18.000), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Stairs(width: 1.2, height: 2.4, steps: 8, depth: 0.3, turn: 360.0, inner_radius: 0.4), color: (0.7, 0.65, 0.55)))],
+        ),
+    ],
+)

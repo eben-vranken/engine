@@ -158,6 +158,9 @@ impl Editor {
                             shape_kind(ui, i, &mut primitive.shape);
                         }
                         inspector::fields(ui, component, &names);
+                        if let Component::Primitive(primitive) = component {
+                            stairs_notes(ui, &primitive.shape);
+                        }
                     }) {
                         remove = Some(i);
                     }
@@ -216,6 +219,35 @@ impl Editor {
             self.begin_player_edit(player_before, player);
             output.changed.push(Change::Player);
         }
+    }
+}
+
+/// What follows from a flight's fields, shown under them (read-only).
+fn stairs_notes(ui: &mut Ui, shape: &Shape) {
+    let Shape::Stairs {
+        width,
+        height,
+        steps,
+        turn,
+        inner_radius,
+        ..
+    } = *shape
+    else {
+        return;
+    };
+    let steps = steps.max(1) as f32;
+    ui.horizontal(|ui| {
+        inspector::field_label(ui, "STEP HEIGHT");
+        ui.label(format!("{:.3} M", height / steps));
+    });
+    if turn.abs() >= 1e-3 {
+        // Along the walking line, the middle of the width.
+        let run = (inner_radius.max(0.0) + width * 0.5) * turn.abs().to_radians() / steps;
+        ui.horizontal(|ui| {
+            inspector::field_label(ui, "STEP RUN");
+            ui.label(format!("{run:.3} M"))
+                .on_hover_text("ALONG THE MIDDLE OF THE FLIGHT. WHILE IT TURNS, THE TURN AND INNER RADIUS SET IT, NOT DEPTH");
+        });
     }
 }
 

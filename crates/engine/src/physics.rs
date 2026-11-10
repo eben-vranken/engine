@@ -395,6 +395,32 @@ fn primitive_shape(shape: Shape, scale: Vec3) -> Option<SharedShape> {
             0.005,
             size.y * scale_abs.z * 0.5,
         ),
+        // A piece per step, so step climbing works on every flight: a box
+        // when straight, the step's convex hull when it turns.
+        Shape::Stairs { turn, .. } => {
+            let straight = turn.abs() < 1e-3;
+            let mut pieces: Vec<(Pose, SharedShape)> = Vec::new();
+            for step in shape.stair_steps() {
+                let points: Vec<Vector> = step
+                    .points()
+                    .iter()
+                    .map(|&p| Vector::from(p) * scale)
+                    .collect();
+                if straight {
+                    let min = points.iter().copied().fold(Vector::MAX, Vector::min);
+                    let max = points.iter().copied().fold(Vector::MIN, Vector::max);
+                    let half = (max - min) * 0.5;
+                    let center = Pose::from_parts((max + min) * 0.5, Quat::IDENTITY);
+                    pieces.push((center, SharedShape::cuboid(half.x, half.y, half.z)));
+                } else if let Some(hull) = SharedShape::convex_hull(&points) {
+                    pieces.push((Pose::IDENTITY, hull));
+                }
+            }
+            if pieces.is_empty() {
+                return None;
+            }
+            SharedShape::compound(pieces)
+        }
         // Everything else is convex: wrap its render mesh, so collision matches what you see.
         shape => {
             let points: Vec<Vector> = MeshData::from_shape(shape)
@@ -678,6 +704,49 @@ mod tests {
                 "{shape:?}"
             );
         }
+    }
+
+    /// A flight collides step by step: one piece per step, boxes when
+    /// straight, hulls when curved, the top one at the flight's top.
+    #[test]
+    fn stairs_collide_per_step() {
+        for turn in [0.0, 90.0, 360.0] {
+            let shape = Shape::Stairs {
+                width: 1.0,
+                height: 1.8,
+                steps: 9,
+                depth: 0.3,
+                turn,
+                inner_radius: 0.0,
+            };
+            let collider = primitive_shape(shape, Vec3::ONE).expect("a shape");
+            let compound = collider.as_compound().expect("one piece per step");
+            assert_eq!(compound.shapes().len(), 9, "{turn}");
+            let boxes = compound
+                .shapes()
+                .iter()
+                .filter(|(_, s)| s.as_cuboid().is_some())
+                .count();
+            assert_eq!(boxes, if turn == 0.0 { 9 } else { 0 }, "{turn}");
+        }
+        // Standing on the top step of a straight flight: a ray down from
+        // above its back end lands at the top.
+        let mut scene = test_scene(vec![(
+            Shape::Stairs {
+                width: 1.0,
+                height: 1.8,
+                steps: 9,
+                depth: 0.3,
+                turn: 0.0,
+                inner_radius: 0.0,
+            },
+            Vec3::new(0.0, 0.9, 0.0),
+        )]);
+        scene.objects[0].transform.scale = Vec3::ONE;
+        let world = PhysicsWorld::from_scene(&scene, &mut Assets::default());
+        let ray = Ray::new(Vec3::new(0.0, 5.0, -1.3), Vec3::NEG_Y);
+        let (_, toi) = world.queries().cast_ray(&ray, 100.0, true).unwrap();
+        assert!((5.0 - toi - 1.8).abs() < 1e-3, "{toi}");
     }
 
     #[test]
