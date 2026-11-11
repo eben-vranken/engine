@@ -95,7 +95,7 @@ Themed as a sparse amber-on-black terminal, in three workspaces chosen in the to
 - **PLAY** (F5, PLAY FROM HERE at the editor camera, or CONTINUE SAVE) runs the scene in place under a tinted bar with PAUSE (F6), STEP (F7), SPEED ¼–2× and FREE CAMERA (F2); STOP restores it, and asks whether to keep player feel changed while playing. The test drawer (F3; F1 opens its FEEL tab) shows the running graphs (OPEN AT NODE jumps to one in LOGIC) and an events log, flips flags, holds the audio switches, the player feel, the map and frame stats.
 - **Game systems:** characters to talk to, pickups, save points (one save per project), objects visible when a flag condition holds (gates), abilities (yes/no flags with a Rhai script from `scripts/` bound to them), and a map of visited zones (M).
 - **Stairs:** ADD ▸ STAIRS, or TYPE ▸ STAIRS on any primitive: width, total height, steps (the step height is shown), step depth, a turn over the whole flight (0° straight, 90° a quarter turn, 360° and more a spiral) and an inner radius (0 winds around a central post). A flight is solid to the floor (past a full turn its upper steps are slabs you can walk under) and collides step by step, so the player's step climbing works on every shape; a full spiral is entered from its outside, beside the last step.
-- **Bakes:** BAKE LIGHTING and BAKE ACOUSTICS per scene. **Packages:** a whole project in one `.gamepack` file to hand to someone else.
+- **Bakes:** BAKE LIGHTING and BAKE ACOUSTICS per scene. **Packages:** a whole project in one `.gamepack` file to hand to someone else. **Export game:** FILE ▸ EXPORT GAME writes the game as one executable for players.
 - **Models** are made in Blender (or any glTF exporter) and dragged in; re-exporting over the file updates every scene using it. A glTF's named nodes become **parts** (a candle's stick, wax and flame), which a scene can give their own glow, collision and light.
 
 ## Run
@@ -106,6 +106,7 @@ cargo run -p app -- --editor                        # edit the sandbox
 cargo run -p app -- --launcher                      # pick a recent project, then edit it
 cargo run -p app -- --editor --game ../my-game      # edit another game project
 cargo run -p app -- --game my-game.gamepack         # unpack and open a project package
+cargo run --release -p app -- --game my-game --export MyGame.exe   # the game as one executable for players
 cargo run -p app -- --scene scenes/hall.ron         # play another scene of the project
 ```
 
@@ -114,6 +115,8 @@ Other flags: `--player` to play as a player gets the game (no debug tools; the e
 `sandbox/` is a small test project in this repo and the default `--game`. `scenes/stairs.ron` has straight, quarter-turn and spiral flights with 15, 20 and 30 cm steps; `cargo run --release -p app -- --scene scenes/stairs.ron --bench sandbox/stairs_bench.ron` climbs each. Its main scene, `test_level.ron`, has every feature once around a central plaza: the movement course to the north (ramps, stairs, gaps, heights, beam, tunnel, tower, a corner), the acoustics wing to the east (wood room, stone corridor, marble hall with the looping guitar), the dark hall to the west (window shaft, flickering lantern, mist, polished floor, a metal sphere, the arch model), the yard to the south (the keeper, lever, doorstep and gate, the feather and its walled ledge, the save stone, doors, switches, a pressure plate, physics crates, a floating platform, a walk-through curtain) and the void to the south-east (open, with a long stylized reverb). Run by the scene's own `graphs/scenes/test_level.ron` and the keeper's `graphs/keeper.ron`; the feather turns on `scripts/double_jump.rhai`.
 
 **Building needs** a stable Rust toolchain and LLVM/Clang 9+ with `clang` on `PATH` (AudioNimbus generates bindings with bindgen; on Windows: `winget install LLVM.LLVM`). The first build downloads Steam Audio (about 180 MB) and can look stuck while it does. Developed on Windows (RTX 3060 Ti) and tested on Linux (Arch, KDE Wayland, Intel Iris Xe). On Linux, Steam Audio's `libphonon.so` from the build folder must be on `LD_LIBRARY_PATH`.
+
+**The exported game** is a copy of the engine's executable with the project inside it (on Windows, Steam Audio's `phonon.dll` too, so the one file is all a player needs). Started, it unpacks the project once into the user's cache folder (`%LOCALAPPDATA%\engine\games\<name>`, `~/.cache/engine/games/<name>`) and plays it as `--player` does. It runs on the engine it was exported from, so export from a release build. A newer export of the same game replaces the unpacked files and keeps the saved game. The project's files are readable in that folder: the export is for handing a game out, not for hiding its content. On Linux, `libphonon.so` is written next to the executable and has to stay there.
 
 ## Controls
 

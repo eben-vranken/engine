@@ -87,7 +87,7 @@ pub fn file(project_dir: &Path) -> Option<PathBuf> {
 }
 
 /// FNV-1a: stable across Rust versions, unlike the standard hasher.
-fn fnv(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf29ce484222325, |h, &b| {
         (h ^ b as u64).wrapping_mul(0x100000001b3)
     })

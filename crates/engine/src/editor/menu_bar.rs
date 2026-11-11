@@ -265,6 +265,7 @@ impl Editor {
             Some(OpenProject),
             Some(OpenPackage),
             Some(ExportPackage),
+            Some(ExportGame),
             None,
             Some(NewScene),
             Some(NewGraph),

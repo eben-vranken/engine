@@ -338,6 +338,16 @@ A small step after the core milestones: stairs as an editor primitive, shaped fr
 
 **Acceptance:** the user builds a straight flight, a curved flight and a spiral staircase from one primitive, and walks up each.
 
+## 13. Export game
+The game as something to hand to players: one executable.
+
+- [ ] FILE ▸ EXPORT GAME (also on the PROJECT page and as `--export <file>`) writes the game as an executable: the engine with the project inside it
+- [ ] The executable starts the game as a player gets it (the game's name as the title, the start scene or the saved game, no editor or test tools), with nothing else next to it on Windows
+- [ ] A newer export of the same game keeps the player's saved game
+- [ ] A game that can't start says why in a message box
+
+**Acceptance:** the user exports their game from a release build of the editor, copies the one file to another Windows PC without Rust or the engine, double-clicks it and plays; after exporting again with a change, the change is there and the save still loads.
+
 ## Later (optional)
 Not scheduled; picked up only if a game needs it.
 

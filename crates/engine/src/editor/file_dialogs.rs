@@ -1,5 +1,6 @@
 //! Everything that goes through the system's file dialog: NEW PROJECT,
-//! OPEN PROJECT, OPEN PACKAGE, EXPORT PACKAGE and SAVE SCENE AS. The dialog
+//! OPEN PROJECT, OPEN PACKAGE, EXPORT PACKAGE, EXPORT GAME and SAVE SCENE
+//! AS. The dialog
 //! runs on a thread of its own so the editor keeps drawing; its answer is
 //! picked up in a later frame. Switching projects asks about unsaved
 //! changes first; the runtime then opens the editor again on the other
@@ -9,7 +10,7 @@ use super::confirm::Confirm;
 use super::{Editor, EditorOutput};
 use crate::player::settings::PlayerSettings;
 use crate::scene::Scene;
-use crate::{package, project};
+use crate::{package, project, standalone};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
@@ -23,6 +24,8 @@ pub(super) enum Purpose {
     /// …then the folder to unpack it into.
     UnpackInto(PathBuf),
     ExportPackage,
+    /// The game as an executable for players.
+    ExportGame,
     SaveSceneAs,
 }
 
@@ -73,6 +76,17 @@ impl Editor {
                     .set_file_name(out.file_name().unwrap_or_default().to_string_lossy())
                     .add_filter("Game package", &[package::EXTENSION])
             }
+            Purpose::ExportGame => {
+                let out = standalone::export_path(&self.project_dir);
+                let dialog = dialog
+                    .set_title("Export game")
+                    .set_directory(out.parent().unwrap_or(&beside_project))
+                    .set_file_name(out.file_name().unwrap_or_default().to_string_lossy());
+                match std::env::consts::EXE_EXTENSION {
+                    "" => dialog,
+                    extension => dialog.add_filter("Game", &[extension]),
+                }
+            }
             Purpose::SaveSceneAs => dialog
                 .set_title("Save scene as")
                 .set_directory(project.join("scenes"))
@@ -86,7 +100,10 @@ impl Editor {
         };
         let saving = matches!(
             purpose,
-            Purpose::NewProject | Purpose::ExportPackage | Purpose::SaveSceneAs
+            Purpose::NewProject
+                | Purpose::ExportPackage
+                | Purpose::ExportGame
+                | Purpose::SaveSceneAs
         );
         let picking_folder = matches!(purpose, Purpose::UnpackInto(_));
         let (send, answer) = mpsc::channel();
@@ -148,6 +165,13 @@ impl Editor {
             }
             Purpose::ExportPackage => {
                 output.export_package = Some(with_extension(path, package::EXTENSION));
+                Ok(None)
+            }
+            Purpose::ExportGame => {
+                output.export_game = Some(match std::env::consts::EXE_EXTENSION {
+                    "" => path,
+                    extension => with_extension(path, extension),
+                });
                 Ok(None)
             }
             Purpose::SaveSceneAs => scene_in_project(&self.project_dir, &path)

@@ -276,6 +276,8 @@ pub struct EditorOutput {
     pub bake_lighting: bool,
     /// Write the project to a package file here.
     pub export_package: Option<PathBuf>,
+    /// Write the game as an executable for players here.
+    pub export_game: Option<PathBuf>,
     /// Make this tab the active one.
     pub switch_tab: Option<usize>,
     /// Open this scene in a new tab.
@@ -318,6 +320,7 @@ impl EditorOutput {
             bake: false,
             bake_lighting: false,
             export_package: None,
+            export_game: None,
             switch_tab: None,
             new_tab: None,
             close_tab: None,

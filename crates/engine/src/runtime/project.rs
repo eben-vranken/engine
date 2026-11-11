@@ -115,6 +115,37 @@ impl Running {
             }
         }
     }
+
+    /// Editor: writes the project as a game executable at `out`.
+    pub(super) fn export_game(&mut self, out: &Path) {
+        let Some(editor) = &mut self.editor else {
+            return;
+        };
+        match crate::standalone::export(&self.game_dir, &editor.game_name, out) {
+            Ok(count) => {
+                log::info!("exported the game {} ({count} files)", out.display());
+                let unsaved = if editor.any_dirty() {
+                    "; UNSAVED CHANGES ARE NOT IN IT"
+                } else {
+                    ""
+                };
+                // The game runs on a copy of this engine as it was built.
+                let debug = if cfg!(debug_assertions) {
+                    "; THIS ENGINE IS A DEBUG BUILD: EXPORT FROM A RELEASE BUILD FOR PLAYERS"
+                } else {
+                    ""
+                };
+                editor.show_message(format!(
+                    "EXPORTED THE GAME {} ({count} FILES){unsaved}{debug}",
+                    out.display()
+                ));
+            }
+            Err(err) => {
+                log::error!("{err}");
+                editor.show_error(err.to_string());
+            }
+        }
+    }
 }
 
 /// Starts another editor process on the project in `dir`.

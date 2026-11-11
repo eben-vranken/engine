@@ -7,7 +7,7 @@
 //! Opening one unpacks it into a new folder next to it.
 
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 /// File extension of packages.
@@ -57,16 +57,30 @@ pub fn export_path(project_dir: &Path) -> PathBuf {
 /// Writes every file of the project to a package at `out`. Returns how many
 /// files went in.
 pub fn export(project_dir: &Path, name: &str, out: &Path) -> Result<usize, PackageError> {
+    // Write next to the target first, so a failed export doesn't leave half
+    // a package behind (or destroy the previous one).
+    let partial = out.with_extension(format!("{EXTENSION}.partial"));
+    let count = write(project_dir, name, &[], &partial)?;
+    std::fs::rename(&partial, out).map_err(|e| PackageError::Io(out.to_owned(), e))?;
+    Ok(count)
+}
+
+/// Writes the package itself to `out`: the manifest, every file of the
+/// project, and `extras` (entry name in the archive, file on disk). Returns
+/// how many project files went in.
+pub(crate) fn write(
+    project_dir: &Path,
+    name: &str,
+    extras: &[(&str, &Path)],
+    out: &Path,
+) -> Result<usize, PackageError> {
     let mut files = Vec::new();
     collect(project_dir, project_dir, &mut files)?;
     files.sort();
 
-    // Write next to the target first, so a failed export doesn't leave half
-    // a package behind (or destroy the previous one).
-    let partial = out.with_extension(format!("{EXTENSION}.partial"));
     let io = |path: &Path, err| PackageError::Io(path.to_owned(), err);
     let zip_err = |err| PackageError::Zip(out.to_owned(), err);
-    let file = std::fs::File::create(&partial).map_err(|e| io(&partial, e))?;
+    let file = std::fs::File::create(out).map_err(|e| io(out, e))?;
     let mut zip = zip::ZipWriter::new(std::io::BufWriter::new(file));
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -81,15 +95,20 @@ pub fn export(project_dir: &Path, name: &str, out: &Path) -> Result<usize, Packa
     zip.start_file(MANIFEST, options).map_err(zip_err)?;
     zip.write_all(text.as_bytes()).map_err(|e| io(out, e))?;
 
-    for relative in &files {
-        let path = project_dir.join(relative);
-        let bytes = std::fs::read(&path).map_err(|e| io(&path, e))?;
+    let project_files = files.iter().map(|relative| {
         // Zip paths always use forward slashes.
         let entry = relative
             .components()
             .map(|c| c.as_os_str().to_string_lossy())
             .collect::<Vec<_>>()
             .join("/");
+        (entry, project_dir.join(relative))
+    });
+    let extras = extras
+        .iter()
+        .map(|(entry, path)| (entry.to_string(), path.to_path_buf()));
+    for (entry, path) in project_files.chain(extras) {
+        let bytes = std::fs::read(&path).map_err(|e| io(&path, e))?;
         zip.start_file(entry, options).map_err(zip_err)?;
         zip.write_all(&bytes).map_err(|e| io(out, e))?;
     }
@@ -97,7 +116,6 @@ pub fn export(project_dir: &Path, name: &str, out: &Path) -> Result<usize, Packa
         .map_err(zip_err)?
         .flush()
         .map_err(|e| io(out, e))?;
-    std::fs::rename(&partial, out).map_err(|e| io(out, e))?;
     Ok(files.len())
 }
 
@@ -144,22 +162,48 @@ pub fn unpack_target(file: &Path, parent: &Path) -> PathBuf {
 
 /// Unpacks a package into `target` (created if missing).
 pub fn unpack_into(file: &Path, target: &Path) -> Result<Manifest, PackageError> {
+    let reader = std::fs::File::open(file).map_err(|e| PackageError::Io(file.to_owned(), e))?;
+    unpack_from(std::io::BufReader::new(reader), file, target)
+}
+
+/// The manifest of the package read from `reader`; `file` names it in
+/// errors.
+pub(crate) fn manifest_of<R: Read + Seek>(
+    reader: R,
+    file: &Path,
+) -> Result<Manifest, PackageError> {
+    let mut zip =
+        zip::ZipArchive::new(reader).map_err(|e| PackageError::Zip(file.to_owned(), e))?;
+    read_manifest(&mut zip, file)
+}
+
+fn read_manifest<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    file: &Path,
+) -> Result<Manifest, PackageError> {
+    let mut entry = zip
+        .by_name(MANIFEST)
+        .map_err(|_| PackageError::NotAPackage(file.to_owned()))?;
+    let mut text = String::new();
+    entry
+        .read_to_string(&mut text)
+        .map_err(|e| PackageError::Manifest(file.to_owned(), e.to_string()))?;
+    ron::from_str::<Manifest>(&text)
+        .map_err(|e| PackageError::Manifest(file.to_owned(), e.to_string()))
+}
+
+/// Unpacks the package read from `reader` into `target` (created if
+/// missing); `file` names it in errors.
+pub(crate) fn unpack_from<R: Read + Seek>(
+    reader: R,
+    file: &Path,
+    target: &Path,
+) -> Result<Manifest, PackageError> {
     let io = |path: &Path, err| PackageError::Io(path.to_owned(), err);
     let zip_err = |err| PackageError::Zip(file.to_owned(), err);
-    let reader = std::fs::File::open(file).map_err(|e| io(file, e))?;
-    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(reader)).map_err(zip_err)?;
+    let mut zip = zip::ZipArchive::new(reader).map_err(zip_err)?;
 
-    let manifest = {
-        let mut entry = zip
-            .by_name(MANIFEST)
-            .map_err(|_| PackageError::NotAPackage(file.to_owned()))?;
-        let mut text = String::new();
-        entry
-            .read_to_string(&mut text)
-            .map_err(|e| PackageError::Manifest(file.to_owned(), e.to_string()))?;
-        ron::from_str::<Manifest>(&text)
-            .map_err(|e| PackageError::Manifest(file.to_owned(), e.to_string()))?
-    };
+    let manifest = read_manifest(&mut zip, file)?;
     if manifest.engine_version != crate::VERSION {
         log::warn!(
             "{} was made with {} {} (this is {})",

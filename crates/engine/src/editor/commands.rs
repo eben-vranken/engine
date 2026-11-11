@@ -50,6 +50,7 @@ pub(super) enum Command {
     OpenProject,
     OpenPackage,
     ExportPackage,
+    ExportGame,
     NewScene,
     NewGraph,
     NewScript,
@@ -103,6 +104,7 @@ impl Command {
             OpenProject => "OPEN PROJECT…".into(),
             OpenPackage => "OPEN PACKAGE…".into(),
             ExportPackage => "EXPORT PACKAGE…".into(),
+            ExportGame => "EXPORT GAME…".into(),
             NewScene => "NEW SCENE…".into(),
             NewGraph => "NEW GRAPH…".into(),
             NewScript => "NEW SCRIPT…".into(),
@@ -201,6 +203,7 @@ impl Command {
             OpenProject,
             OpenPackage,
             ExportPackage,
+            ExportGame,
             BakeLighting,
             BakeAcoustics,
         ];
@@ -233,7 +236,7 @@ impl Editor {
             _ if self.playing => matches!(command, Search | Shortcuts | ToggleHints | ToggleStats),
             // A script's text edits undo inside the code editor.
             Undo | Redo | Duplicate | Delete if self.script.is_some() => false,
-            NewProject | OpenProject | OpenPackage | ExportPackage => !waiting,
+            NewProject | OpenProject | OpenPackage | ExportPackage | ExportGame => !waiting,
             SaveSceneAs => build && !waiting,
             Undo if self.workspace() == Workspace::Project => {
                 self.project.as_ref().is_some_and(|d| d.can_undo())
@@ -293,6 +296,7 @@ impl Editor {
             OpenProject => self.ask_file(Purpose::OpenProject),
             OpenPackage => self.ask_file(Purpose::OpenPackage),
             ExportPackage => self.ask_file(Purpose::ExportPackage),
+            ExportGame => self.ask_file(Purpose::ExportGame),
             SaveSceneAs => self.ask_file(Purpose::SaveSceneAs),
             NewScene => self.ask_name(Naming::Scene),
             NewGraph => self.ask_name(Naming::Graph),

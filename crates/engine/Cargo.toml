@@ -31,4 +31,4 @@ winit = "0.30.13"
 zip = { version = "9.4.1", default-features = false, features = ["deflate"] }
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }

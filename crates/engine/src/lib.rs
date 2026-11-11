@@ -37,6 +37,7 @@ pub mod runtime;
 pub mod save;
 pub mod scene;
 pub mod script;
+pub mod standalone;
 pub mod ui;
 pub mod zones;
 

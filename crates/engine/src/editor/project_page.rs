@@ -46,7 +46,7 @@ impl Section {
     pub fn title(self) -> &'static str {
         match self {
             Section::Start => "START · RECENT",
-            Section::Packages => "PACKAGES",
+            Section::Packages => "PACKAGES · EXPORT",
             Section::General => "GENERAL",
             Section::Startup => "STARTUP",
             Section::Rendering => "RENDERING",
@@ -60,7 +60,7 @@ impl Section {
     fn hint(self) -> &'static str {
         match self {
             Section::Start => "open another game",
-            Section::Packages => "one-file copies",
+            Section::Packages => "copies, the game",
             Section::General => "name",
             Section::Startup => "start scene",
             Section::Rendering => "render scale",
@@ -279,6 +279,20 @@ impl Editor {
                 self.ask_file(super::file_dialogs::Purpose::OpenPackage);
             }
         });
+        ui.add_space(12.0);
+        ui.label(dim(
+            "THE GAME IS ONE EXECUTABLE FOR PLAYERS: THIS ENGINE WITH THE PROJECT INSIDE IT.",
+        ));
+        ui.label(dim(
+            "IT PLAYS FROM THE START SCENE, WITHOUT THE EDITOR OR THE TEST TOOLS.",
+        ));
+        ui.add_space(8.0);
+        if ui
+            .add_enabled(!waiting, egui::Button::new("EXPORT GAME…"))
+            .clicked()
+        {
+            self.ask_file(super::file_dialogs::Purpose::ExportGame);
+        }
     }
 
     fn feel_section(

@@ -23,6 +23,12 @@
 //! `sandbox/bench.ron` is the sandbox's route.
 //! Game projects are content-only folders; they never contain engine code.
 //!
+//! `--export <file>` writes the game as an executable for players (this
+//! executable with the project inside it) and quits; use a release build.
+//! The editor's EXPORT GAME does the same. Started, the exported copy plays
+//! the game as `--player` does and ignores `--editor`, `--game`, `--bench`
+//! and `--export`.
+//!
 //! Release builds on Windows are window-only apps (no console window);
 //! debug builds keep the console for the log.
 
@@ -47,6 +53,7 @@ struct Args {
     new_game: bool,
     player: bool,
     bench: Option<PathBuf>,
+    export: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
@@ -58,6 +65,7 @@ fn parse_args() -> Args {
     let mut new_game = false;
     let mut player = false;
     let mut bench = None;
+    let mut export = None;
     let mut args = std::env::args().skip(1);
 
     while let Some(arg) = args.next() {
@@ -79,6 +87,7 @@ fn parse_args() -> Args {
             "--new-game" => new_game = true,
             "--player" => player = true,
             "--bench" => bench = args.next().map(PathBuf::from),
+            "--export" => export = args.next().map(PathBuf::from),
             other => eprintln!("ignoring unknown argument: {other}"),
         }
     }
@@ -92,6 +101,7 @@ fn parse_args() -> Args {
         new_game,
         player,
         bench,
+        export,
     }
 }
 
@@ -100,7 +110,28 @@ fn main() -> anyhow::Result<()> {
         env_logger::Env::default().default_filter_or("info,wgpu_hal=error,wgpu_core=warn"),
     )
     .init();
-    let args = parse_args();
+    // An exported game: this executable with a project inside it.
+    let embedded = engine::standalone::embedded_game();
+    let standalone = !matches!(embedded, Ok(None));
+    let result = embedded.map_err(Into::into).and_then(run);
+    if standalone && let Err(err) = &result {
+        // A player has no console to read the error in.
+        engine::standalone::show_error(&format!("{err:#}"));
+    }
+    result
+}
+
+/// Runs the engine as the arguments say, or `embedded` (the unpacked
+/// project of an exported game) as a player gets it.
+fn run(embedded: Option<PathBuf>) -> anyhow::Result<()> {
+    let mut args = parse_args();
+    if let Some(game) = embedded {
+        args.mode = Mode::Play;
+        args.game = game;
+        args.player = true;
+        args.bench = None;
+        args.export = None;
+    }
     if args.mode == Mode::Launcher {
         engine::launcher::run(engine::launcher::LaunchConfig {
             quality: args.quality,
@@ -128,6 +159,11 @@ fn main() -> anyhow::Result<()> {
         args.game
     };
     let mut project = Project::open(&game)?;
+    if let Some(out) = &args.export {
+        let count = engine::standalone::export(&project.dir, &project.settings.name, out)?;
+        log::info!("exported the game {} ({count} files)", out.display());
+        return Ok(());
+    }
     if let Some(scene) = args.scene {
         project.settings.start_scene = scene;
     }

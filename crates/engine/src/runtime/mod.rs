@@ -1137,6 +1137,9 @@ impl Running {
             if let Some(out) = &output.export_package {
                 self.export_package(out);
             }
+            if let Some(out) = &output.export_game {
+                self.export_game(out);
+            }
             for &change in &output.changed {
                 self.show_change(change);
             }
