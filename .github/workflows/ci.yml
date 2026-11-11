@@ -21,7 +21,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # The version the engine is developed with. A newer Rust brings new
+      # clippy lints, which would fail the job on code nobody touched: raise
+      # this together with the fixes.
+      - uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: rustfmt, clippy
       # Keeps built dependencies and the Steam Audio download (about
