@@ -292,6 +292,8 @@ pub struct EditorOutput {
     pub place_model: Option<(PathBuf, Option<egui::Pos2>)>,
     /// Use this render scale now (`None` = automatic).
     pub render_scale: Option<Option<u32>>,
+    /// The game's retro looks as edited (shown live).
+    pub retro: Option<crate::project::Retro>,
     /// The game was renamed (the window title follows).
     pub rename: Option<String>,
     /// Leave this project for the one in this folder (unsaved changes
@@ -328,6 +330,7 @@ impl EditorOutput {
             place_model: None,
             open_project: None,
             render_scale: None,
+            retro: None,
             rename: None,
         }
     }
@@ -417,6 +420,7 @@ impl Editor {
         view: &View,
     ) -> EditorOutput {
         let mut output = EditorOutput::empty();
+        output.retro = self.project.as_ref().map(|doc| doc.now.game.retro);
         self.poll_file_dialog(scene, player, &mut output);
         if !self.playing
             && let Some(request) = self.open_at_node.take()

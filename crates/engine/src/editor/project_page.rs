@@ -424,6 +424,12 @@ impl Editor {
                 settings.dialogue = DialogueStyle::default();
             }
         }
+        if section == Section::Rendering {
+            ui.add_space(10.0);
+            ui.label(dim("RETRO LOOKS (OFF UNLESS THE GAME WANTS THEM)"));
+            ui.add_space(4.0);
+            inspector::fields(ui, &mut settings.retro, &inspector::Names::default());
+        }
         if settings.render_scale != scale_before {
             output.render_scale = Some(settings.render_scale); // a live preview
         }

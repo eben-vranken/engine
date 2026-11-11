@@ -30,7 +30,9 @@ struct Params {
     frame: u32,
     /// 1 / bloom levels: the chain adds every level up.
     bloom_scale: f32,
-    _pad: [u32; 2],
+    /// Retro: color levels per channel, dithered (0 = off).
+    dither: u32,
+    _pad: u32,
 }
 
 /// Where the post pass draws and how.
@@ -74,6 +76,7 @@ pub struct Post {
     exposure: f32,
     bloom_strength: f32,
     grain: f32,
+    dither: u32,
     frame: u32,
 }
 
@@ -185,8 +188,14 @@ impl Post {
             exposure: 1.0,
             bloom_strength: 0.0,
             grain: 0.0,
+            dither: 0,
             frame: 0,
         }
+    }
+
+    /// Retro dithering: color levels per channel, 0 = off.
+    pub fn set_dither(&mut self, levels: u32) {
+        self.dither = levels;
     }
 
     /// The internal HDR image changed (new size): rebuild the bloom chain.
@@ -373,7 +382,8 @@ impl Post {
             lut_mix: smooth(self.lut_mix),
             frame: self.frame,
             bloom_scale: 1.0 / bloom.levels.len() as f32,
-            _pad: [0; 2],
+            dither: self.dither,
+            _pad: 0,
         };
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&params));
 

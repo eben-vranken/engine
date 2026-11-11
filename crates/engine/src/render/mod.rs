@@ -11,10 +11,12 @@
 //!
 //! See `scale` for how the internal resolution is chosen.
 
+mod bvh;
 mod fog;
 mod frustum;
 pub mod grade;
 pub mod lights;
+mod live;
 pub mod mesh;
 mod post;
 pub mod quality;
@@ -26,12 +28,14 @@ pub mod timings;
 use crate::assets::{Assets, Resolved};
 use crate::camera::Camera;
 use crate::lightmap::{self, AmbientCube, Baked, BakedDraw};
+use crate::project::Retro;
 use crate::scene::{Component, Environment, Geometry, LightSource, Renderable, Scene};
 use bytemuck::{Pod, Zeroable};
 use fog::{FogFrame, VolumetricFog};
 use frustum::Frustum;
 use glam::{Mat4, Vec3, Vec4};
 use lights::{GpuLight, MAX_FOG_LIGHTS, MAX_LIGHTS};
+use live::{Live, Surfaces};
 use mesh::{MeshData, Shape};
 use post::Post;
 use quality::Quality;
@@ -73,6 +77,8 @@ pub enum RenderError {
 struct FrameUniform {
     view_proj: Mat4,
     sun_view_proj: [Mat4; lights::CASCADES],
+    /// The view last frame's live occlusion was traced for.
+    occlusion_view_proj: Mat4,
     camera_pos: Vec4,
     sun_dir: Vec4,
     sun_color: Vec4,
@@ -85,6 +91,9 @@ struct FrameUniform {
     /// Dust motes in the camera's zone: amount, size (px), brightness,
     /// speed.
     dust: Vec4,
+    /// x: vertex snap grid lines (0 = off), y: 1 = affine textures,
+    /// z: live occlusion strength (0 = off).
+    retro: Vec4,
 }
 
 /// One placed draw's data, read by `instance_index` through the frame's
@@ -126,6 +135,8 @@ struct Instance {
     texture: String,
     /// The object is hidden (picked up, an open gate): kept, not drawn.
     hidden: bool,
+    /// The object moves while the game runs (see `lightmap::moves`).
+    moves: bool,
     /// World bounding sphere (center, radius), for culling.
     sphere: (Vec3, f32),
     data: InstanceData,
@@ -236,6 +247,10 @@ struct GpuMesh {
     /// Lightmap layout UV per vertex (zeros without a lightmap).
     lightmap_uvs: wgpu::Buffer,
     index_count: u32,
+    /// The triangles again on the CPU (corner positions, three indices
+    /// each), for the live effects' ray tracing.
+    positions: Vec<Vec3>,
+    corners: Vec<u32>,
     /// Index ranges and their own material (a model's textures); `None`:
     /// the instance's (primitives: the grid or a material texture).
     parts: Vec<(Range<u32>, Option<wgpu::BindGroup>)>,
@@ -247,8 +262,11 @@ struct GpuMesh {
 
 /// Render targets at internal resolution; rebuilt when it changes.
 struct Targets {
+    /// What the post pass reads.
     color: wgpu::TextureView,
     depth: wgpu::TextureView,
+    /// For the live effects; made when one is first on.
+    surfaces: Option<Surfaces>,
 }
 
 /// A scene light as the renderer keeps it between frames.
@@ -304,6 +322,9 @@ pub struct Renderer {
     targets: Targets,
 
     scene_pipeline: wgpu::RenderPipeline,
+    /// The scene pipeline that also writes the surfaces the live effects
+    /// read.
+    surfaces_pipeline: wgpu::RenderPipeline,
     sky_pipeline: wgpu::RenderPipeline,
     dust_pipeline: wgpu::RenderPipeline,
     /// Per zone: its own fog, if any (for the camera zone's dust).
@@ -317,6 +338,8 @@ pub struct Renderer {
     lightmaps: Vec<Option<wgpu::BindGroup>>,
     baked: Option<Arc<Baked>>,
     reflection_texture: wgpu::Texture,
+    reflection_view: wgpu::TextureView,
+    reflection_sampler: wgpu::Sampler,
     reflection_buffer: wgpu::Buffer,
     /// Baked zone name → reflection cube index.
     reflections: HashMap<String, usize>,
@@ -359,6 +382,11 @@ pub struct Renderer {
     light_buffer: wgpu::Buffer,
     shadows: Shadows,
     fog: VolumetricFog,
+    live: Live,
+    /// The live effects' triangles need rebuilding: the ones that stay
+    /// put, the ones that move.
+    stale_triangles: [bool; 2],
+    retro: Retro,
     post: Post,
     /// The camera's zone (index into `Scene::zones`), for its grade.
     zone: Option<usize>,
@@ -505,6 +533,16 @@ impl Renderer {
                     binding: 10,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -687,6 +725,7 @@ impl Renderer {
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
+        let live = Live::new(&device, &settings);
         let frame_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("frame"),
             layout: &frame_layout,
@@ -735,6 +774,10 @@ impl Renderer {
                     binding: 10,
                     resource: wgpu::BindingResource::Sampler(&reflection_sampler),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::TextureView(&live.history_view),
+                },
             ],
         });
 
@@ -781,8 +824,9 @@ impl Renderer {
                 ],
                 immediate_size: 0,
             });
-        let scene_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("scene"),
+        let scene_pipeline = |label, entry, targets: &[Option<wgpu::ColorTargetState>]| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some(label),
             layout: Some(&scene_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &scene_shader,
@@ -815,13 +859,21 @@ impl Renderer {
             multisample: Default::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &scene_shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(HDR_FORMAT.into())],
+                entry_point: Some(entry),
+                targets,
                 compilation_options: Default::default(),
             }),
             multiview_mask: None,
             cache: None,
-        });
+        })
+        };
+        let hdr: Option<wgpu::ColorTargetState> = Some(HDR_FORMAT.into());
+        let surfaces_pipeline = scene_pipeline(
+            "scene and surfaces",
+            "fs_surfaces",
+            &[hdr.clone(), hdr.clone(), hdr.clone()],
+        );
+        let scene_pipeline = scene_pipeline("scene", "fs_main", &[hdr]);
 
         // The background: sky color seen through the fog, drawn only where
         // nothing else was (at the far plane, depth test LessEqual).
@@ -922,6 +974,7 @@ impl Renderer {
             layout,
             targets,
             scene_pipeline,
+            surfaces_pipeline,
             sky_pipeline,
             dust_pipeline,
             zone_fogs: Vec::new(),
@@ -931,6 +984,8 @@ impl Renderer {
             lightmaps: Vec::new(),
             baked: None,
             reflection_texture,
+            reflection_view,
+            reflection_sampler,
             reflection_buffer,
             reflections: HashMap::new(),
             materials: vec![grid_material],
@@ -959,6 +1014,9 @@ impl Renderer {
             uploads: 0,
             present_modes: caps.present_modes.clone(),
             fog,
+            live,
+            stale_triangles: [true; 2],
+            retro: Retro::default(),
             post,
             zone: None,
             started: Instant::now(),
@@ -1148,6 +1206,8 @@ impl Renderer {
             &fog::regions(scene, |zone| self.zone_light(zone)),
         );
         self.fog.reset();
+        self.live.reset();
+        self.stale_triangles = [true; 2];
         self.post
             .set_grades(&self.device, &self.queue, scene, assets.root());
         self.materials.truncate(1);
@@ -1191,6 +1251,7 @@ impl Renderer {
                 lightmap_rect: placed.map_or(Vec4::ZERO, |d| Vec4::from_array(d.rect)),
                 texture,
                 hidden: scene.objects[r.object].hidden,
+                moves: lightmap::moves(&scene.objects[r.object]),
                 sphere: (Vec3::ZERO, 0.0),
                 data: InstanceData::zeroed(),
             };
@@ -1284,7 +1345,14 @@ impl Renderer {
             self.set_scene(scene, assets);
             return;
         }
+        let moves = lightmap::moves(object);
         for (&slot, r) in slots.iter().zip(renderables) {
+            // Its triangles are somewhere else now, for the live effects.
+            if self.instances[slot].moves != moves {
+                self.instances[slot].moves = moves;
+                self.stale_triangles = [true; 2];
+            }
+            self.stale_triangles[moves as usize] = true;
             let key = GeometryKey::from(r.geometry);
             if self.instances[slot].geometry != key {
                 // Reshaped: its lightmap no longer fits until the next bake.
@@ -1328,6 +1396,17 @@ impl Renderer {
             .set_grades(&self.device, &self.queue, scene, assets.root());
         let regions = fog::regions(scene, |zone| self.zone_light(zone));
         self.fog.set_regions(&self.queue, &regions);
+    }
+
+    /// The game's retro looks (`game.ron`).
+    pub fn set_retro(&mut self, retro: Retro) {
+        self.retro = retro;
+        let levels = if retro.dither {
+            retro.dither_levels.clamp(2, 256)
+        } else {
+            0
+        };
+        self.post.set_dither(levels);
     }
 
     /// The zone the camera is in (index into `Scene::zones`), for its
@@ -1473,6 +1552,8 @@ impl Renderer {
                 wgpu::BufferUsages::VERTEX,
             ),
             index_count: data.indices.len() as u32,
+            positions: data.vertices.iter().map(|v| v.position.into()).collect(),
+            corners: data.indices.clone(),
             parts,
             textured,
             surface,
@@ -1714,9 +1795,35 @@ impl Renderer {
             .and_then(|z| self.zone_fogs.get(z)?.as_ref())
             .unwrap_or(&env.fog);
         let dust_count = (dust.dust.clamp(0.0, 1.0) * MAX_DUST as f32) as u32;
+        // The live effects, when the scene asks for them: both read the
+        // scene pass's surfaces.
+        let occlusion = env.live_occlusion > 0.0;
+        let reflections = env.screen_reflections;
+        if (occlusion || reflections) && self.targets.surfaces.is_none() {
+            self.targets.surfaces = Some(Surfaces::new(&self.device, self.layout.internal));
+        }
+        let surfaces = self
+            .targets
+            .surfaces
+            .as_ref()
+            .filter(|_| occlusion || reflections);
+        if occlusion && self.stale_triangles != [false; 2] {
+            let [still, moving] = self.stale_triangles;
+            self.live.set_triangles(
+                &self.device,
+                &self.queue,
+                still.then(|| triangles(&self.instances, &self.meshes, false)),
+                moving.then(|| triangles(&self.instances, &self.meshes, true)),
+            );
+            self.stale_triangles = [false; 2];
+        }
+        self.live.begin(&self.queue, camera, view_proj, env);
+        // Last frame's occlusion, if there was one.
+        let traced = self.live.traced().filter(|_| occlusion);
         let uniform = FrameUniform {
             view_proj,
             sun_view_proj,
+            occlusion_view_proj: traced.unwrap_or(view_proj),
             camera_pos: camera.position.extend(1.0),
             sun_dir: env
                 .sun_direction
@@ -1746,6 +1853,16 @@ impl Renderer {
                 dust.dust_size.clamp(1.0, 8.0),
                 dust.dust_brightness.max(0.0),
                 dust.dust_speed,
+            ),
+            retro: Vec4::new(
+                if self.retro.vertex_snap {
+                    self.retro.snap_lines.clamp(16, 4096) as f32
+                } else {
+                    0.0
+                },
+                self.retro.affine as u32 as f32,
+                traced.map_or(0.0, |_| env.live_occlusion.clamp(0.0, 1.0)),
+                0.0,
             ),
         };
         self.queue
@@ -1842,35 +1959,62 @@ impl Renderer {
         mark(&mut encoder, &self.timer, 2);
         {
             let sky = env.ambient_sky.as_dvec3();
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("scene"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.targets.color,
+            let attachment = |view, load| {
+                Some(wgpu::RenderPassColorAttachment {
+                    view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: sky.x,
-                            g: sky.y,
-                            b: sky.z,
-                            a: 1.0,
-                        }),
+                        load,
                         store: wgpu::StoreOp::Store,
                     },
                     depth_slice: None,
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                })
+            };
+            let clear_sky = wgpu::LoadOp::Clear(wgpu::Color {
+                r: sky.x,
+                g: sky.y,
+                b: sky.z,
+                a: 1.0,
+            });
+            let clear = wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT);
+            // With reflections on, they are added between this image and
+            // the one post reads.
+            let color = match surfaces {
+                Some(s) if reflections => &s.scene,
+                _ => &self.targets.color,
+            };
+            let mut attachments = vec![attachment(color, clear_sky)];
+            if let Some(s) = surfaces {
+                attachments.push(attachment(&s.normal, clear));
+                attachments.push(attachment(&s.reflectance, clear));
+            }
+            let depth = |load, store| {
+                Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.targets.depth,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Discard,
-                    }),
+                    depth_ops: Some(wgpu::Operations { load, store }),
                     stencil_ops: None,
-                }),
+                })
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("scene"),
+                color_attachments: &attachments,
+                depth_stencil_attachment: depth(
+                    wgpu::LoadOp::Clear(1.0),
+                    if surfaces.is_some() {
+                        wgpu::StoreOp::Store
+                    } else {
+                        wgpu::StoreOp::Discard
+                    },
+                ),
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.scene_pipeline);
+            pass.set_pipeline(if surfaces.is_some() {
+                &self.surfaces_pipeline
+            } else {
+                &self.scene_pipeline
+            });
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.set_bind_group(1, &self.instance_bind_group, &[]);
             let mut calls = 0;
@@ -1894,6 +2038,19 @@ impl Renderer {
             self.drawn = [drawn, self.instances.len()];
             crate::perf::count("DRAWN", drawn);
             crate::perf::count("DRAW CALLS", calls);
+            if surfaces.is_some() {
+                // The sky and dust only have a color: a pass of their own,
+                // beside the surfaces.
+                drop(pass);
+                pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("sky and dust"),
+                    color_attachments: &[attachment(color, wgpu::LoadOp::Load)],
+                    depth_stencil_attachment: depth(wgpu::LoadOp::Load, wgpu::StoreOp::Store),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+            }
             pass.set_pipeline(&self.sky_pipeline);
             pass.set_bind_group(0, &self.frame_bind_group, &[]);
             pass.draw(0..3, 0..1);
@@ -1902,6 +2059,25 @@ impl Renderer {
                 pass.draw(0..6, 0..dust_count);
             }
         }
+        if let Some(surfaces) = surfaces {
+            if occlusion {
+                self.live
+                    .occlude(&self.device, &mut encoder, &self.targets.depth, surfaces);
+            }
+            if reflections {
+                self.live.reflect(
+                    &self.device,
+                    &mut encoder,
+                    &self.targets.depth,
+                    surfaces,
+                    &self.targets.color,
+                    &self.reflection_view,
+                    &self.reflection_buffer,
+                    &self.reflection_sampler,
+                );
+            }
+        }
+        self.live.end();
 
         mark(&mut encoder, &self.timer, 3);
         let x = (self.view_origin[0] + self.layout.origin[0]) as f32;
@@ -1935,6 +2111,27 @@ impl Renderer {
             t.collect(&self.device);
         }
     }
+}
+
+/// Every shown instance's triangles in world space: the ones of objects
+/// that move, or the ones that stay put.
+fn triangles(instances: &[Instance], meshes: &[GpuMesh], moving: bool) -> Vec<[Vec3; 3]> {
+    let mut triangles = Vec::new();
+    for instance in instances.iter().filter(|i| !i.hidden && i.moves == moving) {
+        let mesh = &meshes[instance.mesh];
+        let corner = |i: u32| {
+            instance
+                .data
+                .model
+                .transform_point3(mesh.positions[i as usize])
+        };
+        triangles.extend(
+            mesh.corners
+                .chunks_exact(3)
+                .map(|c| [corner(c[0]), corner(c[1]), corner(c[2])]),
+        );
+    }
+    triangles
 }
 
 /// Group 2 for one material: `[base color, normal, roughness/metal,
@@ -2110,7 +2307,11 @@ fn create_targets(device: &wgpu::Device, layout: ScaleLayout) -> Targets {
     let depth = target(
         "internal depth",
         DEPTH_FORMAT,
-        wgpu::TextureUsages::RENDER_ATTACHMENT,
+        wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
     );
-    Targets { color, depth }
+    Targets {
+        color,
+        depth,
+        surfaces: None,
+    }
 }

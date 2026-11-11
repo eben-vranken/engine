@@ -54,6 +54,7 @@ impl ProjectDoc {
             a.start_scene != b.start_scene,
             a.render_scale != b.render_scale,
             a.dialogue != b.dialogue,
+            a.retro != b.retro,
             self.now.flags != self.saved.flags,
         ]
         .iter()

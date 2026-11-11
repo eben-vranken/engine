@@ -918,6 +918,12 @@ pub struct Environment {
     pub lightmap_density: f32,
     /// Rays per lightmap texel; more = less blotchy, slower bake.
     pub bake_samples: u32,
+    /// Glossy surfaces also reflect what is on screen (moving things, live
+    /// lights), not only their zone's baked reflection.
+    pub screen_reflections: bool,
+    /// How much indirect light is dimmed near other surfaces, traced live
+    /// so moving things shade what they stand on; 0 = off, 1 = fully.
+    pub live_occlusion: f32,
 }
 
 impl Default for Environment {
@@ -936,6 +942,8 @@ impl Default for Environment {
             grade: Grade::default(),
             lightmap_density: 4.0,
             bake_samples: 256,
+            screen_reflections: false,
+            live_occlusion: 0.0,
         }
     }
 }
