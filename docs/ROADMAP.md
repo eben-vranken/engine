@@ -351,16 +351,16 @@ The game as something to hand to players: one executable.
 ## 14. Saves keep the world
 A saved game brings back the world as it was left, not only flags and doors.
 
-- [ ] Physics bodies are where they were (a pushed crate stays pushed), after a load and after leaving a scene and coming back
-- [ ] Objects moved by a script are where they were, and a script remembers its `this` (on objects and for abilities); `start` doesn't run again
-- [ ] Older saves still load
+- [x] Physics bodies are where they were (a pushed crate stays pushed), after a load and after leaving a scene and coming back
+- [x] Objects moved by a script are where they were, and a script remembers its `this` (on objects and for abilities); `start` doesn't run again
+- [x] Older saves still load
 
 **Acceptance:** the user pushes the crates around, saves at the save stone, quits, starts again, and finds the crates where they left them and the double jump still working.
 
 ## 15. The game's keys are data
-- [ ] `player.ron` `keys`: forward, back, left, right, jump, sprint, crouch, use, clap, map; several keys per action
-- [ ] Edited under KEYS in the player feel rows (F1 while playing, Player Start, PROJECT ▸ PLAYER FEEL), with names that aren't keys pointed out
-- [ ] Use prompts and dialogue hints show the bound key; scripts ask for keys by action (`player.pressed("jump")`)
+- [x] `player.ron` `keys`: forward, back, left, right, jump, sprint, crouch, use, clap, map; several keys per action
+- [x] Edited under KEYS in the player feel rows (F1 while playing, Player Start, PROJECT ▸ PLAYER FEEL), with names that aren't keys pointed out
+- [x] Use prompts and dialogue hints show the bound key; scripts ask for keys by action (`player.pressed("jump")`)
 
 **Acceptance:** the user changes jump and use to other keys in the feel panel while playing, both work at once, the prompts show the new key, the double jump follows, and the keys are still set after a restart.
 
