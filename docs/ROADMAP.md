@@ -317,34 +317,34 @@ The editor reorganised for ease of use; same look, same features (design: the "E
 **Acceptance:** after baking once, the user tests every feature in one scene without duplicates.
 
 ## 11.10 Scene graphs only, and scripts
-- [ ] No game-wide flow graph: each scene's own graph holds its logic; only the loaded scene's graph (and what it started) stays in memory. Flags stay global
-- [ ] LOGIC opens the open scene's graph first
-- [ ] Scripts (Rhai) in the project's `scripts/`: `start()` once and `update(player, dt)` every frame while on; player state, velocity, jump, keys, flags; reload on save; errors shown, never crash
-- [ ] ABILITY node turns a script on or off; abilities that are on are saved with the game (since the overhaul: an ability is a flag with a bound script, and the node sets that flag)
-- [ ] The controller's built-in double jump is gone; the sandbox's is `scripts/double_jump.rhai`, turned on by the feather
-- [ ] Script behavior: any object runs a script (`start(object)`, `update(object, dt)`): position, rotation, scale, visible; `player()` from any script. The sandbox's watcher turns to face the player
-- [ ] Script tabs in LOGIC: + SCRIPT / NEW SCRIPT from a template, colored code with line numbers, live syntax check with the line, formatting on save (Ctrl+S) or FORMAT, what uses the script and a reference of what it can call
-- [ ] LOGIC's left panel: graphs, scripts and flags stacked, no longer drawn over each other
+- [x] No game-wide flow graph: each scene's own graph holds its logic; only the loaded scene's graph (and what it started) stays in memory. Flags stay global
+- [x] LOGIC opens the open scene's graph first
+- [x] Scripts (Rhai) in the project's `scripts/`: `start()` once and `update(player, dt)` every frame while on; player state, velocity, jump, keys, flags; reload on save; errors shown, never crash
+- [x] ABILITY node turns a script on or off; abilities that are on are saved with the game (since the overhaul: an ability is a flag with a bound script, and the node sets that flag)
+- [x] The controller's built-in double jump is gone; the sandbox's is `scripts/double_jump.rhai`, turned on by the feather
+- [x] Script behavior: any object runs a script (`start(object)`, `update(object, dt)`): position, rotation, scale, visible; `player()` from any script. The sandbox's watcher turns to face the player
+- [x] Script tabs in LOGIC: + SCRIPT / NEW SCRIPT from a template, colored code with line numbers, live syntax check with the line, formatting on save (Ctrl+S) or FORMAT, what uses the script and a reference of what it can call
+- [x] LOGIC's left panel: graphs, scripts and flags stacked, no longer drawn over each other
 
 **Acceptance:** the user plays the test level, can't double jump until picking up the feather, then can (and still can after a save and load); changes the script while playing and feels the change; and the gate story still works from the scene graph alone. They make a script of their own in the editor, saving formats it, they put it on an object and watch it run.
 
 ## 12. Stairs primitive
 A small step after the core milestones: stairs as an editor primitive, shaped from the inspector.
 
-- [ ] `Stairs` in the Add menu and the inspector's TYPE picker
-- [ ] Inspector fields to shape the flight: width, total height, number of steps, step depth (step height follows from height ÷ steps)
-- [ ] Curve: a turn angle over the whole flight (0° straight, 90° quarter turn, 360°+ spiral) and an inner radius (0 = around a central post)
-- [ ] Collision per step, so the player's step climbing works on every shape
+- [x] `Stairs` in the Add menu and the inspector's TYPE picker
+- [x] Inspector fields to shape the flight: width, total height, number of steps, step depth (step height follows from height ÷ steps)
+- [x] Curve: a turn angle over the whole flight (0° straight, 90° quarter turn, 360°+ spiral) and an inner radius (0 = around a central post)
+- [x] Collision per step, so the player's step climbing works on every shape
 
 **Acceptance:** the user builds a straight flight, a curved flight and a spiral staircase from one primitive, and walks up each.
 
 ## 13. Export game
 The game as something to hand to players: one executable.
 
-- [ ] FILE ▸ EXPORT GAME (also on the PROJECT page and as `--export <file>`) writes the game as an executable: the engine with the project inside it
-- [ ] The executable starts the game as a player gets it (the game's name as the title, the start scene or the saved game, no editor or test tools), with nothing else next to it on Windows
-- [ ] A newer export of the same game keeps the player's saved game
-- [ ] A game that can't start says why in a message box
+- [x] FILE ▸ EXPORT GAME (also on the PROJECT page and as `--export <file>`) writes the game as an executable: the engine with the project inside it
+- [x] The executable starts the game as a player gets it (the game's name as the title, the start scene or the saved game, no editor or test tools), with nothing else next to it on Windows
+- [x] A newer export of the same game keeps the player's saved game
+- [x] A game that can't start says why in a message box
 
 **Acceptance:** the user exports their game from a release build of the editor, copies the one file to another Windows PC without Rust or the engine, double-clicks it and plays; after exporting again with a change, the change is there and the save still loads.
 
