@@ -7,7 +7,9 @@
 // 3. AgX tone mapping
 // 4. color grading through a 3D LUT, blending between the previous and
 //    the current zone's grade
-// 5. film grain, one value per internal pixel, new every frame
+// 5. optional retro dithering: few color levels per channel, with an
+//    ordered pattern per internal pixel hiding the steps
+// 6. film grain, one value per internal pixel, new every frame
 
 struct Params {
     // Top-left of the upscaled image in output pixels (letterbox offset).
@@ -26,7 +28,9 @@ struct Params {
     frame: u32,
     // 1 / bloom levels: the chain adds every level up.
     bloom_scale: f32,
-    _pad: vec2<u32>,
+    // Retro: color levels per channel, dithered (0 = off).
+    dither: u32,
+    _pad: u32,
 };
 
 @group(0) @binding(0) var scene: texture_2d<f32>;
@@ -62,6 +66,17 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let graded_from = textureSampleLevel(lut_from, linear_sampler, lut_uv, 0.0).rgb;
     let graded_to = textureSampleLevel(lut_to, linear_sampler, lut_uv, 0.0).rgb;
     color = mix(graded_from, graded_to, params.lut_mix);
+
+    if params.dither > 1u {
+        // A 4×4 Bayer pattern: each pixel rounds up or down at its own
+        // threshold, so an area averages to the color in between.
+        let p = vec2<u32>(texel);
+        let xy = p.x ^ p.y;
+        let order = ((xy & 1u) << 3u) | ((p.y & 1u) << 2u) | (xy & 2u) | ((p.y & 2u) >> 1u);
+        let threshold = (f32(order) + 0.5) / 16.0;
+        let steps = f32(params.dither) - 1.0;
+        color = clamp(floor(color * steps + threshold) / steps, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
 
     // Grain: strongest in the mid tones, like film.
     let noise = hash(vec3<u32>(vec2<u32>(texel), params.frame)) - 0.5;

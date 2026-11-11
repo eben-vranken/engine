@@ -19,6 +19,45 @@ pub struct GameSettings {
     /// How dialogue looks.
     #[serde(default, skip_serializing_if = "DialogueStyle::is_default")]
     pub dialogue: DialogueStyle,
+    /// Old-console looks, all off unless the game turns them on.
+    #[serde(default, skip_serializing_if = "Retro::is_default")]
+    pub retro: Retro,
+}
+
+/// Optional looks of early 3D consoles, per game.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, bevy_reflect::Reflect)]
+#[serde(default)]
+pub struct Retro {
+    /// Vertices land on a coarse screen grid, so edges wobble as things
+    /// move.
+    pub vertex_snap: bool,
+    /// Lines (down the screen) of that grid; fewer = more wobble.
+    pub snap_lines: u32,
+    /// Textures are drawn without perspective correction, so they warp
+    /// on big surfaces seen at an angle.
+    pub affine: bool,
+    /// Few color levels per channel, with a dither pattern in between.
+    pub dither: bool,
+    /// Color levels per channel when dithering (32 = 15-bit color).
+    pub dither_levels: u32,
+}
+
+impl Default for Retro {
+    fn default() -> Self {
+        Self {
+            vertex_snap: false,
+            snap_lines: 240,
+            affine: false,
+            dither: false,
+            dither_levels: 32,
+        }
+    }
+}
+
+impl Retro {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl GameSettings {
@@ -103,6 +142,7 @@ pub fn create(dir: &Path) -> Result<GameSettings, ProjectError> {
         start_scene: PathBuf::from("scenes/main.ron"),
         render_scale: None,
         dialogue: DialogueStyle::default(),
+        retro: Retro::default(),
     };
     Scene::starter().save(&dir.join(&settings.start_scene))?;
     settings.save(dir)?;
@@ -218,6 +258,7 @@ mod tests {
         assert_eq!(settings.render_scale, None);
         let text = std::fs::read_to_string(dir.join("game.ron")).unwrap();
         assert!(!text.contains("render_scale"), "auto isn't written");
+        settings.retro.affine = true;
         settings.render_scale = Some(5);
         settings.name = "Renamed".into();
         settings.save(&dir).unwrap();

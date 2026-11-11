@@ -5,6 +5,8 @@ struct Frame {
     view_proj: mat4x4<f32>,
     // World → each of the sun's shadow cascades.
     sun_view_proj: array<mat4x4<f32>, 3>,
+    // World → the screen the live occlusion was traced for (last frame's).
+    occlusion_view_proj: mat4x4<f32>,
     camera_pos: vec4<f32>,
     // xyz: direction the sunlight travels. w: 1 = the sun casts shadows.
     sun_dir: vec4<f32>,
@@ -22,6 +24,9 @@ struct Frame {
     screen: vec4<f32>,
     // Dust motes in the camera's zone: amount, size (px), brightness, speed.
     dust: vec4<f32>,
+    // x: lines of the grid vertices snap to (0 = off). y: 1 = textures
+    // warp (no perspective correction). z: live occlusion strength (0 = off).
+    retro: vec4<f32>,
 };
 
 // One placed draw. Instanced draws read theirs through `visible`, the
@@ -80,6 +85,9 @@ const HIGHLIGHT: vec3<f32> = vec3<f32>(1.0, 0.34, 0.025);
 @group(0) @binding(8) var reflections: texture_cube_array<f32>;
 @group(0) @binding(9) var<storage, read> reflection_boxes: array<Reflection>;
 @group(0) @binding(10) var reflection_sampler: sampler;
+// How open each point on screen was last frame (r), traced live: see
+// `occlusion.wgsl`.
+@group(0) @binding(11) var live_occlusion: texture_2d<f32>;
 @group(1) @binding(0) var<storage, read> instances: array<Instance>;
 @group(1) @binding(1) var<storage, read> visible: array<u32>;
 // The grid for primitives; a model part's base color texture.
@@ -104,6 +112,8 @@ struct VertexOut {
     @location(3) lightmap_uv: vec2<f32>,
     @location(4) color: vec3<f32>,
     @location(5) @interpolate(flat) instance: u32,
+    // The UV without perspective correction, for the retro texture warp.
+    @location(6) @interpolate(linear) flat_uv: vec2<f32>,
 };
 
 @vertex
@@ -120,9 +130,17 @@ fn vs_main(
     let world = object.model * vec4<f32>(position, 1.0);
     var out: VertexOut;
     out.clip = frame.view_proj * world;
+    if frame.retro.x > 0.0 && out.clip.w > 0.0 {
+        // Retro: vertices land on a coarse screen grid, so edges wobble as
+        // things move.
+        let grid = vec2<f32>(frame.retro.x * frame.screen.y / frame.screen.x, frame.retro.x) * 0.5;
+        let snapped = round(out.clip.xy / out.clip.w * grid) / grid;
+        out.clip = vec4<f32>(snapped * out.clip.w, out.clip.zw);
+    }
     out.world = world.xyz;
     out.normal = (object.normal_matrix * vec4<f32>(normal, 0.0)).xyz;
     out.uv = uv;
+    out.flat_uv = uv;
     out.lightmap_uv = lightmap_uv * object.lightmap_rect.xy + object.lightmap_rect.zw;
     out.instance = index;
     out.color = color.rgb;
@@ -332,15 +350,52 @@ fn reflectance(f0: vec3<f32>, roughness: f32, ndv: f32) -> vec3<f32> {
     return f0 * ab.x + ab.y;
 }
 
-@fragment
-fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+// How open a point is to its surroundings, 0–1: last frame's traced
+// occlusion, looked up where the point was on screen then and softened
+// over the cells around it.
+fn openness(world: vec3<f32>) -> f32 {
+    let strength = frame.retro.z;
+    if strength <= 0.0 {
+        return 1.0;
+    }
+    let clip = frame.occlusion_view_proj * vec4<f32>(world, 1.0);
+    if clip.w <= 0.0 {
+        return 1.0;
+    }
+    let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + 0.5;
+    if any(uv < vec2<f32>(0.0)) || any(uv > vec2<f32>(1.0)) {
+        return 1.0;
+    }
+    let cell = 0.75 / vec2<f32>(textureDimensions(live_occlusion));
+    var open = 0.0;
+    for (var i = 0; i < 4; i++) {
+        let offset = vec2<f32>(f32(i & 1), f32(i >> 1u)) * 2.0 - 1.0;
+        open += textureSampleLevel(live_occlusion, fog_sampler, uv + offset * cell, 0.0).r;
+    }
+    return mix(1.0, open * 0.25, strength);
+}
+
+// A shaded pixel, and what the live effects need to know about its
+// surface.
+struct Shaded {
+    color: vec3<f32>,
+    normal: vec3<f32>,
+    roughness: f32,
+    // How much of what it reflects reaches the camera.
+    reflectance: vec3<f32>,
+    // Reflection cube index + 1, plus 32 if lit from its lightmap.
+    code: f32,
+};
+
+fn shade(in: VertexOut) -> Shaded {
     let object = instances[in.instance];
     let geometric = normalize(in.normal);
-    let uv = in.uv * object.highlight.y;
+    let uv = select(in.uv, in.flat_uv, frame.retro.y > 0.5) * object.highlight.y;
     let albedo = textureSample(albedo_texture, albedo_sampler, uv).rgb * object.color.rgb * in.color;
     let n = mapped_normal(geometric, in.world, uv, textureSample(normal_texture, albedo_sampler, uv).rgb);
     let metal_rough = textureSample(metal_rough_texture, albedo_sampler, uv);
-    let occlusion = textureSample(occlusion_texture, albedo_sampler, uv).r;
+    // Indirect light is dimmed by the texture's occlusion and the live one.
+    let occlusion = textureSample(occlusion_texture, albedo_sampler, uv).r * openness(in.world);
     let roughness = object.surface.x * metal_rough.g;
     let metalness = object.surface.y * metal_rough.b;
     let to_camera = normalize(frame.camera_pos.xyz - in.world);
@@ -369,24 +424,60 @@ fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
     let lamps = point_lights(in.world, s);
     diffuse += lamps.diffuse;
     specular += lamps.specular;
+    var reflecting = vec3<f32>(0.0);
     if s.glossy {
         let ndv = max(dot(n, to_camera), 1e-4);
         let r = reflect(-to_camera, n);
-        specular += reflected(in.world, r, roughness, object.surface.z) * reflectance(s.f0, roughness, ndv) * occlusion;
+        reflecting = reflectance(s.f0, roughness, ndv) * occlusion;
+        specular += reflected(in.world, r, roughness, object.surface.z) * reflecting;
     }
     var color = albedo * (1.0 - metalness) * diffuse + specular + object.emissive.rgb;
 
     // Selected: amber tint, stronger toward the silhouette.
     let rim = pow(1.0 - max(dot(geometric, to_camera), 0.0), 2.0);
-    color = mix(color, HIGHLIGHT * 1.5, object.highlight.x * (0.3 + 0.6 * rim));
+    let tint = object.highlight.x * (0.3 + 0.6 * rim);
+    color = mix(color, HIGHLIGHT * 1.5, tint);
 
-    return vec4<f32>(fog(color, in.clip.xy, in.world), 1.0);
+    let f = fog_at(in.clip.xy, in.world);
+    var out: Shaded;
+    out.color = color * f.a + f.rgb;
+    out.normal = n;
+    out.roughness = roughness;
+    out.reflectance = reflecting * (1.0 - tint) * f.a;
+    out.code = object.surface.z + 1.0 + 32.0 * object.lighting.x;
+    return out;
 }
 
-// The scene color at a pixel seen through the fog in front of it.
-fn fog(color: vec3<f32>, pixel: vec2<f32>, world: vec3<f32>) -> vec3<f32> {
+@fragment
+fn fs_main(in: VertexOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(shade(in).color, 1.0);
+}
+
+// The same pixel with its surface written beside it, for the live effects
+// (screen-space reflections, traced occlusion).
+struct Surfaces {
+    @location(0) color: vec4<f32>,
+    // xyz: world normal, a: roughness.
+    @location(1) normal: vec4<f32>,
+    // rgb: reflectance, a: `Shaded.code`.
+    @location(2) reflectance: vec4<f32>,
+};
+
+@fragment
+fn fs_surfaces(in: VertexOut) -> Surfaces {
+    let shaded = shade(in);
+    var out: Surfaces;
+    out.color = vec4<f32>(shaded.color, 1.0);
+    out.normal = vec4<f32>(shaded.normal, shaded.roughness);
+    out.reflectance = vec4<f32>(shaded.reflectance, shaded.code);
+    return out;
+}
+
+// The fog between the camera and a point: rgb = its light, a = how much of
+// what's behind shows through.
+fn fog_at(pixel: vec2<f32>, world: vec3<f32>) -> vec4<f32> {
     if frame.camera_forward.w == 0.0 {
-        return color;
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     let uv = pixel * frame.screen.xy;
     let depth = max(dot(world - frame.camera_pos.xyz, frame.camera_forward.xyz), frame.screen.z);
@@ -394,8 +485,7 @@ fn fog(color: vec3<f32>, pixel: vec2<f32>, world: vec3<f32>) -> vec3<f32> {
     // Slice k holds the fog up to the far end of slice k.
     let t = log(depth / frame.screen.z) / log(frame.screen.w / frame.screen.z);
     let w = t - 0.5 / slices;
-    let f = textureSampleLevel(fog_volume, fog_sampler, vec3<f32>(uv, w), 0.0);
-    return color * f.a + f.rgb;
+    return textureSampleLevel(fog_volume, fog_sampler, vec3<f32>(uv, w), 0.0);
 }
 
 // A fullscreen triangle on the far plane.

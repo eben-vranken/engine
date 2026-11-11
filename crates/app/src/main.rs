@@ -204,6 +204,7 @@ fn run(embedded: Option<PathBuf>) -> anyhow::Result<()> {
         editor,
         quality: args.quality,
         render_scale: project.settings.render_scale,
+        retro: project.settings.retro,
         perf_log: args.perf_log,
         // A bench always starts from the beginning.
         new_game: args.new_game || bench.is_some(),

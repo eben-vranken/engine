@@ -29,6 +29,12 @@ pub struct Settings {
     /// The automatic render scale keeps the internal height at or under
     /// this many lines.
     pub max_lines: u32,
+    /// Cells across and down of the live occlusion (see `live`).
+    pub occlusion_grid: [u32; 2],
+    /// Occlusion rays per cell per frame.
+    pub occlusion_rays: u32,
+    /// Most steps a screen-space reflection ray takes across the screen.
+    pub reflection_steps: u32,
 }
 
 impl Quality {
@@ -41,6 +47,9 @@ impl Quality {
                 fog_grid: [192, 108, 96],
                 fog_samples: 4,
                 max_lines: 720,
+                occlusion_grid: [640, 360],
+                occlusion_rays: 2,
+                reflection_steps: 64,
             },
             Quality::Low => Settings {
                 sun_shadow: 1024,
@@ -51,6 +60,9 @@ impl Quality {
                 // Measured on integrated graphics: the scene itself is
                 // cheap, so LOW keeps the resolution and saves on fog.
                 max_lines: 720,
+                occlusion_grid: [480, 270],
+                occlusion_rays: 1,
+                reflection_steps: 32,
             },
         }
     }
@@ -86,6 +98,7 @@ mod tests {
         assert!(l.shadowed_lights <= h.shadowed_lights);
         assert!(l.fog_grid.iter().product::<u32>() < h.fog_grid.iter().product::<u32>());
         assert!(l.max_lines <= h.max_lines);
+        assert!(l.occlusion_rays < h.occlusion_rays && l.reflection_steps < h.reflection_steps);
         assert_eq!("LOW".parse::<Quality>(), Ok(Quality::Low));
         assert!("ultra".parse::<Quality>().is_err());
     }

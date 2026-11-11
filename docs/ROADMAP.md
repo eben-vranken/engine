@@ -364,6 +364,15 @@ A saved game brings back the world as it was left, not only flags and doors.
 
 **Acceptance:** the user changes jump and use to other keys in the feel panel while playing, both work at once, the prompts show the new key, the double jump follows, and the keys are still set after a restart.
 
+## 16. Retro looks and live effects
+What the brief's rendering section still listed: the retro toggles, screen-space reflections and a live ray-traced effect. All off by default.
+
+- [ ] Retro looks per game (PROJECT ▸ RENDERING, `game.ron`): vertex snapping, affine texture warping, dithering; shown live
+- [ ] Screen-space reflections (`screen_reflections` in a scene's ENVIRONMENT): glossy surfaces reflect what is on screen, moving things and live lights included; the baked cube where the screen has nothing
+- [ ] Live traced occlusion (`live_occlusion` in ENVIRONMENT): compute-shader rays through a BVH of the scene on a coarse grid, accumulated over frames; moving things shade the floor and walls around them, unbaked scenes get occlusion everywhere
+
+**Acceptance:** the user turns each retro look on and off in PROJECT ▸ RENDERING and sees it at once; in a scene with a polished floor, a pushed crate and a flickering lantern show in the floor with SCREEN REFLECTIONS on; with LIVE OCCLUSION at 1 the crate darkens the floor it stands on and the dark follows it when pushed; with everything off, scenes look and run as before; the frame rate on the laptop (Iris Xe) is acceptable with both on.
+
 ## Later (optional)
 Not scheduled; picked up only if a game needs it.
 

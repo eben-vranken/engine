@@ -69,6 +69,8 @@ pub struct RunConfig {
     pub quality: crate::render::quality::Quality,
     /// The render scale to start at (`game.ron`); `None` = automatic.
     pub render_scale: Option<u32>,
+    /// The game's retro looks (`game.ron`).
+    pub retro: crate::project::Retro,
     /// Log FPS and GPU times every couple of seconds (for measuring on
     /// machines you can't watch).
     pub perf_log: bool,
@@ -402,6 +404,7 @@ impl Running {
         );
         let mut renderer = Renderer::new(window.clone(), config.quality)?;
         renderer.set_render_scale(config.render_scale);
+        renderer.set_retro(config.retro);
         log::info!("present mode: {:?}", renderer.present_mode());
         let mut assets = Assets::new(config.game_dir.clone());
         renderer.set_scene(&config.scene, &mut assets);
@@ -1169,6 +1172,9 @@ impl Running {
             }
             if let Some(scale) = output.render_scale {
                 self.renderer.set_render_scale(scale);
+            }
+            if let Some(retro) = output.retro {
+                self.renderer.set_retro(retro);
             }
             if let Some(name) = &output.rename {
                 self.window
