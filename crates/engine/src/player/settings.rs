@@ -17,6 +17,85 @@ pub struct PlayerSettings {
     pub body: Body,
     pub camera: CameraFeel,
     pub footsteps: Footsteps,
+    pub keys: Keys,
+}
+
+/// The game's keys. Each is one or more key names separated by spaces, any
+/// of which does the job (`"ctrl c"`): a letter or digit, `space`, `shift`,
+/// `ctrl`, `alt`, `tab`, `enter`, `up`, `down`, `left`, `right`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Keys {
+    pub forward: String,
+    pub back: String,
+    pub left: String,
+    pub right: String,
+    pub jump: String,
+    pub sprint: String,
+    pub crouch: String,
+    /// Use, talk, take, save; also goes on in a dialogue.
+    pub interact: String,
+    pub clap: String,
+    pub map: String,
+}
+
+impl Default for Keys {
+    fn default() -> Self {
+        Self {
+            forward: "w".into(),
+            back: "s".into(),
+            left: "a".into(),
+            right: "d".into(),
+            jump: "space".into(),
+            sprint: "shift".into(),
+            crouch: "ctrl c".into(),
+            interact: "e".into(),
+            clap: "q".into(),
+            map: "m".into(),
+        }
+    }
+}
+
+impl Keys {
+    /// Every key with the name scripts ask for it by
+    /// (`player.pressed("jump")`). Moving left and right are `strafe_left`
+    /// and `strafe_right` there: `left` and `right` are the arrow keys.
+    pub fn actions(&self) -> [(&'static str, &str); 10] {
+        [
+            ("forward", &self.forward),
+            ("back", &self.back),
+            ("strafe_left", &self.left),
+            ("strafe_right", &self.right),
+            ("jump", &self.jump),
+            ("sprint", &self.sprint),
+            ("crouch", &self.crouch),
+            ("use", &self.interact),
+            ("clap", &self.clap),
+            ("map", &self.map),
+        ]
+    }
+
+    /// The binding of the action scripts call `name`.
+    pub fn action(&self, name: &str) -> Option<&str> {
+        let actions = self.actions();
+        actions.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
+    }
+
+    /// What is wrong with the bindings: names that aren't keys, and actions
+    /// without a key.
+    pub fn problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        for (action, binding) in self.actions() {
+            for name in crate::input::unknown_keys(binding) {
+                problems.push(format!("{action}: no key named \"{name}\""));
+            }
+            let keys = binding.split_whitespace();
+            if keys.filter_map(crate::input::key_named).next().is_none() {
+                problems.push(format!("{action} has no key"));
+            }
+        }
+        problems
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
@@ -248,10 +327,14 @@ impl PlayerSettings {
             path: path.to_owned(),
             source,
         })?;
-        ron::from_str(&text).map_err(|source| SettingsError::Parse {
+        let settings: Self = ron::from_str(&text).map_err(|source| SettingsError::Parse {
             path: path.to_owned(),
             source: Box::new(source),
-        })
+        })?;
+        for problem in settings.keys.problems() {
+            log::warn!("{}: keys: {problem}", path.display());
+        }
+        Ok(settings)
     }
 
     pub fn save(&self, path: &Path) -> Result<(), SettingsError> {
@@ -332,6 +415,20 @@ mod tests {
         assert_eq!(settings.jump.height, 2.0);
         assert_eq!(settings.jump.time_to_apex, Jump::default().time_to_apex);
         assert_eq!(settings.movement, Movement::default());
+    }
+
+    #[test]
+    fn keys_default_and_report_problems() {
+        let settings: PlayerSettings =
+            ron::from_str("(keys: (jump: \"j spacebar\", map: \"\"))").unwrap();
+        assert_eq!(settings.keys.forward, "w");
+        assert_eq!(settings.keys.action("jump"), Some("j spacebar"));
+        assert_eq!(settings.keys.action("left"), None);
+        assert_eq!(
+            settings.keys.problems(),
+            ["jump: no key named \"spacebar\"", "map has no key"]
+        );
+        assert!(Keys::default().problems().is_empty());
     }
 
     #[test]

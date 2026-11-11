@@ -119,6 +119,27 @@ pub fn sections(ui: &mut Ui, s: &mut PlayerSettings) {
         row(ui, "FOV KICK TIME", &mut c.fov_kick_time, 0.01..=2.0, "S");
         row(ui, "STEP SMOOTHING", &mut c.step_smoothing, 0.0..=0.5, "S");
     });
+    section(ui, "KEYS", |ui| {
+        let k = &mut s.keys;
+        key(ui, "FORWARD", &mut k.forward);
+        key(ui, "BACK", &mut k.back);
+        key(ui, "LEFT", &mut k.left);
+        key(ui, "RIGHT", &mut k.right);
+        key(ui, "JUMP", &mut k.jump);
+        key(ui, "SPRINT", &mut k.sprint);
+        key(ui, "CROUCH", &mut k.crouch);
+        key(ui, "USE", &mut k.interact);
+        key(ui, "CLAP", &mut k.clap);
+        key(ui, "MAP", &mut k.map);
+    });
+    ui.label(
+        RichText::new("KEY NAMES, SEVERAL WITH SPACES BETWEEN: A LETTER OR DIGIT, SPACE, SHIFT, CTRL, ALT, TAB, ENTER, UP, DOWN, LEFT, RIGHT")
+            .color(theme::AMBER_DIM)
+            .small(),
+    );
+    for problem in s.keys.problems() {
+        ui.label(RichText::new(problem.to_uppercase()).color(theme::ALERT));
+    }
 }
 
 fn section(ui: &mut Ui, title: &str, add_rows: impl FnOnce(&mut Ui)) {
@@ -147,6 +168,13 @@ fn row(ui: &mut Ui, label: &str, value: &mut f32, range: RangeInclusive<f32>, un
             .max_decimals(3)
             .suffix(suffix),
     );
+    ui.end_row();
+}
+
+/// A key binding, typed as key names.
+fn key(ui: &mut Ui, label: &str, binding: &mut String) {
+    ui.label(RichText::new(label).color(theme::AMBER_DIM));
+    ui.add(egui::TextEdit::singleline(binding).desired_width(110.0));
     ui.end_row();
 }
 

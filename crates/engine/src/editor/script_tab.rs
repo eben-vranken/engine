@@ -308,8 +308,10 @@ impl Editor {
                 }
             });
         ui.add_space(6.0);
-        ui.label(dim("KEYS: LETTERS, DIGITS, SPACE, SHIFT, CTRL, ALT,"));
-        ui.label(dim("TAB, ENTER, UP, DOWN, LEFT, RIGHT."));
+        ui.label(dim("KEYS, AS THE GAME BINDS THEM: FORWARD, BACK,"));
+        ui.label(dim("STRAFE_LEFT, STRAFE_RIGHT, JUMP, SPRINT, CROUCH, USE,"));
+        ui.label(dim("CLAP, MAP. OR A KEY ITSELF: LETTERS, DIGITS, SPACE,"));
+        ui.label(dim("SHIFT, CTRL, ALT, TAB, ENTER, UP, DOWN, LEFT, RIGHT."));
     }
 }
 

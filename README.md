@@ -93,7 +93,7 @@ Themed as a sparse amber-on-black terminal, in three workspaces chosen in the to
 - **BUILD:** scenes in tabs, each with its own undo history, selection, camera and unsaved state; right-click a tab to rename its scene (its graph, bakes, the start scene and LOAD SCENE / WHEN IN SCENE nodes follow). The outliner groups objects by zone with a type tag each, `!` on objects with a problem, filter chips, search (`candle > flame` finds parts) and a right-click menu (rename, duplicate, copy, paste, frame, move to zone, show in LOGIC, delete); right-click ENVIRONMENT to copy it and paste it into another scene's; the assets drawer lists models (drag them in), textures and sounds. ADD (A, or + ADD) is one searchable dialog for shapes, models, behaviors and zones. The viewport has floating move/rotate/scale tools with LOCAL / WORLD axes, a SHOW menu (zone volumes, triggers, probes) and the bakes' state; drag over it to box-select. The inspector shows collapsible cards generated from the behaviors via `bevy_reflect` (their `///` comments are the tooltips), an IN LOGIC card (the graphs that mention the object) and ADD BEHAVIOR. Multi-select edits apply to every selected object as one undo step. PROBLEMS (status bar) lists every broken link in the project.
 - **LOGIC:** its own tabs (the scene in BUILD stays as it is): scripts in a code editor (see Scripts), and gameplay graphs grouped by owner: one per scene (`graphs/scenes/<scene>.ron`: loaded and run only while the scene is, and carries on where it was when the player returns; flags are global, so one scene's graph can change what another's sees), one per character (their dialogue), and others started by RUN GRAPH. Each graph shows its owner, what uses it and references that point at nothing. Nodes: events (in a zone or trigger, used, picked up, a script's signal, another graph ended), waits, branches on flags, actions (doors, show/hide, sounds, load scene, save, turn an ability on or off) and dialogue (lines with an optional sound, replies with conditions, renaming characters). The CONVERSATION view reads a dialogue as a script with a live preview and TEST CONVERSATION. Flags (`flags.ron`) are edited beside the graphs; a yes/no flag can have a script bound to it, which makes it an ability. A graph runs once at a time: starting one that runs already (RUN GRAPH, talking) waits for that one.
 - **PLAY** (F5, PLAY FROM HERE at the editor camera, or CONTINUE SAVE) runs the scene in place under a tinted bar with PAUSE (F6), STEP (F7), SPEED ¼–2× and FREE CAMERA (F2); STOP restores it, and asks whether to keep player feel changed while playing. The test drawer (F3; F1 opens its FEEL tab) shows the running graphs (OPEN AT NODE jumps to one in LOGIC) and an events log, flips flags, holds the audio switches, the player feel, the map and frame stats.
-- **Game systems:** characters to talk to, pickups, save points (one save per project), objects visible when a flag condition holds (gates), abilities (yes/no flags with a Rhai script from `scripts/` bound to them), and a map of visited zones (M).
+- **Game systems:** characters to talk to, pickups, save points (one save per project: the player, flags, running graphs, objects shown or hidden, doors, where physics bodies and scripted objects are, and what scripts remember in `this`), objects visible when a flag condition holds (gates), abilities (yes/no flags with a Rhai script from `scripts/` bound to them), and a map of visited zones (M).
 - **Stairs:** ADD ▸ STAIRS, or TYPE ▸ STAIRS on any primitive: width, total height, steps (the step height is shown), step depth, a turn over the whole flight (0° straight, 90° a quarter turn, 360° and more a spiral) and an inner radius (0 winds around a central post). A flight is solid to the floor (past a full turn its upper steps are slabs you can walk under) and collides step by step, so the player's step climbing works on every shape; a full spiral is entered from its outside, beside the last step.
 - **Bakes:** BAKE LIGHTING and BAKE ACOUSTICS per scene. **Packages:** a whole project in one `.gamepack` file to hand to someone else. **Export game:** FILE ▸ EXPORT GAME writes the game as one executable for players.
 - **Models** are made in Blender (or any glTF exporter) and dragged in; re-exporting over the file updates every scene using it. A glTF's named nodes become **parts** (a candle's stick, wax and flame), which a scene can give their own glow, collision and light.
@@ -124,6 +124,8 @@ Other flags: `--player` to play as a player gets the game (no debug tools; the e
 |---|---|
 | Playing | WASD move, Space jump, Shift sprint, Ctrl/C crouch, E use / talk / take, M map, Q clap, R respawn, F1 player feel, F2 free camera, F3 test drawer, F6 pause, F7 step, Esc free the mouse |
 | Dialogue | W/S or arrows choose, 1–9 pick, E / Space / Enter continue |
+
+The game's own keys (move, jump, sprint, crouch, use, clap, map) are the defaults of `player.ron`'s `keys`: each is one or more key names separated by spaces (`crouch: "ctrl c"`), edited under KEYS in the player feel panel. Prompts and dialogue hints show the bound key, and scripts ask for a key by what it does (`player.pressed("jump")`). The debug and editor keys are fixed.
 | Anywhere | `[` `]` render scale, 0 auto scale, V vsync |
 | Editor | Ctrl+K search or run anything, ? every key, click select, Shift+click add, drag box select, W/E/R move/rotate/scale, Ctrl snap, A add, F frame, F2 rename, right mouse + WASD fly, Ctrl+C/V copy/paste, Ctrl+D duplicate, Del delete, Ctrl+Z/Y undo/redo, Ctrl+S save, Ctrl+Shift+S save all, F5 play/stop, Tab/Shift+Tab panels, Space add a node (LOGIC) |
 
@@ -131,7 +133,7 @@ Other flags: `--player` to play as a player gets the game (no debug tools; the e
 
 ```
 game.ron      name, start scene, render scale
-player.ron    movement, camera and footstep feel
+player.ron    movement, camera and footstep feel, and the game's keys
 flags.ron     the game's flags and their starting values
 graphs/       gameplay graphs: scenes/<scene>.ron per scene, dialogue
 scripts/      Rhai scripts: abilities the graphs turn on
@@ -158,7 +160,7 @@ fn start() { this.used = 0; }            // once, when turned on; `this` is the 
 
 fn update(player, dt) {                  // every frame while on
     if player.grounded { this.used = 0; }
-    if player.pressed("space") && !player.grounded && !player.jumped && this.used < 1 {
+    if player.pressed("jump") && !player.grounded && !player.jumped && this.used < 1 {
         player.jump();
         this.used += 1;
     }
@@ -170,7 +172,7 @@ fn update(player, dt) {                  // every frame while on
 | `player.grounded`, `.jumped`, `.crouching`, `.sprinting` | the controller's state (`jumped`: its own jump this frame) |
 | `player.position`, `player.velocity` | feet position (read only) and velocity, as `vec3` with `.x .y .z`; `player.velocity.y = 6` sets it |
 | `player.jump()`, `player.jump_speed` | a full jump from wherever the player is (held for variable height); its upward speed |
-| `player.pressed("e")`, `player.held("shift")` | keys: letters, digits, `space`, `shift`, `ctrl`, `alt`, `tab`, `enter`, `up`/`down`/`left`/`right` |
+| `player.pressed("jump")`, `player.held("sprint")` | a key by what the game binds it to (`forward`, `back`, `strafe_left`, `strafe_right`, `jump`, `sprint`, `crouch`, `use`, `clap`, `map`), or a key itself: letters, digits, `space`, `shift`, `ctrl`, `alt`, `tab`, `enter`, `up`/`down`/`left`/`right` |
 | `object.name`, `object.position`, `.rotation`, `.scale`, `.visible` | the object a script runs on (rotation in degrees; hidden = no collision) |
 | `player()` | the player, from any script (an object script uses it to find the player) |
 | `flag("name")`, `set_flag("name", value)` | the game's flags, shared with every graph |
@@ -196,4 +198,4 @@ sandbox/            the test project
 
 ## License
 
-MIT OR Apache-2.0.
+MIT OR Apache-2.0, at your option: see [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).

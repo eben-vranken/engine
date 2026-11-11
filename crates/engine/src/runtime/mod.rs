@@ -665,7 +665,7 @@ impl Running {
 
         if let Some(bench) = &mut self.bench {
             let eye = self.player.camera(&self.settings).position.y - self.player.feet.y;
-            match bench.drive(&mut self.player, eye, dt) {
+            match bench.drive(&mut self.player, &self.settings.keys, eye, dt) {
                 Some(input) => self.input = input,
                 None => {
                     self.bench = None;
@@ -769,6 +769,12 @@ impl Running {
             .as_ref()
             .and_then(|s| s.toast.as_ref().map(|t| t.0.clone()));
         let style = self.story.as_ref().map(|s| s.style.clone());
+        let go_key = crate::input::key_label(&self.settings.keys.interact);
+        let choose_keys = format!(
+            "{}/{}",
+            crate::input::key_label(&self.settings.keys.forward),
+            crate::input::key_label(&self.settings.keys.back)
+        );
         let use_font = self.story.as_ref().and_then(|s| s.custom_font) == Some(true);
         let load_font = self.story.as_ref().is_some_and(|s| s.custom_font.is_none());
         let mut font_loaded = None;
@@ -974,6 +980,8 @@ impl Running {
                         complete,
                         replies,
                         choice: *choice,
+                        go_key: &go_key,
+                        choose_keys: &choose_keys,
                     };
                     crate::dialogue::draw(ui, view.image, style, use_font, &shown);
                 }

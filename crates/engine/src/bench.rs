@@ -21,7 +21,6 @@ use crate::player::Player;
 use glam::{Vec2, Vec3, Vec3Swizzles};
 use serde::Deserialize;
 use std::path::Path;
-use winit::keyboard::KeyCode;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Route {
@@ -132,7 +131,13 @@ impl Bench {
 
     /// This frame's input; turns the player toward the stop. `None` when
     /// the route is done.
-    pub fn drive(&mut self, player: &mut Player, eye_height: f32, dt: f32) -> Option<Input> {
+    pub fn drive(
+        &mut self,
+        player: &mut Player,
+        keys: &crate::player::settings::Keys,
+        eye_height: f32,
+        dt: f32,
+    ) -> Option<Input> {
         let stop = self.route.stops.get(self.stop)?.clone();
         let mut input = Input::default();
         let feet = player.feet;
@@ -147,7 +152,7 @@ impl Bench {
                 if to.length() > stop.within.unwrap_or(ARRIVED) && !stuck {
                     player.yaw = to.x.atan2(-to.y);
                     player.pitch = 0.0;
-                    input.key_down(KeyCode::KeyW);
+                    input.press_bound(&keys.forward);
                     let speed = player.velocity.xz().length();
                     if walking && speed < STALLED_SPEED {
                         self.stalled.0 += dt;
@@ -189,7 +194,7 @@ impl Bench {
                     player.pitch = d.y.atan2(d.xz().length());
                 }
                 if stop.press_use {
-                    input.key_down(KeyCode::KeyE);
+                    input.press_bound(&keys.interact);
                 }
                 self.phase = Phase::Waiting { left: stop.wait };
             }

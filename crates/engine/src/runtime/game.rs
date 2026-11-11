@@ -7,7 +7,6 @@ use crate::physics::PhysicsWorld;
 use crate::player::{Player, Spawn};
 use crate::scene::{Component, Scene};
 use glam::Vec3;
-use winit::keyboard::KeyCode;
 
 impl Running {
     /// Behaviors act on the scene; moved objects are redrawn and their
@@ -92,7 +91,7 @@ impl Running {
         let Some(audio) = &mut self.audio else {
             return;
         };
-        if self.input.pressed(KeyCode::KeyQ) {
+        if self.input.bound_pressed(&self.settings.keys.clap) {
             audio.clap(eye.position);
         }
         if self.mode != CameraMode::Player {

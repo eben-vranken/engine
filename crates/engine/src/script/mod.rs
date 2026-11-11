@@ -13,7 +13,7 @@
 //!
 //! fn update(player, dt) {
 //!     if player.grounded { this.used = 0; }
-//!     if player.pressed("space") && !player.grounded && !player.jumped && this.used < 1 {
+//!     if player.pressed("jump") && !player.grounded && !player.jumped && this.used < 1 {
 //!         player.jump();
 //!         this.used += 1;
 //!     }
@@ -27,6 +27,9 @@
 //! error stops (the error is logged and shown) until the file is fixed.
 
 pub mod format;
+mod value;
+
+pub use value::Value;
 
 use crate::graph::flags::{FlagValue, Flags};
 use crate::input::Input;
@@ -62,6 +65,8 @@ pub struct PlayerView {
     /// A script asked for a jump this frame.
     pub jump: bool,
     pub input: Input,
+    /// The game's keys, so scripts can ask for `jump` instead of a key.
+    pub keys: crate::player::settings::Keys,
 }
 
 /// What a script sees of the object it runs on, and may change.
@@ -113,7 +118,9 @@ struct Instance {
     /// The script's `this`: a map it fills as it likes.
     memory: Dynamic,
     started: bool,
-    generation: u64,
+    /// The script's generation it runs; `None` for a copy from a saved
+    /// game, which carries on with the script as it is when first run.
+    generation: Option<u64>,
 }
 
 impl Instance {
@@ -121,8 +128,24 @@ impl Instance {
         Self {
             memory: Dynamic::from_map(Map::new()),
             started: false,
-            generation,
+            generation: Some(generation),
         }
+    }
+
+    /// A copy from a saved game: it has started and remembers `memory`.
+    fn restored(memory: &Value) -> Self {
+        Self {
+            memory: memory.to_script(),
+            started: true,
+            generation: None,
+        }
+    }
+
+    /// What it remembers, for a saved game; `None` before it has started.
+    fn saved(&self) -> Option<Value> {
+        self.started
+            .then(|| Value::from_script(&self.memory))
+            .flatten()
     }
 }
 
@@ -204,6 +227,36 @@ impl Scripts {
     /// start over.
     pub fn reset_objects(&mut self) {
         self.objects.clear();
+    }
+
+    /// What the scripts on objects remember, by object index (those that
+    /// have started), for a saved game.
+    pub fn object_memory(&self) -> impl Iterator<Item = (usize, Value)> + '_ {
+        self.objects
+            .iter()
+            .filter_map(|((index, _), instance)| Some((*index, instance.saved()?)))
+    }
+
+    /// What the abilities' scripts remember, by script path.
+    pub fn ability_memory(&self) -> BTreeMap<String, Value> {
+        self.abilities
+            .iter()
+            .filter_map(|(path, instance)| Some((path.clone(), instance.as_ref()?.saved()?)))
+            .collect()
+    }
+
+    /// The script on an object carries on from a saved game: it remembers
+    /// `memory` and its `start` doesn't run again.
+    pub fn restore_object(&mut self, index: usize, script: &str, memory: &Value) {
+        self.objects
+            .insert((index, script.to_owned()), Instance::restored(memory));
+    }
+
+    /// An ability's script carries on from a saved game (while the ability
+    /// is on).
+    pub fn restore_ability(&mut self, script: &str, memory: &Value) {
+        self.abilities
+            .insert(script.to_owned(), Some(Instance::restored(memory)));
     }
 
     /// Runs this frame: the abilities on the player, then the scripts on
@@ -353,8 +406,9 @@ fn run(
     start_args: impl rhai::FuncArgs,
     update_args: impl rhai::FuncArgs,
 ) -> Result<(), Box<EvalAltResult>> {
-    if instance.generation != generation {
-        *instance = Instance::new(generation);
+    match instance.generation {
+        Some(running) if running != generation => *instance = Instance::new(generation),
+        _ => instance.generation = Some(generation),
     }
     if !instance.started {
         instance.started = true;
@@ -478,51 +532,32 @@ fn register_player(engine: &mut Engine) {
         .register_fn(
             "pressed",
             |p: &mut PlayerHandle, key: &str| -> Result<bool, Box<EvalAltResult>> {
-                Ok(p.0.borrow().input.pressed(key_code(key)?))
+                key_state(&p.0.borrow(), key, Input::bound_pressed, Input::pressed)
             },
         )
         .register_fn(
             "held",
             |p: &mut PlayerHandle, key: &str| -> Result<bool, Box<EvalAltResult>> {
-                Ok(p.0.borrow().input.held(key_code(key)?))
+                key_state(&p.0.borrow(), key, Input::bound_held, Input::held)
             },
         );
 }
 
-/// A key by the name scripts use: a letter or digit, `space`, `shift`,
-/// `ctrl`, `alt`, `tab`, `enter`, `up` / `down` / `left` / `right`.
-fn key_code(name: &str) -> Result<KeyCode, Box<EvalAltResult>> {
-    use KeyCode::*;
-    const LETTERS: [KeyCode; 26] = [
-        KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN, KeyO,
-        KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
-    ];
-    const DIGITS: [KeyCode; 10] = [
-        Digit0, Digit1, Digit2, Digit3, Digit4, Digit5, Digit6, Digit7, Digit8, Digit9,
-    ];
-    let lower = name.to_ascii_lowercase();
-    let key = match lower.as_str() {
-        "space" => Some(Space),
-        "shift" => Some(ShiftLeft),
-        "ctrl" => Some(ControlLeft),
-        "alt" => Some(AltLeft),
-        "tab" => Some(Tab),
-        "enter" => Some(Enter),
-        "up" => Some(ArrowUp),
-        "down" => Some(ArrowDown),
-        "left" => Some(ArrowLeft),
-        "right" => Some(ArrowRight),
-        one if one.len() == 1 => {
-            let c = one.as_bytes()[0];
-            match c {
-                b'a'..=b'z' => Some(LETTERS[(c - b'a') as usize]),
-                b'0'..=b'9' => Some(DIGITS[(c - b'0') as usize]),
-                _ => None,
-            }
-        }
-        _ => None,
-    };
-    key.ok_or_else(|| format!("no key named \"{name}\"").into())
+/// Whether a key counts for a script: by the game's own name for it
+/// (`jump`, `use`, … from `player.ron`'s keys, so a script follows the
+/// game's bindings) or by the key's name (`space`, `e`).
+fn key_state(
+    view: &PlayerView,
+    name: &str,
+    bound: fn(&Input, &str) -> bool,
+    key: fn(&Input, KeyCode) -> bool,
+) -> Result<bool, Box<EvalAltResult>> {
+    if let Some(binding) = view.keys.action(name) {
+        return Ok(bound(&view.input, binding));
+    }
+    crate::input::key_named(name)
+        .map(|code| key(&view.input, code))
+        .ok_or_else(|| format!("no key named \"{name}\"").into())
 }
 
 #[cfg(test)]
@@ -675,6 +710,66 @@ mod tests {
             objects[0].rotation
         );
         assert!((objects[0].position.y - 1.0).abs() <= 0.1);
+    }
+
+    #[test]
+    fn scripts_carry_on_from_a_saved_game() {
+        let ability = r#"
+            fn start() { this.count = 10; this.home = vec3(1, 2, 3); this.names = ["a"]; }
+            fn update(player, dt) { this.count += 1; set_flag("count", this.count); }
+        "#;
+        let on_object = r#"
+            fn start(object) { this.steps = 0; this.who = player(); }
+            fn update(object, dt) { this.steps += 1; object.position = vec3(this.steps, 0, 0); }
+        "#;
+        let (mut scripts, dir) = scripts_with("saved", ability);
+        std::fs::write(dir.join("scripts/b.rhai"), on_object).unwrap();
+        let lamp = || ObjectView {
+            index: 4,
+            script: "scripts/b.rhai".into(),
+            ..Default::default()
+        };
+        let mut flags = Flags::default();
+        let mut objects = [lamp()];
+        for _ in 0..3 {
+            scripts.update(&mut PlayerView::default(), &mut objects, &mut flags, 0.1);
+        }
+        assert!(scripts.errors.is_empty(), "{:?}", scripts.errors);
+
+        // What goes into the save reads back from RON; the player a script
+        // kept can't be saved and is left out.
+        let abilities = scripts.ability_memory();
+        let on_objects: Vec<(usize, Value)> = scripts.object_memory().collect();
+        let saved = ron::to_string(&(&abilities, &on_objects)).unwrap();
+        assert!(!saved.contains("who"), "{saved}");
+        let (abilities, on_objects): (BTreeMap<String, Value>, Vec<(usize, Value)>) =
+            ron::from_str(&saved).unwrap();
+        let Value::Map(memory) = &abilities["scripts/a.rhai"] else {
+            panic!("{abilities:?}");
+        };
+        assert_eq!(memory["count"], Value::Whole(13));
+        assert_eq!(memory["home"], Value::Vec3(Vec3::new(1.0, 2.0, 3.0)));
+        assert_eq!(memory["names"], Value::List(vec![Value::Text("a".into())]));
+
+        // A new game session: the scripts go on counting, `start` isn't
+        // run again.
+        let mut scripts = Scripts::new(dir.clone());
+        for (script, memory) in &abilities {
+            scripts.restore_ability(script, memory);
+        }
+        for (index, memory) in &on_objects {
+            scripts.restore_object(*index, "scripts/b.rhai", memory);
+        }
+        scripts.sync(&BTreeSet::from(["scripts/a.rhai".to_string()]));
+        let mut objects = [lamp()];
+        scripts.update(&mut PlayerView::default(), &mut objects, &mut flags, 0.1);
+        assert!(scripts.errors.is_empty(), "{:?}", scripts.errors);
+        assert_eq!(flags.get("count"), FlagValue::Number(14.0));
+        assert_eq!(objects[0].position.x, 4.0);
+
+        // A script that hasn't started has nothing to save.
+        assert_eq!(Scripts::new(dir.clone()).object_memory().count(), 0);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

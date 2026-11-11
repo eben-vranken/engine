@@ -14,7 +14,6 @@ use rapier3d::control::{CharacterLength, KinematicCharacterController};
 use rapier3d::parry::query::ShapeCastOptions;
 use rapier3d::prelude::{Ball, Pose, Ray, SharedShape};
 use settings::PlayerSettings;
-use winit::keyboard::KeyCode;
 
 /// Where the player starts and respawns.
 #[derive(Debug, Clone, Copy)]
@@ -111,6 +110,7 @@ impl Player {
             jump_speed: settings.jump.takeoff_speed(),
             jump: false,
             input: input.clone(),
+            keys: settings.keys.clone(),
         }
     }
 
@@ -163,7 +163,8 @@ impl Player {
         }
 
         // Crouch: going down is instant, standing up needs headroom.
-        let wants_crouch = input.held(KeyCode::ControlLeft) || input.held(KeyCode::KeyC);
+        let keys = &settings.keys;
+        let wants_crouch = input.bound_held(&keys.crouch);
         if wants_crouch {
             self.crouching = true;
         } else if self.crouching && self.has_headroom(settings, physics) {
@@ -176,17 +177,17 @@ impl Player {
         };
 
         // Horizontal movement.
-        let axis = |pos: KeyCode, neg: KeyCode| {
-            input.held(pos) as i32 as f32 - input.held(neg) as i32 as f32
+        let axis = |pos: &str, neg: &str| {
+            input.bound_held(pos) as i32 as f32 - input.bound_held(neg) as i32 as f32
         };
-        let forward_input = axis(KeyCode::KeyW, KeyCode::KeyS);
-        let right_input = axis(KeyCode::KeyD, KeyCode::KeyA);
+        let forward_input = axis(&keys.forward, &keys.back);
+        let right_input = axis(&keys.right, &keys.left);
         let (sin, cos) = self.yaw.sin_cos();
         let forward = Vec2::new(sin, -cos);
         let right = Vec2::new(cos, sin);
         let wish = (forward * forward_input + right * right_input).normalize_or_zero();
 
-        self.sprinting = input.held(KeyCode::ShiftLeft) && forward_input > 0.0 && !self.crouching;
+        self.sprinting = input.bound_held(&keys.sprint) && forward_input > 0.0 && !self.crouching;
         let speed = if self.crouching {
             movement.crouch_speed
         } else if self.sprinting {
@@ -219,7 +220,7 @@ impl Player {
         }
 
         // Jump: buffered presses, coyote time.
-        if input.pressed(KeyCode::Space) {
+        if input.bound_pressed(&keys.jump) {
             self.jump_buffer = jump.buffer_time;
         } else {
             self.jump_buffer = (self.jump_buffer - dt).max(0.0);
@@ -239,7 +240,7 @@ impl Player {
         // Gravity: lighter on the way up while jump is held, heavier when
         // falling or when jump was released early.
         let gravity_scale = if self.velocity.y > 0.0 {
-            if self.jumped && !input.held(KeyCode::Space) {
+            if self.jumped && !input.bound_held(&keys.jump) {
                 jump.jump_cut_gravity_multiplier
             } else {
                 1.0
@@ -546,6 +547,7 @@ mod tests {
     use crate::assets::Assets;
     use crate::render::mesh::Shape;
     use crate::scene::test_scene;
+    use winit::keyboard::KeyCode;
 
     fn flat_world() -> PhysicsWorld {
         PhysicsWorld::from_scene(

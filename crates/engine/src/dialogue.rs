@@ -133,6 +133,10 @@ pub struct Shown<'a> {
     pub replies: &'a [String],
     /// The highlighted reply.
     pub choice: usize,
+    /// The key that goes on, as the hint shows it (`E`).
+    pub go_key: &'a str,
+    /// The keys that pick a reply (`W/S`).
+    pub choose_keys: &'a str,
 }
 
 /// Draws the line over the game view `image`.
@@ -163,12 +167,13 @@ pub fn draw(ui: &egui::Ui, image: Rect, style: &DialogueStyle, custom_font: bool
     let text_color = color(style.text_color);
     let name_color = color(style.name_color);
     let dim = text_color.gamma_multiply(0.55);
+    let (go, choose) = (shown.go_key, shown.choose_keys);
     let hint = if !shown.complete {
-        "E  ›"
+        format!("{go}  ›")
     } else if shown.replies.is_empty() {
-        "E  CONTINUE"
+        format!("{go}  CONTINUE")
     } else {
-        "W/S CHOOSE   E ANSWER"
+        format!("{choose} CHOOSE   {go} ANSWER")
     };
 
     egui::Area::new(egui::Id::unique("dialogue"))

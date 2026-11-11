@@ -274,6 +274,8 @@ pub(super) fn draw_box(
             complete: true,
             replies,
             choice,
+            go_key: "E",
+            choose_keys: "W/S",
         },
     );
 }

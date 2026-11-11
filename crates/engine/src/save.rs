@@ -1,9 +1,12 @@
 //! Saved games: where the player is, the graphs (flags, active nodes,
 //! renamed characters) and what changed in each scene (objects hidden or
-//! shown, doors open) plus the zones visited. One save per project, kept in
+//! shown, doors open, where physics bodies and scripted objects are, what
+//! scripts remember) plus the zones visited. One save per project, kept in
 //! the user's config folder (never in the project).
 
 use crate::graph::run::{RunnerState, ThreadState};
+use crate::scene::Transform;
+use crate::script::Value;
 use glam::Vec3;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,6 +22,10 @@ pub struct SaveGame {
     pub yaw: f32,
     pub graphs: RunnerState,
     pub world: WorldState,
+    /// The memory (`this`) of each ability's script that is on, by script
+    /// path.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub abilities: BTreeMap<String, Value>,
 }
 
 /// What the player changed in the world, kept across scenes.
@@ -58,6 +65,13 @@ pub struct ObjectState {
     /// Whether the door is open.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub door_open: Option<bool>,
+    /// Where a physics body or a scripted object is (a floating one: the
+    /// place it floats around).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub transform: Option<Transform>,
+    /// The memory (`this`) of the object's script, once it has started.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub script: Option<Value>,
 }
 
 impl WorldState {
@@ -164,6 +178,38 @@ mod scene_state_tests {
     use super::*;
 
     /// Old saves (by name) still load; new ones are by id.
+    #[test]
+    fn saves_keep_places_and_script_memory() {
+        let mut save = SaveGame::default();
+        save.abilities
+            .insert("scripts/glide.rhai".into(), Value::Whole(2));
+        let crate_state = save
+            .world
+            .scenes
+            .entry("scenes/hall.ron".into())
+            .or_default()
+            .objects
+            .entry(3)
+            .or_default();
+        crate_state.transform = Some(Transform {
+            position: Vec3::new(1.0, 0.5, -2.0),
+            ..Default::default()
+        });
+        crate_state.script = Some(Value::Map(
+            [("steps".to_string(), Value::Number(1.5))].into(),
+        ));
+        let text = ron::ser::to_string_pretty(&save, Default::default()).unwrap();
+        assert_eq!(ron::from_str::<SaveGame>(&text).unwrap(), save);
+
+        // A save from before any of this still reads.
+        let old: SaveGame = ron::from_str(
+            "(scene: \"a\", world: (scenes: {\"a\": (objects: {3: (hidden: Some(true))})}))",
+        )
+        .unwrap();
+        assert!(old.abilities.is_empty());
+        assert_eq!(old.world.scenes["a"].objects[&3].transform, None);
+    }
+
     #[test]
     fn scene_state_reads_old_saves_and_writes_ids() {
         let old: SceneState =

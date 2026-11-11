@@ -510,6 +510,8 @@ fn dialogue_preview(ui: &mut Ui, style: &DialogueStyle) {
             complete,
             replies: &replies,
             choice: 0,
+            go_key: "E",
+            choose_keys: "W/S",
         },
     );
     ui.ctx().request_repaint();

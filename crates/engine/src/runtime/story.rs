@@ -183,6 +183,21 @@ impl Running {
                 state.objects.entry(id).or_default().door_open = Some(open);
             }
         }
+        for (index, object) in self.scene.objects.iter().enumerate() {
+            if keeps_its_place(object) {
+                let mut transform = object.transform;
+                // A floating object: where it floats around, not the bob.
+                if let Some(behaviors) = &self.behaviors {
+                    transform.position.y -= behaviors.lift(&self.scene, index);
+                }
+                state.objects.entry(object.id).or_default().transform = Some(transform);
+            }
+        }
+        for (index, memory) in story.scripts.object_memory() {
+            if let Some(object) = self.scene.objects.get(index) {
+                state.objects.entry(object.id).or_default().script = Some(memory);
+            }
+        }
         story.world.scenes.insert(key, state);
     }
 
@@ -192,6 +207,7 @@ impl Running {
         let Some(story) = &mut self.story else { return };
         let state = story.world.scenes.get(&key);
         story.conditions.clear();
+        let (mut places, mut memories) = (0, 0);
         for (index, object) in self.scene.objects.iter_mut().enumerate() {
             // A flag condition decides; what a graph showed or hid (saved)
             // counts for everything else.
@@ -210,6 +226,25 @@ impl Running {
             if let Some(hidden) = saved {
                 object.hidden = hidden;
             }
+            // Physics bodies and scripted objects are where they were left,
+            // and scripts remember what they did.
+            let Some(saved) = state.and_then(|s| s.objects.get(&object.id)) else {
+                continue;
+            };
+            if let Some(transform) = saved.transform.filter(|_| keeps_its_place(object)) {
+                object.transform = transform;
+                if let Some(behaviors) = &mut self.behaviors {
+                    behaviors.set_rest(index, transform);
+                }
+                places += 1;
+            }
+            if let (Some(memory), Some(script)) = (&saved.script, script_of(object)) {
+                story.scripts.restore_object(index, script, memory);
+                memories += 1;
+            }
+        }
+        if places + memories > 0 {
+            log::info!("{key}: {places} objects back where they were, {memories} scripts carry on");
         }
         if let (Some(state), Some(behaviors)) = (state, &mut self.behaviors) {
             let by_id = state.objects.iter().filter_map(|(id, o)| {
@@ -268,18 +303,19 @@ impl Running {
     fn usable(&self, index: usize) -> Option<(Use, String)> {
         let object = self.scene.objects.get(index)?;
         let story = self.story.as_ref();
+        let key = crate::input::key_label(&self.settings.keys.interact);
         object.components.iter().find_map(|c| match c {
-            Component::Switch(s) if !s.pressure_plate => Some((Use::Switch, "E  USE".into())),
-            Component::Pickup(_) => Some((Use::Pickup, "E  TAKE".into())),
-            Component::SavePoint => Some((Use::Save, "E  SAVE".into())),
+            Component::Switch(s) if !s.pressure_plate => Some((Use::Switch, format!("{key}  USE"))),
+            Component::Pickup(_) => Some((Use::Pickup, format!("{key}  TAKE"))),
+            Component::SavePoint => Some((Use::Save, format!("{key}  SAVE"))),
             Component::Character(character) if !character.dialogue.0.is_empty() => {
                 let name = story
                     .and_then(|s| s.runner.names.get(&character.id).cloned())
                     .unwrap_or_else(|| character.name.clone());
                 let prompt = if name.is_empty() {
-                    "E  TALK".into()
+                    format!("{key}  TALK")
                 } else {
-                    format!("E  TALK TO {}", name.to_uppercase())
+                    format!("{key}  TALK TO {}", name.to_uppercase())
                 };
                 Some((Use::Talk(character.dialogue.0.clone()), prompt))
             }
@@ -301,7 +337,7 @@ impl Running {
                 .pick(eye.position, eye.forward(), self.settings.body.reach)?;
         let (action, prompt) = self.usable(index)?;
         self.prompt = Some(prompt);
-        if !self.input.pressed(KeyCode::KeyE) {
+        if !self.input.bound_pressed(&self.settings.keys.interact) {
             return None;
         }
         // Every use is an event graphs can wait for.
@@ -450,19 +486,20 @@ impl Running {
         }
     }
 
-    /// Keys while a line is on screen: W/S (or arrows) pick a reply, 1–9
-    /// pick directly, E / Space / Enter go on (or show all of the text
-    /// first while it is still typing).
+    /// Keys while a line is on screen: forward / back (or the arrows) pick
+    /// a reply, 1–9 pick directly, use / jump / Enter go on (or show all of
+    /// the text first while it is still typing).
     fn dialogue_keys(&mut self) {
         let Some(story) = &mut self.story else { return };
         let Some(line) = &mut story.line else { return };
         let input = &self.input;
+        let keys = &self.settings.keys;
         let count = line.view.replies.len();
         if count > 0 {
-            if input.pressed(KeyCode::KeyS) || input.pressed(KeyCode::ArrowDown) {
+            if input.bound_pressed(&keys.back) || input.pressed(KeyCode::ArrowDown) {
                 line.choice = (line.choice + 1) % count;
             }
-            if input.pressed(KeyCode::KeyW) || input.pressed(KeyCode::ArrowUp) {
+            if input.bound_pressed(&keys.forward) || input.pressed(KeyCode::ArrowUp) {
                 line.choice = (line.choice + count - 1) % count;
             }
         }
@@ -483,14 +520,9 @@ impl Running {
             .iter()
             .position(|&k| input.pressed(k))
             .filter(|&i| i < count && complete);
-        let go = [
-            KeyCode::KeyE,
-            KeyCode::Space,
-            KeyCode::Enter,
-            KeyCode::NumpadEnter,
-        ]
-        .iter()
-        .any(|&k| input.pressed(k));
+        let go = input.bound_pressed(&keys.interact)
+            || input.bound_pressed(&keys.jump)
+            || input.bound_pressed("enter");
         if go && !complete {
             line.time = f32::MAX / 4.0;
         } else if let Some(choice) = direct {
@@ -606,6 +638,7 @@ impl Running {
             yaw: self.player.yaw,
             graphs: story.runner.state(),
             world: story.world.clone(),
+            abilities: story.scripts.ability_memory(),
         };
         match save::write(&self.game_dir, &saved) {
             Ok(path) => {
@@ -627,6 +660,9 @@ impl Running {
         if let Some(story) = &mut self.story {
             story.world = saved.world;
             story.runner.restore(saved.graphs);
+            for (script, memory) in &saved.abilities {
+                story.scripts.restore_ability(script, memory);
+            }
             // An older save kept paused scene graphs with the world.
             let old = std::mem::take(&mut story.world.scene_graphs);
             for (scene, threads) in old {
@@ -758,6 +794,23 @@ fn visible_when(object: &crate::scene::Object) -> Option<&crate::scene::VisibleW
         Component::VisibleWhen(v) => Some(v),
         _ => None,
     })
+}
+
+/// The object's script, if it runs one.
+fn script_of(object: &crate::scene::Object) -> Option<&str> {
+    object.components.iter().find_map(|c| match c {
+        Component::Script(s) if !s.script.0.is_empty() => Some(s.script.0.as_str()),
+        _ => None,
+    })
+}
+
+/// Whether a saved game keeps where the object is: physics bodies and
+/// scripted objects move for good. A door's place is its open or closed
+/// state.
+fn keeps_its_place(object: &crate::scene::Object) -> bool {
+    let has = |wanted: fn(&Component) -> bool| object.components.iter().any(wanted);
+    (has(|c| matches!(c, Component::PhysicsBody(_))) || script_of(object).is_some())
+        && !has(|c| matches!(c, Component::Door(_)))
 }
 
 fn object_floats(object: &crate::scene::Object) -> bool {

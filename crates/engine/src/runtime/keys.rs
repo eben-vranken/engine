@@ -18,7 +18,7 @@ impl Running {
         // As a player gets the game: only its own keys (map, clap, use,
         // dialogue; Esc frees the mouse). No debug keys.
         if self.player_view {
-            if self.input.pressed(KeyCode::KeyM)
+            if self.input.bound_pressed(&self.settings.keys.map)
                 && let Some(story) = &mut self.story
                 && story.line.is_none()
             {
@@ -38,7 +38,7 @@ impl Running {
             }
         }
         // The map while the game runs.
-        if self.input.pressed(KeyCode::KeyM)
+        if self.input.bound_pressed(&self.settings.keys.map)
             && let Some(story) = &mut self.story
             && story.line.is_none()
         {

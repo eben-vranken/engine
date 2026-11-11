@@ -12,7 +12,7 @@ fn update(player, dt) {
         this.used = 0;
     }
     // `player.jumped` is the normal jump off the ground: leave that alone.
-    if player.pressed("space") && !player.grounded && !player.jumped && this.used < 1 {
+    if player.pressed("jump") && !player.grounded && !player.jumped && this.used < 1 {
         player.jump();
         this.used += 1;
     }
