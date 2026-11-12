@@ -4,6 +4,7 @@
 
 mod bakes;
 mod game;
+mod hold;
 mod hot_reload;
 mod hud;
 mod keys;
@@ -206,6 +207,8 @@ struct Running {
     /// Whether the player was on the ground last frame (landing makes a
     /// footstep).
     was_grounded: bool,
+    /// Which way the held object faces now (it lags behind the view).
+    hand_turn: Option<glam::Quat>,
     /// `None` without an output device (the game runs silent).
     audio: Option<Audio>,
     /// The zone the active camera is in.
@@ -407,7 +410,9 @@ impl Running {
         renderer.set_retro(config.retro);
         log::info!("present mode: {:?}", renderer.present_mode());
         let mut assets = Assets::new(config.game_dir.clone());
-        renderer.set_scene(&config.scene, &mut assets);
+        let mut scene = config.scene.clone();
+        crate::prefab::resolve(&mut scene, &mut assets);
+        renderer.set_scene(&scene, &mut assets);
         let overlay = Overlay::new(&window, renderer.device(), renderer.surface_format());
 
         let settings_file = SettingsFile::new(config.game_dir.join("player.ron"));
@@ -418,7 +423,7 @@ impl Running {
                 (PlayerSettings::default(), Some(err.to_string()))
             }
         };
-        let player = Player::new(spawn_point(&config.scene), &settings);
+        let player = Player::new(spawn_point(&scene), &settings);
         let start = player.camera(&settings);
         let mut fly = FlyCamera::new(start.position, start.yaw, start.pitch);
         fly.camera.fov_y = start.fov_y;
@@ -438,9 +443,9 @@ impl Running {
             renderer,
             overlay,
             physics: if config.editor {
-                PhysicsWorld::from_scene(&config.scene, &mut assets)
+                PhysicsWorld::from_scene(&scene, &mut assets)
             } else {
-                PhysicsWorld::for_game(&config.scene, &mut assets)
+                PhysicsWorld::for_game(&scene, &mut assets)
             },
             assets,
             player,
@@ -462,7 +467,7 @@ impl Running {
             rmb_look: false,
             last_frame: Instant::now(),
             fps: FpsCounter::default(),
-            zone_map: ZoneMap::new(&config.scene),
+            zone_map: ZoneMap::new(&scene),
             zone_map_built: Instant::now(),
             zone_map_key: (0, 0, u64::MAX),
             bench: config
@@ -479,7 +484,7 @@ impl Running {
             perf_rolled: Instant::now(),
             frame_summary: perf::FrameSummary::default(),
             perf_stats: Vec::new(),
-            scene: config.scene.clone(),
+            scene: scene.clone(),
             editor,
             highlighted: Vec::new(),
             cursor: Vec2::ZERO,
@@ -492,12 +497,13 @@ impl Running {
             exit_requested: false,
             quality: config.quality,
             play: None,
-            behaviors: (!config.editor).then(|| Behaviors::start(&config.scene)),
+            behaviors: (!config.editor).then(|| Behaviors::start(&scene)),
             prompt: None,
             story: None,
             play_scene: None,
             move_sound: false,
             was_grounded: true,
+            hand_turn: None,
             audio: Audio::new(config.game_dir.clone())
                 .inspect_err(|err| log::error!("{err}; running without sound"))
                 .ok(),
@@ -723,6 +729,9 @@ impl Running {
             self.input.clone()
         };
         perf::time("SCRIPTS", || self.run_scripts(&input, dt));
+        if self.behaviors.is_some() {
+            self.update_held(dt);
+        }
         let camera = match self.mode {
             CameraMode::Player => self.player.camera(&self.settings),
             CameraMode::Fly => self.fly.camera.clone(),
@@ -1106,6 +1115,9 @@ impl Running {
             self.dropped.push((self.game_dir.join(path), cursor));
         }
         self.import_dropped(&camera);
+        if let Some(model) = editor_output.as_mut().and_then(|o| o.make_prefab.take()) {
+            self.make_prefab(&model);
+        }
 
         if let Some(output) = &editor_output {
             if output.toggle_play {

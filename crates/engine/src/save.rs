@@ -72,6 +72,12 @@ pub struct ObjectState {
     /// The memory (`this`) of the object's script, once it has started.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub script: Option<Value>,
+    /// Whether the player holds it (something they can carry).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub held: Option<bool>,
+    /// Whether its lights are switched off.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lights_off: Option<bool>,
 }
 
 impl WorldState {

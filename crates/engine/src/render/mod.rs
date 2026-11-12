@@ -29,7 +29,7 @@ use crate::assets::{Assets, Resolved};
 use crate::camera::Camera;
 use crate::lightmap::{self, AmbientCube, Baked, BakedDraw};
 use crate::project::Retro;
-use crate::scene::{Component, Environment, Geometry, LightSource, Renderable, Scene};
+use crate::scene::{Component, Environment, Geometry, LightSource, PlacedLight, Renderable, Scene};
 use bytemuck::{Pod, Zeroable};
 use fog::{FogFrame, VolumetricFog};
 use frustum::Frustum;
@@ -274,6 +274,7 @@ struct SceneLight {
     object: usize,
     light: LightSource,
     position: Vec3,
+    direction: Vec3,
 }
 
 fn scene_lights(scene: &Scene, assets: &mut Assets) -> Vec<SceneLight> {
@@ -285,13 +286,14 @@ fn object_lights(scene: &Scene, index: usize, assets: &mut Assets) -> Vec<SceneL
     to_scene_lights(scene.lights_of(index, |path, part| assets.model(path)?.part_center(part)))
 }
 
-fn to_scene_lights(lights: Vec<(usize, &LightSource, Vec3)>) -> Vec<SceneLight> {
+fn to_scene_lights(lights: Vec<PlacedLight>) -> Vec<SceneLight> {
     lights
         .into_iter()
-        .map(|(object, light, position)| SceneLight {
-            object,
-            light: light.clone(),
-            position,
+        .map(|l| SceneLight {
+            object: l.object,
+            light: l.light.clone(),
+            position: l.position,
+            direction: l.direction,
         })
         .collect()
 }
@@ -1754,7 +1756,9 @@ impl Renderer {
         let frustum = Frustum::new(view_proj);
 
         let frame_lights = lights::select(
-            self.lights.iter().map(|l| (l.object, &l.light, l.position)),
+            self.lights
+                .iter()
+                .map(|l| (l.object, &l.light, l.position, l.direction)),
             camera.position,
             time,
             &mut self.shadow_owners,

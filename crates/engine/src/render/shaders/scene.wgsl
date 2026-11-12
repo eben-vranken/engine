@@ -55,7 +55,20 @@ struct Light {
     position: vec4<f32>,
     // rgb: color × intensity, w: shadow slot or -1.
     color: vec4<f32>,
+    // xyz: where a cone light shines.
+    direction: vec4<f32>,
+    // x, y: cosines of the beam's outer and inner edges (-2, -1: a point
+    // light, every direction inside).
+    cone: vec4<f32>,
 };
+
+
+// How much of a light goes along `travel` (unit, away from the light): 1
+// inside a cone light's beam, fading to 0 at its edge; always 1 for a
+// point light. Mirrors `LightSource::cone_weight`.
+fn cone(l: Light, travel: vec3<f32>) -> f32 {
+    return smoothstep(l.cone.x, l.cone.y, dot(travel, l.direction.xyz));
+}
 
 // A zone's reflection cube and the box it's projected onto.
 struct Reflection {
@@ -305,7 +318,7 @@ fn point_lights(world: vec3<f32>, s: Surface) -> Lit {
             continue;
         }
         let l = to_light / max(distance, 1e-4);
-        let facing = dot(s.n, l);
+        let facing = dot(s.n, l) * cone(light, -l);
         if facing <= 0.0 {
             continue;
         }
@@ -574,7 +587,11 @@ fn vs_dust(@builtin(vertex_index) vertex: u32, @builtin(instance_index) id: u32)
         let window = saturate(1.0 - ratio * ratio * ratio * ratio);
         let falloff = window * window / max(distance * distance, 0.04);
         let travel = to_mote / max(distance, 1e-4);
-        light += l.color.rgb * falloff * point_visibility(l, world, vec3<f32>(0.0), distance) * dust_phase(dot(travel, -view));
+        let beam = cone(l, travel);
+        if beam <= 0.0 {
+            continue;
+        }
+        light += l.color.rgb * beam * falloff * point_visibility(l, world, vec3<f32>(0.0), distance) * dust_phase(dot(travel, -view));
     }
     // Twinkle as the speck turns, fade near the camera and the box edge.
     let twinkle = 0.55 + 0.45 * sin(t * (1.5 + home.y * 3.0) + home.z * 60.0);

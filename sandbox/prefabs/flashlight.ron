@@ -1,0 +1,37 @@
+// A flashlight made of primitives: a body, a glowing lens and a cone light
+// shining forward (-Z). The body's Holdable makes every placement
+// carryable: E takes it, F switches it, G puts it down.
+(
+    zones: [
+        (
+            name: "prefab",
+        ),
+    ],
+    objects: [
+        (
+            name: "body",
+            id: 1,
+            zone: "prefab",
+            transform: (position: (0.0, 0.0, 0.0), rotation: (90.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [
+                Primitive((shape: Cylinder(radius: 0.028, height: 0.24, segments: 12), color: (0.08, 0.08, 0.09))),
+                Material((roughness: 0.35, metalness: 1.0)),
+                Holdable((offset: (0.24, -0.2, 0.42), sway: 0.4, switches_lights: true, starts_on: true)),
+            ],
+        ),
+        (
+            name: "head",
+            id: 2,
+            zone: "prefab",
+            transform: (position: (0.0, 0.0, -0.13), rotation: (90.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Cylinder(radius: 0.038, height: 0.04, segments: 12), color: (0.1, 0.1, 0.11), emissive: (1.6, 1.45, 1.2)))],
+        ),
+        (
+            name: "beam",
+            id: 3,
+            zone: "prefab",
+            transform: (position: (0.0, 0.0, -0.16), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [LightSource((color: (1.0, 0.93, 0.82), intensity: 7.0, range: 16.0, flicker: 0.0, shadows: true, baked: false, cone: 42.0, cone_softness: 0.35))],
+        ),
+    ],
+)

@@ -187,6 +187,38 @@ pub fn zones(
     (clicked, hovered)
 }
 
+/// A cone light's beam: four lines along its edge out to the range, and
+/// the circle where they end.
+fn cone_outline(
+    painter: &egui::Painter,
+    view: &View,
+    position: Vec3,
+    direction: Vec3,
+    light: &crate::scene::LightSource,
+) {
+    let stroke = Stroke::new(1.0, theme::AMBER_DIM);
+    let half = (light.cone * 0.5).min(89.0).to_radians();
+    let axis = direction.normalize_or(Vec3::NEG_Z);
+    let side = axis.any_orthonormal_vector();
+    let up = axis.cross(side);
+    let end = position + axis * light.range * half.cos();
+    let radius = light.range * half.sin();
+    let point = |i: usize| {
+        let a = i as f32 * std::f32::consts::TAU / 48.0;
+        end + (side * a.cos() + up * a.sin()) * radius
+    };
+    for i in 0..48 {
+        if let Some(segment) = project_segment(view, point(i), point(i + 1)) {
+            painter.line_segment(segment, stroke);
+        }
+    }
+    for i in (0..48).step_by(12) {
+        if let Some(segment) = project_segment(view, position, point(i)) {
+            painter.line_segment(segment, stroke);
+        }
+    }
+}
+
 /// Draws every light as a small sun with a LIGHT label (lights often sit
 /// inside a lamp, or have no geometry at all); a selected light also shows
 /// its range as three circles. Returns the object clicked, if any, and
@@ -207,7 +239,8 @@ pub fn lights(
             .find(|(name, _)| name == part)
             .map(|(_, c)| *c)
     };
-    for (index, light, position) in scene.lights(center) {
+    for placed in scene.lights(center) {
+        let (index, light, position) = (placed.object, placed.light, placed.position);
         let Some(at) = project(view, position) else {
             continue;
         };
@@ -224,7 +257,9 @@ pub fn lights(
             let d = egui::vec2(a.cos(), a.sin());
             painter.line_segment([at + d * 6.0, at + d * 9.0], stroke);
         }
-        if is_selected {
+        if is_selected && light.cone_cosines().is_some() {
+            cone_outline(&painter, view, position, placed.direction, light);
+        } else if is_selected {
             // The range: a circle in each axis plane.
             let r = light.range;
             for (u, v) in [(Vec3::X, Vec3::Z), (Vec3::X, Vec3::Y), (Vec3::Z, Vec3::Y)] {

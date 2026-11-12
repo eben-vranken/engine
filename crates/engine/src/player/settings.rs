@@ -37,6 +37,10 @@ pub struct Keys {
     pub interact: String,
     pub clap: String,
     pub map: String,
+    /// Uses what the player holds (switches a flashlight).
+    pub use_held: String,
+    /// Puts down what the player holds.
+    pub drop: String,
 }
 
 impl Default for Keys {
@@ -52,6 +56,8 @@ impl Default for Keys {
             interact: "e".into(),
             clap: "q".into(),
             map: "m".into(),
+            use_held: "f".into(),
+            drop: "g".into(),
         }
     }
 }
@@ -60,7 +66,7 @@ impl Keys {
     /// Every key with the name scripts ask for it by
     /// (`player.pressed("jump")`). Moving left and right are `strafe_left`
     /// and `strafe_right` there: `left` and `right` are the arrow keys.
-    pub fn actions(&self) -> [(&'static str, &str); 10] {
+    pub fn actions(&self) -> [(&'static str, &str); 12] {
         [
             ("forward", &self.forward),
             ("back", &self.back),
@@ -72,6 +78,8 @@ impl Keys {
             ("use", &self.interact),
             ("clap", &self.clap),
             ("map", &self.map),
+            ("use_held", &self.use_held),
+            ("drop", &self.drop),
         ]
     }
 

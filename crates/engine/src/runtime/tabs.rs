@@ -12,6 +12,13 @@ impl Running {
     /// shifts the positions the draws refer to, so those rebuild all draws.
     pub(super) fn show_change(&mut self, change: Change) {
         match change {
+            // A placement may point at another prefab now.
+            Change::Modified(_) | Change::Added(_) | Change::All => {
+                crate::prefab::resolve(&mut self.scene, &mut self.assets)
+            }
+            _ => {}
+        }
+        match change {
             Change::Modified(id) => match self.scene.index_of(id) {
                 Some(index) => self
                     .renderer
@@ -119,6 +126,8 @@ impl Running {
     /// A different scene is now in `self.scene`: rebuild what is made from
     /// it and load its bakes.
     pub(super) fn scene_swapped(&mut self) {
+        // A prefab may have been saved in another tab.
+        crate::prefab::resolve(&mut self.scene, &mut self.assets);
         self.renderer.set_scene(&self.scene, &mut self.assets);
         self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
         self.zone.reset();

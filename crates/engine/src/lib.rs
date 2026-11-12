@@ -30,6 +30,7 @@ pub mod package;
 pub mod perf;
 pub mod physics;
 pub mod player;
+pub mod prefab;
 pub mod project;
 pub mod recent;
 pub mod render;

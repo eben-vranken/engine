@@ -81,7 +81,8 @@ impl PhysicsWorld {
         // (rapier's shapes are reference-counted); only the pose differs.
         let mut shapes: HashMap<String, Option<SharedShape>> = HashMap::new();
         for (object, geometry, transform, solid) in scene.colliders_with_hidden() {
-            let hidden = scene.objects[object].hidden;
+            // A held object collides with nothing while it is held.
+            let hidden = scene.objects[object].hidden || scene.objects[object].play.held;
             if hidden {
                 world.hidden.insert(object);
             }
@@ -102,9 +103,12 @@ impl PhysicsWorld {
             let Some(shape) = shape else {
                 continue;
             };
-            let mut collider = placed_collider(shape, geometry, transform);
+            let mut collider = placed_collider(shape, geometry, &transform);
             collider.user_data = object as u128;
-            let relative = object_pose(transform).inverse() * *collider.position();
+            // A prefab's piece sits somewhere on its object: the pose is
+            // the object's, the collider is placed relative to it.
+            let owner = &scene.objects[object].transform;
+            let relative = object_pose(owner).inverse() * *collider.position();
             if !solid {
                 collider
                     .set_collision_groups(InteractionGroups::all().with_memberships(WALK_THROUGH));
@@ -113,7 +117,7 @@ impl PhysicsWorld {
                 Some(body) => {
                     let handle = *object_bodies.entry(object).or_insert_with(|| {
                         let rigid = RigidBodyBuilder::dynamic()
-                            .pose(object_pose(transform))
+                            .pose(object_pose(owner))
                             .sleeping(body.starts_asleep)
                             .build();
                         let handle = world.bodies.insert(rigid);
@@ -151,6 +155,22 @@ impl PhysicsWorld {
                 && let Some(collider) = self.colliders.get_mut(handle)
             {
                 collider.set_position(pose * relative);
+            }
+        }
+    }
+
+    /// Puts an object somewhere new at rest: its colliders, and its body if
+    /// it has one (stopped, awake, so it settles).
+    pub fn place_object(&mut self, object: usize, transform: &Transform) {
+        self.move_object(object, transform);
+        let pose = object_pose(transform);
+        for &(handle, owner) in &self.dynamic {
+            if owner == object
+                && let Some(body) = self.bodies.get_mut(handle)
+            {
+                body.set_position(pose, true);
+                body.set_linvel(Vector::ZERO, true);
+                body.set_angvel(Vector::ZERO, true);
             }
         }
     }
@@ -533,6 +553,33 @@ mod tests {
         assert_eq!(object, 1);
         assert!((distance - 4.5).abs() < 1e-3);
         assert!(world.pick(Vec3::ZERO, Vec3::Y, 100.0).is_none());
+    }
+
+    /// What the player holds is out of the way: it can't be looked at,
+    /// stood on or bumped into, and collides again once put down.
+    #[test]
+    fn a_held_object_collides_with_nothing() {
+        let mut scene = test_scene(vec![(
+            Shape::Box {
+                size: Vec3::splat(1.0),
+            },
+            Vec3::ZERO,
+        )]);
+        let mut assets = Assets::default();
+        let from = Vec3::new(0.0, 0.0, 5.0);
+        let world = PhysicsWorld::for_game(&scene, &mut assets);
+        assert!(world.pick(from, Vec3::NEG_Z, 10.0).is_some());
+        scene.objects[0].play.held = true;
+        let mut world = PhysicsWorld::for_game(&scene, &mut assets);
+        assert!(world.pick(from, Vec3::NEG_Z, 10.0).is_none());
+        world.set_hidden(0, false);
+        world.place_object(0, &Transform::at(Vec3::X * 3.0));
+        world.step(1.0 / 60.0);
+        assert!(
+            world
+                .pick(from + Vec3::X * 3.0, Vec3::NEG_Z, 10.0)
+                .is_some()
+        );
     }
 
     #[test]

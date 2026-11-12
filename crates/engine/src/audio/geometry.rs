@@ -51,7 +51,10 @@ struct Part {
     /// The object's id.
     object: u32,
     mesh: MeshData,
+    /// Where its object is.
     transform: Mat4,
+    /// Where the part is on its object (a prefab's piece; else identity).
+    offset: Mat4,
     preset: usize,
     moves: bool,
 }
@@ -68,10 +71,12 @@ impl GeometrySource {
                 Resolved::Model(model) if model.parts.is_empty() => continue,
                 Resolved::Model(model) => model.mesh.clone(),
             };
+            let owner = scene.objects[object].transform.matrix();
             parts.push(Part {
                 object: scene.objects[object].id,
                 mesh,
-                transform: transform.matrix(),
+                transform: owner,
+                offset: owner.inverse() * transform.matrix(),
                 preset: preset_of(scene, object) as usize,
                 moves: moves(scene, object),
             });
@@ -98,7 +103,7 @@ impl AcousticGeometry {
         for part in &source.parts {
             if part.moves {
                 let mut local = MeshBuilder::default();
-                local.add(&part.mesh, Mat4::IDENTITY, part.preset);
+                local.add(&part.mesh, part.offset, part.preset);
                 let mut sub = audionimbus::Scene::try_new(context).map_err(steam)?;
                 if let Some(static_mesh) = local.build(&sub, &materials)? {
                     sub.add_static_mesh(static_mesh);
@@ -118,7 +123,7 @@ impl AcousticGeometry {
                     part.transform,
                 ));
             } else {
-                world.add(&part.mesh, part.transform, part.preset);
+                world.add(&part.mesh, part.transform * part.offset, part.preset);
             }
         }
         if let Some(static_mesh) = world.build(&acoustic, &materials)? {
@@ -176,9 +181,14 @@ pub fn signature(scene: &Scene) -> u64 {
 /// Walk-through objects (collision off) don't block sound, and neither
 /// does an object that is itself a sound source: its own shape would muffle
 /// it.
+/// Solid things block sound, except sound sources (the sound would be
+/// stuck inside) and things the player can carry (held, one would muffle
+/// everything in front of the listener).
 fn blocks_sound(scene: &Scene, object: usize, solid: bool) -> bool {
+    let object = &scene.objects[object];
     solid
-        && !scene.objects[object]
+        && object.holdable().is_none()
+        && !object
             .components
             .iter()
             .any(|c| matches!(c, Component::SoundSource(_)))

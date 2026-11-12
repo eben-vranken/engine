@@ -4,7 +4,7 @@
 //! logic panels use them to show who owns a graph, what uses it, what
 //! mentions an object, and references that point at nothing.
 
-use super::files::{graph_files, scene_files, script_files, sound_files};
+use super::files::{graph_files, prefab_files, scene_files, script_files, sound_files};
 use super::inspector::Names;
 use crate::graph::flags::FlagDefs;
 use crate::graph::{Graph, NodeKind, key, scene_graph, scene_of_graph};
@@ -114,6 +114,7 @@ impl ProjectIndex {
             scenes: scenes.iter().map(|p| key(p)).collect(),
             sounds: sound_files(dir),
             scripts: script_files(dir).iter().map(|p| key(p)).collect(),
+            prefabs: prefab_files(dir).iter().map(|p| key(p)).collect(),
             ..Default::default()
         };
         self.scene_objects.clear();

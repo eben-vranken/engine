@@ -187,13 +187,27 @@ pub struct Object {
     /// scene; see `StartsHidden`.
     #[serde(skip)]
     pub hidden: bool,
+    /// What the running game changed about it besides `hidden`. Never
+    /// saved with the scene.
+    #[serde(skip)]
+    pub play: PlayState,
+}
+
+/// What the running game changes about an object, besides hiding it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct PlayState {
+    /// The player holds it: it follows the view and collides with nothing.
+    pub held: bool,
+    /// Its lights are switched off (a flashlight's switch).
+    pub lights_off: bool,
 }
 
 impl Object {
     /// Whether the object can move while the game runs: a door, a floating
-    /// or physics body, or a script (scripts may set the transform). Such
-    /// objects are never merged into static geometry (acoustic scene,
-    /// light bakes); they follow the object instead.
+    /// or physics body, something the player can carry, or a script
+    /// (scripts may set the transform). Such objects are never merged into
+    /// static geometry (acoustic scene, light bakes); they follow the
+    /// object instead.
     pub fn is_dynamic(&self) -> bool {
         self.components.iter().any(|c| {
             matches!(
@@ -203,7 +217,53 @@ impl Object {
                     | Component::PhysicsBody(_)
                     | Component::Script(_)
             )
+        }) || self.holdable().is_some()
+    }
+
+    /// Its `Holdable`, or the first in its prefab: a prefab can say every
+    /// placement of it can be carried.
+    pub fn holdable(&self) -> Option<&Holdable> {
+        self.pieces().into_iter().find_map(|(piece, _)| {
+            piece.components.iter().find_map(|c| match c {
+                Component::Holdable(h) => Some(h),
+                _ => None,
+            })
         })
+    }
+
+    /// What the object is made of, placed in the world: itself with its
+    /// own transform, then every object of its prefab (and of prefabs
+    /// inside that one) with the transforms put together. Components are
+    /// read from each piece; the instance's behaviors stay on the instance.
+    pub fn pieces(&self) -> Vec<(&Object, Transform)> {
+        let mut pieces = vec![(self, self.transform)];
+        push_prefab_pieces(self, &self.transform.matrix(), 0, &mut pieces);
+        pieces
+    }
+}
+
+/// How deep prefabs may sit inside prefabs before the rest is left out
+/// (a prefab that contains itself stops here).
+const PREFAB_DEPTH: usize = 8;
+
+fn push_prefab_pieces<'a>(
+    object: &'a Object,
+    world: &Mat4,
+    depth: usize,
+    pieces: &mut Vec<(&'a Object, Transform)>,
+) {
+    if depth >= PREFAB_DEPTH {
+        return;
+    }
+    for component in &object.components {
+        let Component::Prefab(prefab) = component else {
+            continue;
+        };
+        for part in prefab.contents.objects() {
+            let placed = *world * part.transform.matrix();
+            pieces.push((part, Transform::from_matrix(&placed)));
+            push_prefab_pieces(part, &placed, depth + 1, pieces);
+        }
     }
 }
 
@@ -250,6 +310,25 @@ impl Transform {
     pub fn matrix(&self) -> Mat4 {
         Mat4::from_scale_rotation_translation(self.scale, self.quat(), self.position)
     }
+
+    /// The transform of a matrix made of a scale, a rotation and a move (a
+    /// skew from a non-uniform scale under a rotation is lost).
+    pub fn from_matrix(matrix: &Mat4) -> Self {
+        let (scale, rotation, position) = matrix.to_scale_rotation_translation();
+        let mut transform = Self {
+            position,
+            rotation: Vec3::ZERO,
+            scale,
+        };
+        transform.set_quat(rotation);
+        transform
+    }
+
+    /// The direction the object faces: its -Z axis (where a cone light
+    /// shines).
+    pub fn forward(&self) -> Vec3 {
+        self.quat() * Vec3::NEG_Z
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
@@ -282,6 +361,79 @@ pub enum Component {
     StartsHidden,
     Script(Script),
     VisibleWhen(VisibleWhen),
+    Prefab(Prefab),
+    Holdable(Holdable),
+}
+
+/// Places a prefab: the objects of a prefab file (`prefabs/lamp.ron`, a
+/// scene of its own) drawn, lit and collided as part of this object, moved
+/// and turned with it. Changing the prefab changes every placement.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Prefab {
+    pub prefab: PrefabRef,
+    /// The prefab's objects, read from its file (`prefab::resolve`).
+    #[serde(skip)]
+    #[reflect(ignore)]
+    pub contents: PrefabContents,
+}
+
+/// A prefab's objects as loaded, shared by its placements. Not part of the
+/// scene's data: two placements of the same file compare equal whatever
+/// was loaded.
+#[derive(Clone, Default)]
+pub struct PrefabContents(pub Option<std::sync::Arc<Vec<Object>>>);
+
+impl PrefabContents {
+    pub fn objects(&self) -> &[Object] {
+        self.0.as_deref().map_or(&[], Vec::as_slice)
+    }
+}
+
+impl PartialEq for PrefabContents {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl std::fmt::Debug for PrefabContents {
+    /// Shows the objects, so a bake's signature sees a prefab change.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(self.objects()).finish()
+    }
+}
+
+/// The player can pick it up (E) and carry it in view; dropped again with
+/// the drop key. With `switches_lights`, the use key turns its lights on
+/// and off (a flashlight). Scripts on it can check `object.held` and
+/// `player().pressed("use_held")` for anything else (a tool, a weapon).
+/// Put on a prefab's object, every placement of the prefab can be carried.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
+#[serde(default)]
+pub struct Holdable {
+    /// Where it is held, from the eyes: meters right, up and forward.
+    pub offset: Vec3,
+    /// How it is turned in the hand (degrees, like an object's rotation,
+    /// with 0 pointing where the player looks).
+    pub rotation: Vec3,
+    /// How far it lags behind when the view turns: 0 = rigid, 1 = loose.
+    pub sway: f32,
+    /// The use key switches its lights on and off.
+    pub switches_lights: bool,
+    /// Its lights are on when the game starts.
+    pub starts_on: bool,
+}
+
+impl Default for Holdable {
+    fn default() -> Self {
+        Self {
+            offset: Vec3::new(0.25, -0.22, 0.45),
+            rotation: Vec3::ZERO,
+            sway: 0.4,
+            switches_lights: true,
+            starts_on: true,
+        }
+    }
 }
 
 /// Shown only while a flag condition holds: a gate that opens (is hidden)
@@ -423,9 +575,10 @@ impl Default for FogVolume {
     }
 }
 
-/// A point light: lantern, candle, brazier. Lights the scene in real time
-/// and casts shadows; with `baked`, the light it bounces off surfaces is
-/// also baked into the lightmaps (keep it for lights that never move).
+/// A light: lantern, candle, brazier, or with a `cone` a spotlight or a
+/// flashlight. Lights the scene in real time and casts shadows; with
+/// `baked`, the light it bounces off surfaces is also baked into the
+/// lightmaps (keep it for lights that never move).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Reflect)]
 #[serde(default)]
 pub struct LightSource {
@@ -440,7 +593,17 @@ pub struct LightSource {
     pub shadows: bool,
     /// Its bounce light goes into the lightmap (BAKE LIGHTING).
     pub baked: bool,
+    /// Degrees across the beam, shining along the object's -Z (forward);
+    /// 0 = every way (a point light).
+    #[serde(skip_serializing_if = "is_zero_f32")]
+    pub cone: f32,
+    /// How soft the beam's edge is: 0 = a hard edge, 1 = it fades from the
+    /// middle out.
+    #[serde(skip_serializing_if = "is_default_softness")]
+    pub cone_softness: f32,
 }
+
+const CONE_SOFTNESS: f32 = 0.3;
 
 impl Default for LightSource {
     fn default() -> Self {
@@ -451,8 +614,51 @@ impl Default for LightSource {
             flicker: 0.0,
             shadows: true,
             baked: true,
+            cone: 0.0,
+            cone_softness: CONE_SOFTNESS,
         }
     }
+}
+
+impl LightSource {
+    /// A cone light's beam as two cosines of the angle from its axis: fully
+    /// lit inside the second, dark outside the first. `None` for a point
+    /// light.
+    pub fn cone_cosines(&self) -> Option<(f32, f32)> {
+        if self.cone <= 0.0 || self.cone >= 360.0 {
+            return None;
+        }
+        let outer = (self.cone * 0.5).min(179.0).to_radians();
+        let inner = outer * (1.0 - self.cone_softness.clamp(0.0, 1.0));
+        let (cos_outer, cos_inner) = (outer.cos(), inner.cos());
+        // A hair apart, so the shader's smoothstep never divides by zero.
+        Some((cos_outer, cos_inner.max(cos_outer + 1e-4)))
+    }
+
+    /// How much of the light goes in `direction` (unit, from the light) for
+    /// a light facing `axis`: 1 inside the beam, fading to 0 at its edge.
+    /// Mirrors `cone` in the shaders.
+    pub fn cone_weight(&self, axis: Vec3, direction: Vec3) -> f32 {
+        cone_falloff(self.cone_cosines(), axis, direction)
+    }
+}
+
+/// `LightSource::cone_weight` from the beam's cosines (`None`: a point
+/// light, 1 everywhere).
+pub fn cone_falloff(cone: Option<(f32, f32)>, axis: Vec3, direction: Vec3) -> f32 {
+    let Some((outer, inner)) = cone else {
+        return 1.0;
+    };
+    let t = ((direction.dot(axis) - outer) / (inner - outer)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+fn is_zero_f32(value: &f32) -> bool {
+    *value == 0.0
+}
+
+fn is_default_softness(value: &f32) -> bool {
+    *value == CONE_SOFTNESS
 }
 
 /// Another object in the scene: by its id, with its name as a readable hint
@@ -563,6 +769,12 @@ pub struct SoundRef(pub String);
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
 #[serde(transparent)]
 pub struct ScriptRef(pub String);
+
+/// A prefab in the project (`prefabs/lamp.ron`). The inspector shows a
+/// picker.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
+#[serde(transparent)]
+pub struct PrefabRef(pub String);
 
 /// A character, by their `Character` id. The inspector shows a picker.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, Reflect)]
@@ -880,9 +1092,22 @@ pub struct Renderable<'a> {
     pub geometry: Geometry<'a>,
     pub color: Vec3,
     pub emissive: Vec3,
-    pub transform: &'a Transform,
-    /// The object's `Material`, if it has one.
+    /// Where it is in the world (a prefab's piece: put together with the
+    /// object's).
+    pub transform: Transform,
+    /// The piece's `Material`, if it has one.
     pub material: Option<&'a Material>,
+}
+
+/// A light as placed in the world.
+#[derive(Debug, Clone, Copy)]
+pub struct PlacedLight<'a> {
+    /// The object it belongs to.
+    pub object: usize,
+    pub light: &'a LightSource,
+    pub position: Vec3,
+    /// Where a cone light shines (unit).
+    pub direction: Vec3,
 }
 
 /// Global lighting and atmosphere. All colors are linear RGB; light colors
@@ -978,6 +1203,7 @@ impl Scene {
         let object = |name: &str, position: Vec3, component| Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: name.into(),
             zone: zone.clone(),
             transform: Transform::at(position),
@@ -1167,46 +1393,49 @@ impl Scene {
         (0..self.objects.len()).flat_map(|index| self.renderables_of(index))
     }
 
-    /// One object's renderables, hidden or not.
+    /// One object's renderables, hidden or not (its prefab's pieces too).
     pub fn renderables_of(&self, index: usize) -> impl Iterator<Item = Renderable<'_>> {
-        let object = &self.objects[index];
-        let material = object.components.iter().find_map(|c| match c {
-            Component::Material(m) => Some(m),
-            _ => None,
-        });
-        object.components.iter().flat_map(move |c| {
-            let groups: Vec<(Geometry, Vec3, Vec3)> = match c {
-                Component::Primitive(p) => {
-                    vec![(Geometry::Shape(p.shape), p.color, p.emissive)]
-                }
-                Component::Model(m) => m
-                    .groups()
-                    .map(|(parts, color, emissive, _)| {
-                        (Geometry::Model(&m.path, parts), color, emissive)
-                    })
-                    .collect(),
-                _ => Vec::new(),
-            };
-            groups
-                .into_iter()
-                .map(move |(geometry, color, emissive)| Renderable {
-                    object: index,
-                    geometry,
-                    color,
-                    emissive,
-                    transform: &object.transform,
-                    material,
-                })
-        })
+        let mut renderables = Vec::new();
+        for (piece, transform) in self.objects[index].pieces() {
+            let material = piece.components.iter().find_map(|c| match c {
+                Component::Material(m) => Some(m),
+                _ => None,
+            });
+            for c in &piece.components {
+                let groups: Vec<(Geometry, Vec3, Vec3)> = match c {
+                    Component::Primitive(p) => {
+                        vec![(Geometry::Shape(p.shape), p.color, p.emissive)]
+                    }
+                    Component::Model(m) => m
+                        .groups()
+                        .map(|(parts, color, emissive, _)| {
+                            (Geometry::Model(&m.path, parts), color, emissive)
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                renderables.extend(groups.into_iter().map(|(geometry, color, emissive)| {
+                    Renderable {
+                        object: index,
+                        geometry,
+                        color,
+                        emissive,
+                        transform,
+                        material,
+                    }
+                }));
+            }
+        }
+        renderables.into_iter()
     }
 
-    /// Every light: object index, the light, and where it is. Lights of
-    /// model parts sit at the part's center, which `center(path, part)`
-    /// gives in the model's own space (`None`: the object's origin).
+    /// Every light that is on. Lights of model parts sit at the part's
+    /// center, which `center(path, part)` gives in the model's own space
+    /// (`None`: the object's origin).
     pub fn lights(
         &self,
         mut center: impl FnMut(&str, &str) -> Option<Vec3>,
-    ) -> Vec<(usize, &LightSource, Vec3)> {
+    ) -> Vec<PlacedLight<'_>> {
         let mut lights = Vec::new();
         for (index, _) in self.shown() {
             self.push_lights(index, &mut center, &mut lights);
@@ -1214,12 +1443,12 @@ impl Scene {
         lights
     }
 
-    /// `lights` of one object (none while it is hidden).
+    /// `lights` of one object (none while it is hidden or switched off).
     pub fn lights_of(
         &self,
         index: usize,
         mut center: impl FnMut(&str, &str) -> Option<Vec3>,
-    ) -> Vec<(usize, &LightSource, Vec3)> {
+    ) -> Vec<PlacedLight<'_>> {
         let mut lights = Vec::new();
         if self.objects.get(index).is_some_and(|o| !o.hidden) {
             self.push_lights(index, &mut center, &mut lights);
@@ -1231,60 +1460,78 @@ impl Scene {
         &'a self,
         index: usize,
         center: &mut impl FnMut(&str, &str) -> Option<Vec3>,
-        lights: &mut Vec<(usize, &'a LightSource, Vec3)>,
+        lights: &mut Vec<PlacedLight<'a>>,
     ) {
         let object = &self.objects[index];
-        for component in &object.components {
-            match component {
-                Component::LightSource(light) => {
-                    lights.push((index, light, object.transform.position));
-                }
-                Component::Model(model) => {
-                    for part in &model.parts {
-                        let Some(light) = &part.light else {
-                            continue;
-                        };
-                        let position = match center(&model.path, &part.name) {
-                            Some(c) => object.transform.matrix().transform_point3(c),
-                            None => object.transform.position,
-                        };
-                        lights.push((index, light, position));
+        if object.play.lights_off {
+            return;
+        }
+        for (piece, transform) in object.pieces() {
+            let direction = transform.forward().normalize_or(Vec3::NEG_Z);
+            let mut place = |light, position| {
+                lights.push(PlacedLight {
+                    object: index,
+                    light,
+                    position,
+                    direction,
+                })
+            };
+            for component in &piece.components {
+                match component {
+                    Component::LightSource(light) => place(light, transform.position),
+                    Component::Model(model) => {
+                        for part in &model.parts {
+                            let Some(light) = &part.light else {
+                                continue;
+                            };
+                            let position = match center(&model.path, &part.name) {
+                                Some(c) => transform.matrix().transform_point3(c),
+                                None => transform.position,
+                            };
+                            place(light, position);
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
 
     /// Everything with a collider: object index, geometry, transform, and
     /// whether it blocks the player.
-    pub fn colliders(&self) -> impl Iterator<Item = (usize, Geometry<'_>, &Transform, bool)> {
+    pub fn colliders(&self) -> impl Iterator<Item = (usize, Geometry<'_>, Transform, bool)> {
         self.colliders_with_hidden()
             .filter(|(index, ..)| !self.objects[*index].hidden)
     }
 
     /// `colliders`, hidden objects too (physics keeps them switched off, to
-    /// switch them on again without a rebuild).
+    /// switch them on again without a rebuild). A prefab's pieces collide
+    /// as part of their object.
     pub fn colliders_with_hidden(
         &self,
-    ) -> impl Iterator<Item = (usize, Geometry<'_>, &Transform, bool)> {
-        self.objects.iter().enumerate().flat_map(|(index, object)| {
-            object.components.iter().flat_map(move |c| {
-                let groups: Vec<(Geometry, bool)> = match c {
-                    Component::Primitive(p) => vec![(Geometry::Shape(p.shape), p.collision)],
-                    Component::Model(m) => m
-                        .groups()
-                        .map(|(parts, _, _, collision)| {
-                            (Geometry::Model(&m.path, parts), collision)
-                        })
-                        .collect(),
-                    _ => Vec::new(),
-                };
-                groups
-                    .into_iter()
-                    .map(move |(geometry, solid)| (index, geometry, &object.transform, solid))
-            })
-        })
+    ) -> impl Iterator<Item = (usize, Geometry<'_>, Transform, bool)> {
+        let mut colliders = Vec::new();
+        for (index, object) in self.objects.iter().enumerate() {
+            for (piece, transform) in object.pieces() {
+                for c in &piece.components {
+                    match c {
+                        Component::Primitive(p) => colliders.push((
+                            index,
+                            Geometry::Shape(p.shape),
+                            transform,
+                            p.collision,
+                        )),
+                        Component::Model(m) => {
+                            colliders.extend(m.groups().map(|(parts, _, _, collision)| {
+                                (index, Geometry::Model(&m.path, parts), transform, collision)
+                            }))
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        colliders.into_iter()
     }
 
     /// The objects not hidden, with their indices.
@@ -1346,6 +1593,7 @@ pub(crate) fn test_scene(shapes: Vec<(Shape, Vec3)>) -> Scene {
             .map(|(i, (shape, position))| Object {
                 id: i as u32 + 1,
                 hidden: false,
+                play: Default::default(),
                 name: format!("object {i}"),
                 zone: "test".into(),
                 transform: Transform::at(position),
@@ -1479,6 +1727,7 @@ mod tests {
                 Object {
                     id: 0,
                     hidden: false,
+                    play: Default::default(),
                     name: "floor".into(),
                     zone: "hall".into(),
                     transform: Transform::at(Vec3::new(0.0, -0.25, 0.0)),
@@ -1494,6 +1743,7 @@ mod tests {
                 Object {
                     id: 0,
                     hidden: false,
+                    play: Default::default(),
                     name: "start".into(),
                     zone: "hall".into(),
                     transform: Transform {
@@ -1505,6 +1755,32 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_cone_light_lights_inside_its_beam_only() {
+        let light = LightSource {
+            cone: 60.0,
+            cone_softness: 0.5,
+            ..Default::default()
+        };
+        let axis = Vec3::NEG_Z;
+        let at = |degrees: f32| {
+            let r = degrees.to_radians();
+            light.cone_weight(axis, Vec3::new(r.sin(), 0.0, -r.cos()))
+        };
+        assert_eq!(at(0.0), 1.0);
+        assert_eq!(at(10.0), 1.0);
+        assert!(at(22.0) > 0.0 && at(22.0) < 1.0);
+        assert_eq!(at(31.0), 0.0);
+        assert_eq!(at(120.0), 0.0);
+        // A point light lights every way.
+        let point = LightSource::default();
+        assert_eq!(point.cone_cosines(), None);
+        assert_eq!(point.cone_weight(axis, Vec3::Z), 1.0);
+        // Older scenes (no cone) still load, and a point light writes none.
+        let text = ron::to_string(&point).unwrap();
+        assert!(!text.contains("cone"), "{text}");
     }
 
     #[test]

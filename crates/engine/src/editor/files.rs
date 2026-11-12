@@ -8,6 +8,12 @@ pub(super) fn scene_files(project_dir: &Path) -> Vec<PathBuf> {
     files_in(project_dir, "scenes", "ron")
 }
 
+/// Prefab files in the project's `prefabs/` folder, relative to the
+/// project.
+pub(super) fn prefab_files(project_dir: &Path) -> Vec<PathBuf> {
+    files_in(project_dir, crate::prefab::FOLDER, "ron")
+}
+
 /// Graph files in the project's `graphs/` folder and its subfolders
 /// (scene graphs are in `graphs/scenes/`), relative to the project.
 pub(super) fn graph_files(project_dir: &Path) -> Vec<PathBuf> {

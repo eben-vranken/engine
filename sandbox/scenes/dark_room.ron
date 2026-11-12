@@ -1,0 +1,105 @@
+// A dark, dusty room for trying held things: a flashlight (the prefab in
+// prefabs/flashlight.ron) lies on the table. E takes it, F switches it,
+// G puts it down; the beam lights the dust and the fog.
+(
+    environment: (
+        sun_direction: (-0.4, -0.85, -0.3),
+        sun_color: (0.0, 0.0, 0.0),
+        ambient_sky: (0.012, 0.013, 0.018),
+        ambient_ground: (0.006, 0.005, 0.005),
+        fog: (density: 0.05, color: (1.0, 1.0, 1.0), height: 4.0, falloff: 0.1, wisps: 0.5, wisp_size: 1.0, wisp_speed: 0.1, dust: 0.6, dust_size: 1.0, dust_brightness: 4.0, dust_speed: 0.04),
+        fog_distance: 30.0,
+        bloom: 0.08,
+    ),
+    zones: [
+        (
+            name: "room",
+        ),
+    ],
+    objects: [
+        (
+            name: "floor",
+            id: 1,
+            zone: "room",
+            transform: (position: (0.0, -0.25, 0.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (12.0, 0.5, 12.0)), color: (0.5, 0.5, 0.5))), AcousticMaterial((preset: Concrete))],
+        ),
+        (
+            name: "ceiling",
+            id: 2,
+            zone: "room",
+            transform: (position: (0.0, 3.75, 0.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (12.0, 0.5, 12.0)), color: (0.45, 0.45, 0.45))), AcousticMaterial((preset: Concrete))],
+        ),
+        (
+            name: "wall north",
+            id: 3,
+            zone: "room",
+            transform: (position: (0.0, 1.75, -6.25), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (13.0, 3.5, 0.5)), color: (0.6, 0.58, 0.55))), AcousticMaterial((preset: Plaster))],
+        ),
+        (
+            name: "wall south",
+            id: 4,
+            zone: "room",
+            transform: (position: (0.0, 1.75, 6.25), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (13.0, 3.5, 0.5)), color: (0.6, 0.58, 0.55))), AcousticMaterial((preset: Plaster))],
+        ),
+        (
+            name: "wall east",
+            id: 5,
+            zone: "room",
+            transform: (position: (6.25, 1.75, 0.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (0.5, 3.5, 12.0)), color: (0.6, 0.58, 0.55))), AcousticMaterial((preset: Plaster))],
+        ),
+        (
+            name: "wall west",
+            id: 6,
+            zone: "room",
+            transform: (position: (-6.25, 1.75, 0.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (0.5, 3.5, 12.0)), color: (0.6, 0.58, 0.55))), AcousticMaterial((preset: Plaster))],
+        ),
+        (
+            name: "pillar",
+            id: 7,
+            zone: "room",
+            transform: (position: (-2.0, 1.75, -2.5), rotation: (0.0, 20.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (0.6, 3.5, 0.6)), color: (0.55, 0.53, 0.5)))],
+        ),
+        (
+            name: "crate",
+            id: 8,
+            zone: "room",
+            transform: (position: (3.0, 0.4, -3.5), rotation: (0.0, -15.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (0.8, 0.8, 0.8)), color: (0.45, 0.33, 0.22))), AcousticMaterial((preset: Wood))],
+        ),
+        (
+            name: "table",
+            id: 9,
+            zone: "room",
+            transform: (position: (0.0, 0.4, 2.5), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Primitive((shape: Box(size: (1.4, 0.8, 0.8)), color: (0.35, 0.25, 0.18))), AcousticMaterial((preset: Wood))],
+        ),
+        (
+            name: "flashlight",
+            id: 10,
+            zone: "room",
+            transform: (position: (0.1, 0.84, 2.45), rotation: (0.0, 25.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [Prefab((prefab: "prefabs/flashlight.ron"))],
+        ),
+        (
+            name: "volume",
+            id: 11,
+            zone: "room",
+            transform: (position: (0.0, 1.75, 0.0), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [ZoneVolume((size: (12.0, 3.5, 12.0), probe_spacing: 2.0, probe_height: 1.5))],
+        ),
+        (
+            name: "player start",
+            id: 12,
+            zone: "room",
+            transform: (position: (0.0, 0.0, 4.5), rotation: (0.0, 0.0, 0.0), scale: (1.0, 1.0, 1.0)),
+            components: [PlayerStart],
+        ),
+    ],
+)

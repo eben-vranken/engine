@@ -193,6 +193,7 @@ mod tests {
             transform: Transform::at(Vec3::new(x, 0.0, 0.0)),
             components: vec![Component::ZoneVolume(ZoneVolume::default())],
             hidden: false,
+            play: Default::default(),
         }
     }
 

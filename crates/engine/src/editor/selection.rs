@@ -350,6 +350,7 @@ mod tests {
         Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: name.into(),
             zone: "test".into(),
             transform: Transform::at(Vec3::X * x),

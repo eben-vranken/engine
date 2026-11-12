@@ -7,6 +7,7 @@ Same layout as any game project:
 ```
 game.ron      game settings: name, start scene
 scenes/       RON scenes saved by the editor
+prefabs/      prefabs: scenes placed as one object in other scenes
 models/       glTF models
 audio/        sound clips
 textures/     low-res textures

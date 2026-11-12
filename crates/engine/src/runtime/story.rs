@@ -79,6 +79,8 @@ impl Story {
 enum Use {
     Switch,
     Pickup,
+    /// Carry it (`Holdable`).
+    Hold,
     Talk(String),
     Save,
 }
@@ -198,6 +200,13 @@ impl Running {
                 state.objects.entry(object.id).or_default().script = Some(memory);
             }
         }
+        for object in &self.scene.objects {
+            if object.holdable().is_some() {
+                let saved = state.objects.entry(object.id).or_default();
+                saved.held = Some(object.play.held);
+                saved.lights_off = Some(object.play.lights_off);
+            }
+        }
         story.world.scenes.insert(key, state);
     }
 
@@ -225,6 +234,13 @@ impl Running {
             });
             if let Some(hidden) = saved {
                 object.hidden = hidden;
+            }
+            // Carried things: on the ground with their lights as set, or as
+            // the player left them.
+            if let Some(starts_on) = object.holdable().map(|h| h.starts_on) {
+                let saved = state.and_then(|s| s.objects.get(&object.id));
+                object.play.held = saved.and_then(|o| o.held).unwrap_or(false);
+                object.play.lights_off = saved.and_then(|o| o.lights_off).unwrap_or(!starts_on);
             }
             // Physics bodies and scripted objects are where they were left,
             // and scripts remember what they did.
@@ -304,7 +320,7 @@ impl Running {
         let object = self.scene.objects.get(index)?;
         let story = self.story.as_ref();
         let key = crate::input::key_label(&self.settings.keys.interact);
-        object.components.iter().find_map(|c| match c {
+        let used = object.components.iter().find_map(|c| match c {
             Component::Switch(s) if !s.pressure_plate => Some((Use::Switch, format!("{key}  USE"))),
             Component::Pickup(_) => Some((Use::Pickup, format!("{key}  TAKE"))),
             Component::SavePoint => Some((Use::Save, format!("{key}  SAVE"))),
@@ -320,6 +336,11 @@ impl Running {
                 Some((Use::Talk(character.dialogue.0.clone()), prompt))
             }
             _ => None,
+        });
+        used.or_else(|| {
+            object
+                .holdable()
+                .map(|_| (Use::Hold, format!("{key}  TAKE")))
         })
     }
 
@@ -349,6 +370,7 @@ impl Running {
         match action {
             Use::Switch => return Some(index),
             Use::Pickup => self.pick_up(index),
+            Use::Hold => self.take(index),
             Use::Talk(graph) => {
                 if let Some(story) = &mut self.story {
                     story.runner.start(&graph);
@@ -598,7 +620,9 @@ impl Running {
     /// Player Start. Editor: Stop goes back to the scene being edited.
     pub(super) fn load_play_scene(&mut self, path: &str) {
         match Scene::load(&self.game_dir.join(path)) {
-            Ok(scene) => {
+            Ok(mut scene) => {
+                crate::prefab::resolve(&mut scene, &mut self.assets);
+                self.leave_held();
                 self.record_scene_state();
                 self.leave_scene_graph();
                 self.scene = scene;
@@ -714,6 +738,7 @@ impl Running {
                     rotation: object.transform.rotation,
                     scale: object.transform.scale,
                     visible: !object.hidden,
+                    held: object.play.held,
                 })
             })
             .collect();
@@ -809,7 +834,9 @@ fn script_of(object: &crate::scene::Object) -> Option<&str> {
 /// state.
 fn keeps_its_place(object: &crate::scene::Object) -> bool {
     let has = |wanted: fn(&Component) -> bool| object.components.iter().any(wanted);
-    (has(|c| matches!(c, Component::PhysicsBody(_))) || script_of(object).is_some())
+    (has(|c| matches!(c, Component::PhysicsBody(_)))
+        || object.holdable().is_some()
+        || script_of(object).is_some())
         && !has(|c| matches!(c, Component::Door(_)))
 }
 

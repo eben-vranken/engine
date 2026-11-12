@@ -40,7 +40,20 @@ struct Light {
     position: vec4<f32>,
     // rgb: color × intensity, w: shadow slot, or -1 for none.
     color: vec4<f32>,
+    // xyz: where a cone light shines.
+    direction: vec4<f32>,
+    // x, y: cosines of the beam's outer and inner edges (-2, -1: a point
+    // light, every direction inside).
+    cone: vec4<f32>,
 };
+
+
+// How much of a light goes along `travel` (unit, away from the light): 1
+// inside a cone light's beam, fading to 0 at its edge; always 1 for a
+// point light. Mirrors `LightSource::cone_weight`.
+fn cone(l: Light, travel: vec3<f32>) -> f32 {
+    return smoothstep(l.cone.x, l.cone.y, dot(travel, l.direction.xyz));
+}
 
 // A zone's fog volume, or a FogVolume.
 struct Region {
@@ -242,7 +255,11 @@ fn in_scatter(p: vec3<f32>, view: vec3<f32>) -> vec4<f32> {
         let window = saturate(1.0 - ratio * ratio * ratio * ratio);
         let falloff = window * window / max(distance * distance, 0.04);
         let travel = to_point / max(distance, 1e-4);
-        light += l.color.rgb * falloff * point_visibility(l, p) * phase(dot(travel, -view), g);
+        let beam = cone(l, travel);
+        if beam <= 0.0 {
+            continue;
+        }
+        light += l.color.rgb * beam * falloff * point_visibility(l, p) * phase(dot(travel, -view), g);
     }
     // Ambient light arrives from everywhere: the phase averages out.
     light += local_ambient / (4.0 * PI);

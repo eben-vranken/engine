@@ -1,8 +1,9 @@
-//! The assets drawer under the outliner: MODELS (drag one into the
-//! viewport to place it there, `+` to place it in front of the camera),
-//! TEXTURES and SOUNDS (click to copy the path for a field).
+//! The assets drawer under the outliner: MODELS and PREFABS (drag one into
+//! the viewport to place it there, `+` to place it in front of the camera;
+//! a model's PREFAB makes a prefab of it, a prefab's OPEN edits it in a
+//! tab), TEXTURES and SOUNDS (click to copy the path for a field).
 
-use super::files::all_models;
+use super::files::{all_models, prefab_files};
 use super::{Editor, EditorOutput, dim};
 use egui::{Align, Layout, Pos2, Ui};
 use std::path::PathBuf;
@@ -17,10 +18,11 @@ const RESCAN: Duration = Duration::from_secs(2);
 pub(super) struct ModelList {
     pub search: String,
     files: Vec<PathBuf>,
+    prefabs: Vec<PathBuf>,
     textures: Vec<String>,
     sounds: Vec<String>,
     scanned: Option<Instant>,
-    /// 0 models, 1 textures, 2 sounds.
+    /// 0 models, 1 prefabs, 2 textures, 3 sounds.
     tab: usize,
 }
 
@@ -29,12 +31,16 @@ impl Editor {
         let list = &mut self.models;
         if list.scanned.is_none_or(|t| t.elapsed() > RESCAN) {
             list.files = all_models(&self.project_dir);
+            list.prefabs = prefab_files(&self.project_dir);
             list.textures = super::files::texture_files(&self.project_dir);
             list.sounds = super::files::sound_files(&self.project_dir);
             list.scanned = Some(Instant::now());
         }
         ui.horizontal(|ui| {
-            for (i, name) in ["MODELS", "TEXTURES", "SOUNDS"].iter().enumerate() {
+            for (i, name) in ["MODELS", "PREFABS", "TEXTURES", "SOUNDS"]
+                .iter()
+                .enumerate()
+            {
                 let text = if list.tab == i {
                     egui::RichText::new(*name).strong()
                 } else {
@@ -46,8 +52,13 @@ impl Editor {
             }
         });
         ui.separator();
-        if list.tab > 0 {
-            let files = if list.tab == 1 {
+        if list.tab == 1 {
+            let prefabs = list.prefabs.clone();
+            self.prefab_list(ui, &prefabs, output);
+            return;
+        }
+        if list.tab > 1 {
+            let files = if list.tab == 2 {
                 &list.textures
             } else {
                 &list.sounds
@@ -58,7 +69,7 @@ impl Editor {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     if files.is_empty() {
-                        ui.label(dim(if list.tab == 1 {
+                        ui.label(dim(if list.tab == 2 {
                             "NO TEXTURES YET: DROP PNG / JPEG FILES IN TEXTURES/"
                         } else {
                             "NO SOUNDS YET: DROP .WAV FILES ON THE WINDOW"
@@ -120,10 +131,62 @@ impl Editor {
                         {
                             output.place_model = Some((path.clone(), None));
                         }
+                        if ui
+                            .small_button("PREFAB")
+                            .on_hover_text(
+                                "MAKE A PREFAB OF IT AND OPEN IT IN A TAB, TO ADD LIGHTS AND MORE",
+                            )
+                            .clicked()
+                        {
+                            output.make_prefab = Some(slashed(path));
+                        }
                         let id = egui::Id::unique(("model_list_item", path));
                         let item = ui
                             .dnd_drag_source(id, path.clone(), |ui| {
                                 ui.add(egui::Label::new(display(path)).truncate())
+                            })
+                            .inner;
+                        item.on_hover_text("DRAG INTO THE VIEW TO PLACE IT");
+                    });
+                }
+            });
+    }
+
+    /// PREFABS: each with `+` (place in front of the camera), OPEN (edit
+    /// it in a tab) and its name to drag into the view.
+    fn prefab_list(&mut self, ui: &mut Ui, prefabs: &[PathBuf], output: &mut EditorOutput) {
+        if prefabs.is_empty() {
+            ui.label(dim("NO PREFABS YET: PRESS PREFAB NEXT TO A MODEL"));
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("prefab_list")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for path in prefabs {
+                    ui.horizontal(|ui| {
+                        if ui
+                            .small_button("+")
+                            .on_hover_text("PLACE IN FRONT OF THE CAMERA")
+                            .clicked()
+                        {
+                            output.place_model = Some((path.clone(), None));
+                        }
+                        if ui
+                            .small_button("OPEN")
+                            .on_hover_text("EDIT IT IN A TAB: EVERY PLACEMENT FOLLOWS WHEN SAVED")
+                            .clicked()
+                        {
+                            match self.tab_of(path) {
+                                Some(index) => output.switch_tab = Some(index),
+                                None => output.new_tab = Some(path.clone()),
+                            }
+                        }
+                        let id = egui::Id::unique(("prefab_list_item", path));
+                        let name = crate::prefab::stem(&slashed(path)).to_owned();
+                        let item = ui
+                            .dnd_drag_source(id, path.clone(), |ui| {
+                                ui.add(egui::Label::new(name).truncate())
                             })
                             .inner;
                         item.on_hover_text("DRAG INTO THE VIEW TO PLACE IT");
@@ -146,6 +209,14 @@ impl Editor {
             output.place_model = Some(((*path).clone(), Some(at)));
         }
     }
+}
+
+/// A project path with `/` separators.
+fn slashed(path: &std::path::Path) -> String {
+    path.components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// The path inside `models/`, with `/` separators.

@@ -409,6 +409,7 @@ mod tests {
         scene.objects.push(Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: "volume".into(),
             zone: "test".into(),
             transform: Transform::at(Vec3::new(0.0, 1.5, 0.0)),

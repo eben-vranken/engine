@@ -26,7 +26,15 @@ pub struct GpuLight {
     pub position: Vec4,
     /// rgb: color × intensity, w: shadow slot, or -1 for none.
     pub color: Vec4,
+    /// xyz: where a cone light shines (unit).
+    pub direction: Vec4,
+    /// x, y: cosines of the beam's outer and inner edges (`-2, -1` for a
+    /// point light, so every direction is inside).
+    pub cone: Vec4,
 }
+
+/// `GpuLight::cone` of a light shining every way.
+const NO_CONE: Vec4 = Vec4::new(-2.0, -1.0, 0.0, 0.0);
 
 /// A scene light as used this frame.
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +46,10 @@ pub struct FrameLight {
     /// Color × intensity × flicker.
     pub color: Vec3,
     pub shadow: Option<usize>,
+    /// Where it shines, for a cone light.
+    pub direction: Vec3,
+    /// A cone light's outer and inner cosines (`LightSource::cone_cosines`).
+    pub cone: Option<(f32, f32)>,
 }
 
 impl FrameLight {
@@ -47,6 +59,10 @@ impl FrameLight {
             color: self
                 .color
                 .extend(self.shadow.map_or(-1.0, |slot| slot as f32)),
+            direction: self.direction.extend(0.0),
+            cone: self
+                .cone
+                .map_or(NO_CONE, |(outer, inner)| Vec4::new(outer, inner, 0.0, 0.0)),
         }
     }
 }
@@ -61,6 +77,8 @@ pub fn emissive_light(emissive: Vec3, center: Vec3, radius: f32) -> GpuLight {
     GpuLight {
         position: center.extend(range),
         color: intensity.extend(-1.0),
+        direction: Vec4::ZERO,
+        cone: NO_CONE,
     }
 }
 
@@ -89,18 +107,18 @@ pub fn flicker(amount: f32, time: f32, seed: f32) -> f32 {
 /// light just out of reach beats a small one nearer by; lights whose range
 /// reaches the camera all score zero and are ordered by plain distance.
 pub fn select<'a>(
-    lights: impl Iterator<Item = (usize, &'a LightSource, Vec3)>,
+    lights: impl Iterator<Item = (usize, &'a LightSource, Vec3, Vec3)>,
     camera: Vec3,
     time: f32,
     owners: &mut Vec<Option<usize>>,
 ) -> Vec<FrameLight> {
     let shadow_slots = owners.len();
-    let mut candidates: Vec<(f32, f32, usize, &LightSource, Vec3)> = lights
-        .filter(|(_, l, _)| l.intensity > 0.0 && l.range > 0.0)
-        .map(|(object, light, position)| {
+    let mut candidates: Vec<(f32, f32, usize, &LightSource, Vec3, Vec3)> = lights
+        .filter(|(_, l, ..)| l.intensity > 0.0 && l.range > 0.0)
+        .map(|(object, light, position, direction)| {
             let distance = position.distance(camera);
             let reach = (distance - light.range).max(0.0);
-            (reach, distance, object, light, position)
+            (reach, distance, object, light, position, direction)
         })
         .collect();
     candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
@@ -108,7 +126,7 @@ pub fn select<'a>(
     let mut picked: Vec<FrameLight> = candidates
         .into_iter()
         .take(MAX_LIGHTS)
-        .map(|(_, _, object, light, position)| {
+        .map(|(_, _, object, light, position, direction)| {
             let wants = light.shadows && shadowed < shadow_slots;
             shadowed += wants as usize;
             FrameLight {
@@ -118,6 +136,8 @@ pub fn select<'a>(
                 color: light.color * light.intensity * flicker(light.flicker, time, object as f32),
                 // Marks who gets one; the slot is chosen below.
                 shadow: wants.then_some(usize::MAX),
+                direction,
+                cone: light.cone_cosines(),
             }
         })
         .collect();
@@ -235,7 +255,7 @@ mod tests {
                 .iter()
                 .zip(positions)
                 .enumerate()
-                .map(|(i, (l, p))| (i, l, p)),
+                .map(|(i, (l, p))| (i, l, p, Vec3::NEG_Z)),
             Vec3::ZERO,
             0.0,
             &mut vec![None; 8],
@@ -257,7 +277,7 @@ mod tests {
                     .iter()
                     .zip(positions)
                     .enumerate()
-                    .map(|(i, (l, p))| (i, l, p)),
+                    .map(|(i, (l, p))| (i, l, p, Vec3::NEG_Z)),
                 camera,
                 0.0,
                 owners,
@@ -282,7 +302,7 @@ mod tests {
             lights
                 .iter()
                 .enumerate()
-                .map(|(i, l)| (i, l, Vec3::X * i as f32)),
+                .map(|(i, l)| (i, l, Vec3::X * i as f32, Vec3::NEG_Z)),
             Vec3::ZERO,
             0.0,
             &mut vec![None; 8],
@@ -300,7 +320,7 @@ mod tests {
                 .iter()
                 .zip(positions)
                 .enumerate()
-                .map(|(i, (l, p))| (i, l, p)),
+                .map(|(i, (l, p))| (i, l, p, Vec3::NEG_Z)),
             Vec3::ZERO,
             0.0,
             &mut vec![None; 2],

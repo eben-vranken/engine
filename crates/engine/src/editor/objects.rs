@@ -22,6 +22,7 @@ impl Editor {
         let object = Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: unique_name(scene, kind),
             zone: self.new_object_zone(scene)?,
             transform: Transform::at(placement((-half, half), view.aim, ahead)),
@@ -48,6 +49,7 @@ impl Editor {
         let object = Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: unique_name(scene, "player start"),
             zone: self.new_object_zone(scene)?,
             transform: Transform {
@@ -70,6 +72,7 @@ impl Editor {
         let object = Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: unique_name(scene, &format!("{zone} volume")),
             zone,
             transform: Transform::at(placement((-half, half), view.aim, ahead)),
@@ -92,6 +95,7 @@ impl Editor {
         let object = Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: unique_name(scene, &format!("{zone} portal")),
             zone,
             transform: Transform {
@@ -111,6 +115,7 @@ impl Editor {
         let object = Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: unique_name(scene, stem),
             zone: self.new_object_zone(scene)?,
             transform: Transform::at(position),
@@ -120,6 +125,29 @@ impl Editor {
                 emissive: Vec3::ZERO,
                 collision: true,
                 parts: Vec::new(),
+            })],
+        };
+        self.message = Some((format!("ADDED {path}"), false));
+        Some(self.append(scene, object))
+    }
+
+    /// Places the prefab at `path` (relative to the project) at `position`.
+    pub fn add_prefab(
+        &mut self,
+        scene: &mut Scene,
+        path: String,
+        position: Vec3,
+    ) -> Option<Change> {
+        let object = Object {
+            id: 0,
+            hidden: false,
+            play: Default::default(),
+            name: unique_name(scene, crate::prefab::stem(&path)),
+            zone: self.new_object_zone(scene)?,
+            transform: Transform::at(position),
+            components: vec![Component::Prefab(crate::scene::Prefab {
+                prefab: crate::scene::PrefabRef(path.clone()),
+                contents: Default::default(),
             })],
         };
         self.message = Some((format!("ADDED {path}"), false));

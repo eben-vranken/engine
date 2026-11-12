@@ -514,6 +514,7 @@ mod tests {
         Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: "o".into(),
             zone: zone.into(),
             transform: Transform::at(position),

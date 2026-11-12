@@ -84,6 +84,14 @@ impl ZoneMap {
     }
 
     /// Zones that share a portal with `zone`.
+    /// The object at `index` is in zone `zone` now (something carried and
+    /// put down elsewhere).
+    pub fn move_object(&mut self, index: usize, zone: usize) {
+        if let Some(slot) = self.object_zones.get_mut(index) {
+            *slot = Some(zone);
+        }
+    }
+
     pub fn neighbours(&self, zone: usize) -> &[usize] {
         self.neighbours.get(zone).map_or(&[], Vec::as_slice)
     }
@@ -115,6 +123,10 @@ impl Active {
             .iter()
             .enumerate()
             .map(|(i, o)| {
+                // What the player carries goes where they go.
+                if o.play.held {
+                    return true;
+                }
                 let zone = match map.object_zones.get(i) {
                     Some(&zone) => zone,
                     // Added since the map was built.
@@ -193,6 +205,7 @@ mod tests {
         Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: format!("{zone} volume"),
             zone: zone.into(),
             transform: Transform::at(position),
@@ -207,6 +220,7 @@ mod tests {
         Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: format!("{from} to {to}"),
             zone: from.into(),
             transform: Transform::default(),
