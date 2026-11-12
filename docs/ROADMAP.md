@@ -373,6 +373,15 @@ What the brief's rendering section still listed: the retro toggles, screen-space
 
 **Acceptance:** the user turns each retro look on and off in PROJECT ▸ RENDERING and sees it at once; in a scene with a polished floor, a pushed crate and a flickering lantern show in the floor with SCREEN REFLECTIONS on; with LIVE OCCLUSION at 1 the crate darkens the floor it stands on and the dark follows it when pushed; with everything off, scenes look and run as before; the frame rate on the laptop (Iris Xe) is acceptable with both on.
 
+## 17. Prefabs, cone lights and held things
+Reusable objects (the brief's "prefabs" from Editor ▸ Later), a light that shines one way, and objects the player carries: first a flashlight, later anything a game needs (a tool, a weapon) through the same `Holdable`.
+
+- [ ] Cone lights: `LightSource` `cone` (degrees across the beam, 0 = a point light) and `cone_softness`, shining along the object's -Z; lit surfaces, fog, dust and the light bake follow the beam; a selected cone light shows its beam in the editor
+- [ ] Prefabs: a scene file in `prefabs/`, edited in a tab like any scene; PREFAB next to a model in the assets drawer makes one and opens it; PREFABS in the drawer places one (drag or `+`) or opens it; a `Prefab` placement draws, lights and collides as its prefab, moves with it, and follows the file when it is saved; prefabs may place prefabs
+- [ ] Holding: `Holdable` (on an object or in its prefab): E takes it, it follows the view with some sway and collides with nothing, G (`drop`) puts it down on the floor ahead, F (`use_held`) switches its lights; `starts_on`; held and switched-off state is saved with the scene's state; scripts see `object.held`; leaving the scene puts it down where the player stands
+
+**Acceptance:** in the editor, the user makes a prefab of one of their GLB models, adds a light with a cone in its tab, gives it a `Holdable`, saves and places it in a scene; in Play they take it with E, the beam follows the view through the fog, F switches it off and on, G puts it down, and a change saved in the prefab's tab shows in the placement. `scenes/dark_room.ron` in the sandbox does the same with its primitive flashlight.
+
 ## Later (optional)
 Not scheduled; picked up only if a game needs it.
 

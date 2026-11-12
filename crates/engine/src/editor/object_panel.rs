@@ -272,7 +272,7 @@ pub(super) fn shape_kind(ui: &mut Ui, id: usize, shape: &mut Shape) {
 }
 
 /// Components the inspector can add (one of each per object).
-pub(super) fn new_components() -> [(&'static str, Component); 17] {
+pub(super) fn new_components() -> [(&'static str, Component); 19] {
     [
         ("floating", Component::Floating(Floating::default())),
         ("door", Component::Door(Door::default())),
@@ -306,6 +306,11 @@ pub(super) fn new_components() -> [(&'static str, Component); 17] {
             Component::VisibleWhen(crate::scene::VisibleWhen::default()),
         ),
         ("script", Component::Script(crate::scene::Script::default())),
+        (
+            "holdable",
+            Component::Holdable(crate::scene::Holdable::default()),
+        ),
+        ("prefab", Component::Prefab(crate::scene::Prefab::default())),
     ]
 }
 
@@ -349,7 +354,10 @@ fn card(
 fn group_of(component: &Component) -> &'static str {
     match component {
         Component::Primitive(_) | Component::Model(_) => "SHAPE",
-        Component::Material(_) | Component::LightSource(_) | Component::FogVolume(_) => "LOOK",
+        Component::Material(_)
+        | Component::LightSource(_)
+        | Component::FogVolume(_)
+        | Component::Prefab(_) => "LOOK",
         Component::Door(_) | Component::Floating(_) | Component::PhysicsBody(_) => "MOTION",
         Component::SoundSource(_) | Component::AcousticMaterial(_) => "SOUND",
         Component::ZoneVolume(_) | Component::Portal(_) => "WORLD",
@@ -368,6 +376,7 @@ pub(super) const BEHAVIOR_GROUPS: [(&str, &[(&str, &str)]); 5] = [
             ("trigger", "a box graphs wait for"),
             ("character", "talk with E; runs a dialogue"),
             ("pickup", "E to take; sets a flag"),
+            ("holdable", "E to carry in view; F uses, G drops"),
             ("save point", "E saves the game here"),
             ("visible when", "shown while a flag holds (gates, bridges)"),
             ("script", "runs a script of yours on it"),
@@ -394,6 +403,7 @@ pub(super) const BEHAVIOR_GROUPS: [(&str, &[(&str, &str)]); 5] = [
             ("material", "texture, roughness, metal"),
             ("light source", "lantern, candle, brazier"),
             ("fog volume", "local mist or smoke"),
+            ("prefab", "a prefab's objects, placed here"),
         ],
     ),
     (

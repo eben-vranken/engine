@@ -144,6 +144,8 @@ pub struct Assets {
     models: HashMap<String, CachedModel>,
     /// Material textures by path; `None` = failed to load (reported once).
     textures: HashMap<String, Option<Arc<Image>>>,
+    /// Prefab files, read on first use.
+    pub(crate) prefabs: crate::prefab::Prefabs,
 }
 
 struct CachedModel {
@@ -161,6 +163,7 @@ impl Assets {
             root,
             models: HashMap::new(),
             textures: HashMap::new(),
+            prefabs: Default::default(),
         }
     }
 

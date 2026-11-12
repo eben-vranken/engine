@@ -140,6 +140,7 @@ const REFERENCE: &[(&str, &str)] = &[
         "vec3 (rotation in degrees)",
     ),
     ("object.visible", "shown, with collision"),
+    ("object.held", "the player carries it"),
     ("player()", "the player, from any script"),
     ("flag(\"name\")", "a flag's value"),
     ("set_flag(\"name\", value)", "set a flag (graphs see it)"),

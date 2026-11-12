@@ -31,6 +31,10 @@ pub struct BakeLight {
     /// Shadow rays stop this short of the light, so the light's own
     /// object (a lantern around it) doesn't block it.
     pub clearance: f32,
+    /// Where a cone light shines, and its beam's cosines (`None`: every
+    /// way).
+    pub direction: Vec3,
+    pub cone: Option<(f32, f32)>,
 }
 
 /// What a bake traces against.
@@ -131,12 +135,14 @@ impl World {
             if facing <= 0.0 {
                 continue;
             }
-            if self.blocked(origin, l, distance - light.clearance) {
+            let beam = crate::scene::cone_falloff(light.cone, light.direction, -l);
+            if beam <= 0.0 || self.blocked(origin, l, distance - light.clearance) {
                 continue;
             }
             let ratio = distance / light.range;
             let window = (1.0 - ratio.powi(4)).clamp(0.0, 1.0);
-            total += light.color * facing * window * window / (distance * distance).max(0.01);
+            total +=
+                light.color * (facing * beam * window * window / (distance * distance).max(0.01));
         }
         total
     }

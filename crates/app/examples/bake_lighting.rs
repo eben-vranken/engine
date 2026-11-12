@@ -15,8 +15,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let game = PathBuf::from(game);
     let file = game.join(&scene);
-    let scene = Scene::load(&file)?;
+    let mut scene = Scene::load(&file)?;
     let mut assets = Assets::new(game);
+    engine::prefab::resolve(&mut scene, &mut assets);
     let mut job = lightmap::start(&scene, &mut assets, lightmap::path_for(&file))?;
     loop {
         if let Some(result) = job.finished() {

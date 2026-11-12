@@ -82,6 +82,8 @@ pub struct ObjectView {
     pub rotation: Vec3,
     pub scale: Vec3,
     pub visible: bool,
+    /// The player holds it (read only).
+    pub held: bool,
 }
 
 /// The `player` value scripts get: shared, so their changes come back.
@@ -447,6 +449,7 @@ fn register_object(engine: &mut Engine) {
         .register_type_with_name::<ObjectHandle>("Object")
         .register_get("name", |o: &mut ObjectHandle| o.0.borrow().name.clone())
         .register_get("visible", |o: &mut ObjectHandle| o.0.borrow().visible)
+        .register_get("held", |o: &mut ObjectHandle| o.0.borrow().held)
         .register_set("visible", |o: &mut ObjectHandle, v: bool| {
             o.0.borrow_mut().visible = v
         });
@@ -666,6 +669,7 @@ mod tests {
             name: format!("lamp {index}"),
             position: Vec3::new(x, 0.0, 0.0),
             visible: true,
+            held: false,
             ..Default::default()
         };
         let mut objects = vec![lamp(0, 0.0), lamp(1, 10.0)];
@@ -695,6 +699,7 @@ mod tests {
             position: Vec3::new(0.0, 1.0, 0.0),
             scale: Vec3::ONE,
             visible: true,
+            held: false,
             ..Default::default()
         }];
         // The player straight to the east (+X).

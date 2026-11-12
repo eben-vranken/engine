@@ -76,26 +76,17 @@ pub struct DrawKey {
     pub part: u32,
 }
 
-/// Keys for every renderable, in `Scene::renderables` order.
+/// Keys for every renderable, in `Scene::renderables` order: the object's
+/// id and the draw's place among that object's draws (a model with parts
+/// of its own, or a prefab, makes several).
 pub fn draw_keys(scene: &Scene) -> Vec<DrawKey> {
     let mut keys = Vec::new();
-    for object in &scene.objects {
-        // One per draw: a model with parts of its own makes several.
-        let parts: usize = object
-            .components
-            .iter()
-            .map(|c| match c {
-                Component::Primitive(_) => 1,
-                Component::Model(m) => m.groups().count(),
-                _ => 0,
-            })
-            .sum();
-        for part in 0..parts as u32 {
-            keys.push(DrawKey {
-                id: object.id,
-                part,
-            });
-        }
+    for (index, object) in scene.objects.iter().enumerate() {
+        let draws = scene.renderables_of(index).count() as u32;
+        keys.extend((0..draws).map(|part| DrawKey {
+            id: object.id,
+            part,
+        }));
     }
     keys
 }
@@ -562,12 +553,14 @@ pub fn start(scene: &Scene, assets: &mut Assets, file: PathBuf) -> Result<BakeJo
     let lights = scene
         .lights(|path, part| assets.model(path)?.part_center(part))
         .into_iter()
-        .filter(|(i, l, _)| l.baked && !moves(&scene.objects[*i]))
-        .map(|(i, l, p)| BakeLight {
-            position: p,
-            color: l.color * l.intensity,
-            range: l.range,
-            clearance: reach[i] + 0.01,
+        .filter(|l| l.light.baked && !moves(&scene.objects[l.object]))
+        .map(|l| BakeLight {
+            position: l.position,
+            color: l.light.color * l.light.intensity,
+            range: l.light.range,
+            clearance: reach[l.object] + 0.01,
+            direction: l.direction,
+            cone: l.light.cone_cosines(),
         })
         .collect();
     let world = World::new(
@@ -1701,6 +1694,7 @@ mod tests {
         scene.objects.push(Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: "volume".into(),
             zone: "test".into(),
             transform: crate::scene::Transform::at(Vec3::new(0.0, 1.5, 0.0)),

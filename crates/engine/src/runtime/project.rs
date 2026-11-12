@@ -7,7 +7,7 @@ use crate::editor::import;
 use crate::physics::PhysicsWorld;
 use crate::render::quality::Quality;
 use glam::{Vec2, Vec3};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 impl Running {
     /// Editor: leaves this project for the one in `dir` by starting the
@@ -37,6 +37,25 @@ impl Running {
             if crate::package::is_package(&file) {
                 if let Some(dir) = editor.open_dropped_package(&file) {
                     self.open_project(&dir);
+                }
+                continue;
+            }
+            // A prefab from the PREFABS list: it's in the project already.
+            let relative = file
+                .strip_prefix(&self.game_dir)
+                .ok()
+                .map(Path::to_path_buf);
+            if let Some(relative) = relative.filter(|p| crate::prefab::is_prefab(p)) {
+                let path = crate::graph::key(&relative);
+                let bounds = crate::prefab::bounds(&mut self.assets, &path)
+                    .unwrap_or((Vec3::splat(-0.25), Vec3::splat(0.25)));
+                let position = self.drop_position(camera, cursor, bounds);
+                let Some(editor) = &mut self.editor else {
+                    return;
+                };
+                if let Some(change) = editor.add_prefab(&mut self.scene, path, position) {
+                    self.show_change(change);
+                    self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
                 }
                 continue;
             }
@@ -70,27 +89,68 @@ impl Running {
                 (Vec3::splat(-0.25), Vec3::splat(0.25)), // the placeholder box
                 |model| model.mesh.bounds(),
             );
-            // Dropped on a panel: aim through the middle of the view.
-            let [x, y, w, h] = self.renderer.image_rect();
-            let ndc = Vec2::new(
-                (cursor.x - x) / w * 2.0 - 1.0,
-                1.0 - (cursor.y - y) / h * 2.0,
-            );
-            let ndc = if ndc.abs().max_element() <= 1.0 {
-                ndc
-            } else {
-                Vec2::ZERO
+            let position = self.drop_position(camera, cursor, bounds);
+            let Some(editor) = &mut self.editor else {
+                return;
             };
-            let (origin, direction) = camera.ray(ndc, w / h);
-            let surface = self.physics.surface(origin, direction, camera.far);
-            let ahead = origin + direction * crate::editor::NEW_OBJECT_DISTANCE;
-            let position = crate::editor::placement(bounds, surface, ahead);
             if let Some(change) = editor.add_model(&mut self.scene, path, position) {
                 self.show_change(change);
                 self.physics = PhysicsWorld::from_scene(&self.scene, &mut self.assets);
             }
         }
     }
+    /// Where something dropped at `cursor` (or placed with `+`) goes: on
+    /// the surface under it, or ahead of the camera; `bounds` around its
+    /// origin.
+    fn drop_position(&self, camera: &Camera, cursor: Vec2, bounds: (Vec3, Vec3)) -> Vec3 {
+        // Dropped on a panel: aim through the middle of the view.
+        let [x, y, w, h] = self.renderer.image_rect();
+        let ndc = Vec2::new(
+            (cursor.x - x) / w * 2.0 - 1.0,
+            1.0 - (cursor.y - y) / h * 2.0,
+        );
+        let ndc = if ndc.abs().max_element() <= 1.0 {
+            ndc
+        } else {
+            Vec2::ZERO
+        };
+        let (origin, direction) = camera.ray(ndc, w / h);
+        let surface = self.physics.surface(origin, direction, camera.far);
+        let ahead = origin + direction * crate::editor::NEW_OBJECT_DISTANCE;
+        crate::editor::placement(bounds, surface, ahead)
+    }
+
+    /// Editor: makes a prefab of the model at `model` (relative to the
+    /// project) in `prefabs/`, and opens it in a tab to be added to.
+    pub(super) fn make_prefab(&mut self, model: &str) {
+        let path = crate::prefab::new_path(&self.game_dir, model);
+        let file = self.game_dir.join(&path);
+        let written = std::fs::create_dir_all(file.parent().unwrap_or(&self.game_dir))
+            .map_err(|e| e.to_string())
+            .and_then(|()| {
+                crate::prefab::of_model(model)
+                    .save(&file)
+                    .map_err(|e| e.to_string())
+            });
+        match written {
+            Ok(()) => {
+                log::info!("made the prefab {path}");
+                self.open_tab(PathBuf::from(&path));
+                if let Some(editor) = &mut self.editor {
+                    editor.show_message(format!(
+                        "MADE {path}: ADD A LIGHT OR ANYTHING ELSE, SAVE, THEN PLACE IT FROM PREFABS"
+                    ));
+                }
+            }
+            Err(err) => {
+                log::error!("{err}");
+                if let Some(editor) = &mut self.editor {
+                    editor.show_error(err);
+                }
+            }
+        }
+    }
+
     /// Editor: writes the project folder to a package at `out`.
     pub(super) fn export_package(&mut self, out: &Path) {
         let Some(editor) = &mut self.editor else {

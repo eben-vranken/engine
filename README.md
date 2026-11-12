@@ -26,7 +26,7 @@ A few ideas shape everything:
 The scene renders at a reduced internal resolution and is upscaled with sharp nearest-neighbor pixels. At the default it reads as HD with a faint pixel texture; the GPU time this saves goes into light and fog.
 
 - **Render scale:** internal resolution = output ÷ an integer factor, so pixels stay perfectly square. AUTO picks about 540–720 internal lines (4K → ×3); a project can fix its own factor (×1–×8), and `[` `]` change it live.
-- **Real-time direct light:** the sun with three shadow cascades, and up to 32 point lights (`LightSource`: color, intensity, range, flicker) with cached cube shadow maps for the nearest ones (16 on HIGH, 8 on LOW). Moving objects and flickering lanterns cast correct shadows.
+- **Real-time direct light:** the sun with three shadow cascades, and up to 32 point and cone lights (`LightSource`: color, intensity, range, flicker; a `cone` angle makes it a spotlight or flashlight, lighting the fog in a beam) with cached cube shadow maps for the nearest ones (16 on HIGH, 8 on LOW). Moving objects and flickering lanterns cast correct shadows.
 - **Baked bounce light:** BAKE LIGHTING path-traces sky light, emissive surfaces and bounced light on all CPU cores into per-zone lightmaps. Lightmap UVs are generated automatically, once per mesh: copies of the same piece share one layout and each gets its own patch of the atlas, sized to it. Moving objects get the same light from a grid of light probes. The bake is one `.lightmap` file next to the scene; bakes from before shared layouts show BAKE OUTDATED until baked again. `cargo run --release -p app --example bake_lighting -- sandbox scenes/test_level.ron` bakes without the editor.
 - **Materials:** primitives take a project texture (point-sampled, meters per repeat), roughness and metalness; glTF models bring their base color, normal, metallic-roughness and occlusion maps. Glossy surfaces get highlights from every light.
 - **Reflections:** the light bake also captures one reflection cube per zone, box-projected to the zone's volume, so a polished floor reflects the window and the lantern in the right places.
@@ -67,7 +67,7 @@ Acoustics come from [Steam Audio](https://valvesoftware.github.io/steam-audio/) 
 | `Door` | Slides and/or swings open; acts as a sound portal |
 | `Switch` | Press E or stand on it (pressure plate) to toggle a target, e.g. a door; graphs see it as used |
 | `PhysicsBody` | Gravity and pushable props |
-| `LightSource` | Colored, flickering, shadowed lights |
+| `LightSource` | Colored, flickering, shadowed lights; with a `cone`, a spotlight or flashlight shining along the object's -Z |
 | `FogVolume` | Local fog beyond the zone default |
 | `SoundSource` | Bells, drips, ambience, music |
 | `AcousticMaterial` | How a surface sounds |
@@ -78,8 +78,12 @@ Acoustics come from [Steam Audio](https://valvesoftware.github.io/steam-audio/) 
 | `SavePoint` | E saves the game |
 | `VisibleWhen` | Shown only while a flag condition holds (a gate, a bridge); no flag: hidden until a graph shows it |
 | `Script` | Runs a Rhai script on the object (see Scripts) |
+| `Holdable` | Taken with E and carried in view (offset, rotation, sway); the use key (F) switches its lights, the drop key (G) puts it down; scripts on it see `object.held` |
+| `Prefab` | Places a prefab here (see Prefabs below) |
 
 Every object has a stable id in its scene; graphs, switches and saves refer to objects by it, so renaming an object breaks nothing.
+
+- **Prefabs** are reusable groups of objects: a prefab is a scene file in the project's `prefabs/` folder, edited in a tab like any scene. PREFAB next to a model in the assets drawer makes one of that model and opens it, to add a light or anything else; PREFABS in the drawer places one (drag it in, or `+`) or OPENs it again. A placement is one object with a `Prefab` behavior: the prefab's objects are drawn, lit and collided as part of it and move with it, and saving the prefab changes every placement. Prefabs can place other prefabs. The geometry, materials, lights and `Holdable` of a prefab's objects count; other behaviors go on the placement. The sandbox's `prefabs/flashlight.ron` lies on the table in `scenes/dark_room.ron`.
 
 ## Player
 
@@ -124,10 +128,10 @@ Other flags: `--player` to play as a player gets the game (no debug tools; the e
 
 | Where | Keys |
 |---|---|
-| Playing | WASD move, Space jump, Shift sprint, Ctrl/C crouch, E use / talk / take, M map, Q clap, R respawn, F1 player feel, F2 free camera, F3 test drawer, F6 pause, F7 step, Esc free the mouse |
+| Playing | WASD move, Space jump, Shift sprint, Ctrl/C crouch, E use / talk / take, F use what you hold, G put it down, M map, Q clap, R respawn, F1 player feel, F2 free camera, F3 test drawer, F6 pause, F7 step, Esc free the mouse |
 | Dialogue | W/S or arrows choose, 1–9 pick, E / Space / Enter continue |
 
-The game's own keys (move, jump, sprint, crouch, use, clap, map) are the defaults of `player.ron`'s `keys`: each is one or more key names separated by spaces (`crouch: "ctrl c"`), edited under KEYS in the player feel panel. Prompts and dialogue hints show the bound key, and scripts ask for a key by what it does (`player.pressed("jump")`). The debug and editor keys are fixed.
+The game's own keys (move, jump, sprint, crouch, use, clap, map, use held, drop) are the defaults of `player.ron`'s `keys`: each is one or more key names separated by spaces (`crouch: "ctrl c"`), edited under KEYS in the player feel panel. Prompts and dialogue hints show the bound key, and scripts ask for a key by what it does (`player.pressed("jump")`). The debug and editor keys are fixed.
 | Anywhere | `[` `]` render scale, 0 auto scale, V vsync |
 | Editor | Ctrl+K search or run anything, ? every key, click select, Shift+click add, drag box select, W/E/R move/rotate/scale, Ctrl snap, A add, F frame, F2 rename, right mouse + WASD fly, Ctrl+C/V copy/paste, Ctrl+D duplicate, Del delete, Ctrl+Z/Y undo/redo, Ctrl+S save, Ctrl+Shift+S save all, F5 play/stop, Tab/Shift+Tab panels, Space add a node (LOGIC) |
 

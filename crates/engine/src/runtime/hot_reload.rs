@@ -19,6 +19,7 @@ impl Running {
         self.last_reload_check = Instant::now();
         self.poll_settings_file();
         self.poll_model_files();
+        self.poll_prefab_files();
         self.check_bake();
         self.check_light_bake();
     }
@@ -39,14 +40,29 @@ impl Running {
         }
     }
 
+    /// Prefab files saved (in their tab, or by hand): every placement
+    /// shows the new version.
+    pub(super) fn poll_prefab_files(&mut self) {
+        let root = self.game_dir.clone();
+        let changed = self.assets.prefabs.changed(&root);
+        if changed.is_empty() {
+            return;
+        }
+        log::info!("reloaded {}", changed.join(", "));
+        crate::prefab::resolve(&mut self.scene, &mut self.assets);
+        self.renderer.set_scene(&self.scene, &mut self.assets);
+        self.rebuild_physics();
+    }
+
     /// Editor: the parts of every model in the scene, for the scene panel
     /// and the light markers (each model looked up once).
     pub(super) fn update_model_parts(&mut self) {
         let Some(editor) = &mut self.editor else {
             return;
         };
-        for object in &self.scene.objects {
-            for component in &object.components {
+        let pieces = self.scene.objects.iter().flat_map(|o| o.pieces());
+        for (piece, _) in pieces {
+            for component in &piece.components {
                 let Component::Model(model) = component else {
                     continue;
                 };

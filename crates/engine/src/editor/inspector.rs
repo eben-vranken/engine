@@ -4,7 +4,7 @@
 //! box; nested structs and enum fields are indented underneath.
 
 use crate::scene::{
-    CharacterRef, FlagRef, GraphRef, ObjectRef, SceneRef, ScriptRef, SoundRef, ZoneRef,
+    CharacterRef, FlagRef, GraphRef, ObjectRef, PrefabRef, SceneRef, ScriptRef, SoundRef, ZoneRef,
 };
 use crate::ui::theme;
 use bevy_reflect::enums::{DynamicEnum, DynamicVariant, VariantInfo};
@@ -28,6 +28,7 @@ pub struct Names {
     pub scenes: Vec<String>,
     pub sounds: Vec<String>,
     pub scripts: Vec<String>,
+    pub prefabs: Vec<String>,
     pub characters: Vec<String>,
 }
 
@@ -280,6 +281,7 @@ fn reference<'a>(
     pick!(SceneRef, scenes);
     pick!(SoundRef, sounds);
     pick!(ScriptRef, scripts);
+    pick!(PrefabRef, prefabs);
     pick!(CharacterRef, characters);
     None
 }

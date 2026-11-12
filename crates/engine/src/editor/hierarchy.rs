@@ -697,6 +697,7 @@ mod tests {
         let candle = |name: &str, path: &str| crate::scene::Object {
             id: 0,
             hidden: false,
+            play: Default::default(),
             name: name.into(),
             zone: "test".into(),
             transform: Default::default(),

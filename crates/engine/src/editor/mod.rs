@@ -290,6 +290,8 @@ pub struct EditorOutput {
     /// Place this model (relative to the project) in the scene: where it
     /// was dropped on the scene image (points), or in front of the camera.
     pub place_model: Option<(PathBuf, Option<egui::Pos2>)>,
+    /// Make a prefab of this model (relative to the project) and open it.
+    pub make_prefab: Option<String>,
     /// Use this render scale now (`None` = automatic).
     pub render_scale: Option<Option<u32>>,
     /// The game's retro looks as edited (shown live).
@@ -328,6 +330,7 @@ impl EditorOutput {
             close_tab: None,
             open_graph: None,
             place_model: None,
+            make_prefab: None,
             open_project: None,
             render_scale: None,
             retro: None,
