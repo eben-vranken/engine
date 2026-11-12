@@ -49,6 +49,9 @@ const MAX_PROBES: usize = 4096;
 const PROBE_SAMPLES: u32 = 96;
 /// How far texel sample points are kept from a triangle's edges (meters).
 const EDGE_INSET: f32 = 0.01;
+/// Rows of a chart traced per job, so one big chart (a long floor) is
+/// shared by every thread instead of holding up one.
+const BAND_ROWS: u32 = 8;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LightmapError {
@@ -703,12 +706,15 @@ fn parallel<T: Send>(
 /// A chart's texels: light per texel, `None` where it's inside geometry.
 /// Traces one chart's texels in one placement (see `region`): each texel
 /// center is found on the layout's chart, then on the placement's world
-/// triangle there.
+/// triangle there. Only the region's rows in `rows` are traced. Texels
+/// farther than the padding from every triangle (the hole in a ring-shaped
+/// floor) are never sampled, so they stay `None` without tracing.
 fn bake_chart(
     world: &World,
     placement: &Placement,
     template: &Template,
     chart: usize,
+    rows: std::ops::Range<u32>,
     samples: u32,
     seed: u64,
 ) -> Vec<Option<Vec3>> {
@@ -728,8 +734,12 @@ fn bake_chart(
         .collect();
     let offset = Vec2::new(placement.offset[0] as f32, placement.offset[1] as f32);
     let origin = Vec2::new(r.origin[0] as f32, r.origin[1] as f32);
-    let mut out = Vec::with_capacity((w * h) as usize);
-    for y in 0..h {
+    // Farthest a texel center can be from its triangle and still be read
+    // by filtering: the padding, in meters on the plane.
+    let reach = (unwrap::PAD as f32 + 1.0) / (chart.scale * r.stretch.min_element()).max(1e-6);
+    let rows = rows.start.min(h)..rows.end.min(h);
+    let mut out = Vec::with_capacity((w * rows.len() as u32) as usize);
+    for y in rows {
         for x in 0..w {
             let center = origin + Vec2::new(x as f32, y as f32) + 0.5;
             let q = chart.plane_at((center - offset) / r.stretch);
@@ -748,7 +758,8 @@ fn bake_chart(
                     p += inward.normalize_or_zero() * inward.length().min(EDGE_INSET);
                     (d, p, *n)
                 })
-                .min_by(|a, b| a.0.total_cmp(&b.0));
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .filter(|(d, ..)| *d <= reach);
             out.push(best.and_then(|(_, p, n)| world.gather(p, n, samples, &mut rng)));
         }
     }
@@ -887,31 +898,58 @@ fn bake(
         .flat_map(|(i, p)| (0..templates[p.template].unwrapped.charts.len()).map(move |c| (i, c)))
         .collect();
     let chart = |i: usize, c: usize| &templates[placements[i].template].unwrapped.charts[c];
+    let chart_region = |i: usize, c: usize| {
+        region(
+            &placements[i],
+            &templates[placements[i].template],
+            chart(i, c),
+        )
+    };
+    // Each chart traced in bands of rows (see `BAND_ROWS`).
+    let bands: Vec<(usize, u32)> = jobs
+        .iter()
+        .enumerate()
+        .flat_map(|(j, &(i, c))| {
+            let rows = chart_region(i, c).size[1];
+            (0..rows.div_ceil(BAND_ROWS).max(1)).map(move |b| (j, b * BAND_ROWS))
+        })
+        .collect();
     let total_texels: usize = jobs
         .iter()
         .map(|&(i, c)| {
-            let r = region(
-                &placements[i],
-                &templates[placements[i].template],
-                chart(i, c),
-            );
+            let r = chart_region(i, c);
             (r.size[0] * r.size[1]) as usize
         })
         .sum();
     let texels_done = AtomicUsize::new(0);
     set("LIGHTMAPS", 0.0);
-    let results = parallel(
-        jobs.len(),
-        |j| {
+    let banded = parallel(
+        bands.len(),
+        |b| {
+            let (j, row) = bands[b];
             let (i, c) = jobs[j];
             let p = &placements[i];
-            let texels = bake_chart(&world, p, &templates[p.template], c, samples, j as u64 + 1);
+            let rows = row..row + BAND_ROWS;
+            let texels = bake_chart(
+                &world,
+                p,
+                &templates[p.template],
+                c,
+                rows,
+                samples,
+                b as u64 + 1,
+            );
             let done = texels_done.fetch_add(texels.len(), Ordering::Relaxed) + texels.len();
             set("LIGHTMAPS", done as f32 / total_texels.max(1) as f32);
             texels
         },
         |_| {},
     );
+    // Bands come in chart order, top to bottom: join them per chart.
+    let mut results: Vec<Vec<Option<Vec3>>> = vec![Vec::new(); jobs.len()];
+    for ((j, _), texels) in bands.iter().zip(banded) {
+        results[*j].extend(texels);
+    }
 
     // Assemble atlases: fill texels inside geometry from their neighbours,
     // then smooth each chart a little against noise.
@@ -1708,5 +1746,103 @@ mod tests {
             (6 * REFLECTION_SIZE * REFLECTION_SIZE) as usize
         );
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn empty_parts_of_a_chart_are_not_traced() {
+        // Two floor squares touching at one corner: one chart whose box is
+        // half empty, like the hole in a ring-shaped floor.
+        let corners = [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 2.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 0.0, 2.0],
+            [2.0, 0.0, 4.0],
+            [4.0, 0.0, 2.0],
+            [4.0, 0.0, 4.0],
+        ];
+        let mesh = MeshData {
+            vertices: corners
+                .iter()
+                .map(|&position| crate::render::mesh::Vertex {
+                    position,
+                    normal: [0.0, 1.0, 0.0],
+                    uv: [0.0, 0.0],
+                    color: [1.0; 4],
+                })
+                .collect(),
+            indices: vec![0, 1, 2, 2, 1, 3, 3, 4, 5, 5, 4, 6],
+        };
+        let mut unwrapped = unwrap::unwrap(&mesh, Mat4::IDENTITY, 4.0);
+        assert_eq!(unwrapped.charts.len(), 1);
+        let size = unwrap::pack_layout(&mut unwrapped.charts);
+        let world: Vec<([Vec3; 3], Vec3)> = mesh
+            .indices
+            .chunks_exact(3)
+            .map(|t| {
+                (
+                    [0, 1, 2].map(|k| Vec3::from(corners[t[k] as usize])),
+                    Vec3::Y,
+                )
+            })
+            .collect();
+        let template = Template {
+            mesh_key: "floor".into(),
+            mesh,
+            shape: Vec3::ONE,
+            smallest: 1.0,
+            unwrapped,
+            size,
+        };
+        let placement = Placement {
+            key: DrawKey { id: 0, part: 0 },
+            zone: 0,
+            template: 0,
+            size_factor: 1.0,
+            world: world.clone(),
+            size,
+            offset: [0, 0],
+        };
+        let traced = World::new(
+            world
+                .iter()
+                .map(|(c, _)| (*c, Vec3::splat(0.5), Vec3::ZERO))
+                .collect(),
+            Vec3::NEG_Y,
+            Vec3::ZERO,
+            Vec3::ONE,
+            Vec3::ZERO,
+            Vec::new(),
+        );
+        let [_, h] = region(&placement, &template, &template.unwrapped.charts[0]).size;
+        let whole = bake_chart(&traced, &placement, &template, 0, 0..h, 16, 1);
+        let lit = whole.iter().filter(|t| t.is_some()).count();
+        let skipped = whole.len() - lit;
+        assert!(lit > 0);
+        assert!(
+            skipped * 4 > whole.len(),
+            "{skipped} of {} skipped",
+            whole.len()
+        );
+        // Bands of rows join back into the same chart.
+        let mut banded = Vec::new();
+        for row in (0..h).step_by(BAND_ROWS as usize) {
+            banded.extend(bake_chart(
+                &traced,
+                &placement,
+                &template,
+                0,
+                row..row + BAND_ROWS,
+                16,
+                1,
+            ));
+        }
+        assert_eq!(banded.len(), whole.len());
+        assert!(
+            banded
+                .iter()
+                .zip(&whole)
+                .all(|(a, b)| a.is_some() == b.is_some())
+        );
     }
 }
