@@ -11,7 +11,7 @@
 //! at least once. Direct sun and lamp light at the point itself is left
 //! out, because the renderer adds it live with shadows.
 
-use glam::Vec3;
+use glam::{Vec2, Vec3};
 use rapier3d::parry::query::{Ray, RayCast};
 use rapier3d::parry::shape::TriMesh;
 
@@ -20,6 +20,9 @@ const BOUNCES: usize = 3;
 /// How far ray origins are lifted off surfaces (meters).
 const LIFT: f32 = 0.005;
 const FAR: f32 = 10_000.0;
+/// Step of the R2 sequence (from the plastic number): the most even 2D
+/// low-discrepancy sequence, and every prefix of it is evenly spread.
+const R2: Vec2 = Vec2::new(0.754_877_7, 0.569_840_3);
 
 /// A light whose bounce is baked.
 #[derive(Debug, Clone)]
@@ -169,8 +172,18 @@ impl World {
             light += throughput * self.emissive[tri];
             light += throughput * self.albedo[tri] * self.direct(p, n);
             throughput *= self.albedo[tri];
-            if throughput.max_element() < 0.01 {
+            let keep = throughput.max_element().min(1.0);
+            if keep < 0.01 {
                 break;
+            }
+            // Russian roulette: past the first bounce a path goes on with
+            // the chance of what it still carries, and the survivors count
+            // for more, so the average stays the same but dim paths stop.
+            if bounce > 0 {
+                if rng.float() >= keep {
+                    break;
+                }
+                throughput /= keep;
             }
             origin = p + n * LIFT;
             dir = rng.cosine(n);
@@ -200,8 +213,13 @@ impl World {
         let origin = p + n * LIFT;
         let mut sum = Vec3::ZERO;
         let mut inside = 0;
-        for _ in 0..samples {
-            match self.incoming(origin, rng.cosine(n), rng) {
+        // First directions from a low-discrepancy sequence (R2), shifted
+        // per point: spread evenly over the hemisphere instead of clumped,
+        // so the same samples give a smoother result.
+        let shift = Vec2::new(rng.float(), rng.float());
+        for i in 0..samples {
+            let u = (shift + R2 * i as f32).fract();
+            match self.incoming(origin, cosine_at(n, u.x, u.y), rng) {
                 Some(l) => sum += l,
                 None => inside += 1,
             }
@@ -243,15 +261,20 @@ impl Rng {
     /// averaging what the rays see gives the light a surface receives.
     pub fn cosine(&mut self, n: Vec3) -> Vec3 {
         let (u1, u2) = (self.float(), self.float());
-        let r = u1.sqrt();
-        let phi = std::f32::consts::TAU * u2;
-        let (x, y) = (r * phi.cos(), r * phi.sin());
-        let z = (1.0 - u1).max(0.0).sqrt();
-        let helper = if n.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
-        let t = helper.cross(n).normalize();
-        let b = n.cross(t);
-        (t * x + b * y + n * z).normalize()
+        cosine_at(n, u1, u2)
     }
+}
+
+/// The cosine-weighted direction around `n` for two numbers in 0..1.
+fn cosine_at(n: Vec3, u1: f32, u2: f32) -> Vec3 {
+    let r = u1.sqrt();
+    let phi = std::f32::consts::TAU * u2;
+    let (x, y) = (r * phi.cos(), r * phi.sin());
+    let z = (1.0 - u1).max(0.0).sqrt();
+    let helper = if n.y.abs() < 0.9 { Vec3::Y } else { Vec3::X };
+    let t = helper.cross(n).normalize();
+    let b = n.cross(t);
+    (t * x + b * y + n * z).normalize()
 }
 
 #[cfg(test)]
